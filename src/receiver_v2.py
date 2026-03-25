@@ -23,6 +23,7 @@ MESSAGE_TYPES = {
     'MAILING_STATUS': 'mailing_status'
 }
 
+
 class ReceiverV2:
     def __init__(self):
         self.connection = None

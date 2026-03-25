@@ -1,5 +1,4 @@
 import pika
-import json
 import time
 import signal
 import sys

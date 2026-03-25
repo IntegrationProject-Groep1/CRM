@@ -5,7 +5,6 @@ import uuid
 from datetime import datetime
 import os
 from dotenv import load_dotenv
-import json
 
 load_dotenv()
 
