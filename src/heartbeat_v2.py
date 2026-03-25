@@ -1,10 +1,14 @@
 import pika
+import os
 import time
 import signal
 import sys
 import uuid
 from datetime import datetime
+from dotenv import load_dotenv
 from sf_connection import SFConnection
+
+load_dotenv()
 
 
 class Heartbeat:
@@ -23,7 +27,7 @@ class Heartbeat:
     def connect(self):
         try:
             self.connection = pika.BlockingConnection(
-                pika.ConnectionParameters("localhost")
+                pika.URLParameters(os.getenv('RABBITMQ_URL', 'amqp://guest:guest@localhost/'))
             )
             self.channel = self.connection.channel()
             self.channel.queue_declare(queue=self.queue, durable=True)

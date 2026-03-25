@@ -180,7 +180,7 @@ class ReceiverV2:
                 'Description': f"New registration from message: {header.find('message_id').text}"
             }
 
-            if not self.sf.connected:
+            if not self.sf.is_connected:
                 print(f'[receiver_v2] DRY RUN: Would create Contact: {contact_data}')
                 return
 
@@ -231,7 +231,7 @@ class ReceiverV2:
                 'ActivityDate': datetime.now().date().isoformat()
             }
 
-            if not self.sf.connected:
+            if not self.sf.is_connected:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
@@ -260,7 +260,7 @@ class ReceiverV2:
                 'ActivityDate': datetime.now().date().isoformat()
             }
 
-            if not self.sf.connected:
+            if not self.sf.is_connected:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
@@ -289,7 +289,7 @@ class ReceiverV2:
                 'ActivityDate': datetime.now().date().isoformat()
             }
 
-            if not self.sf.connected:
+            if not self.sf.is_connected:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
@@ -313,7 +313,7 @@ class ReceiverV2:
                 'ActivityDate': datetime.now().date().isoformat()
             }
 
-            if not self.sf.connected:
+            if not self.sf.is_connected:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
@@ -342,7 +342,7 @@ class ReceiverV2:
                 'ActivityDate': datetime.now().date().isoformat()
             }
 
-            if not self.sf.connected:
+            if not self.sf.is_connected:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
