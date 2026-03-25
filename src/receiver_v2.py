@@ -29,6 +29,7 @@ class ReceiverV2:
         self.connection = None
         self.channel = None
         self.sf = SFConnection()
+        self.sf.init()
         self.running = True
 
     def connect_rabbitmq(self):
@@ -43,14 +44,9 @@ class ReceiverV2:
                 )
                 self.channel = self.connection.channel()
 
-                # Declare queues
                 self.channel.queue_declare(queue=QUEUE_NAME, durable=True)
                 self.channel.queue_declare(queue=DEAD_LETTER_QUEUE, durable=True)
-
-                # Set prefetch
                 self.channel.basic_qos(prefetch_count=1)
-
-                # Start consuming
                 self.channel.basic_consume(
                     queue=QUEUE_NAME,
                     on_message_callback=self.handle_message,
@@ -70,34 +66,24 @@ class ReceiverV2:
 
     def validate_xml_message(self, root):
         """Validate XML structure and required fields"""
-        # Check for message root
         if root.tag != 'message':
             return False, 'Missing message root element'
 
-        # Find header
         header = root.find('header')
         if header is None:
             return False, 'Missing header element'
 
-        # Check required fields
         required_fields = ['message_id', 'version', 'type', 'timestamp', 'source']
-        missing_fields = []
-        for field in required_fields:
-            if header.find(field) is None:
-                missing_fields.append(field)
-
+        missing_fields = [f for f in required_fields if header.find(f) is None]
         if missing_fields:
             return False, f"Missing required header fields: {', '.join(missing_fields)}"
 
-        # Validate version
         version = header.find('version')
         if version is None or version.text != '2.0':
             return False, f"Invalid version: expected 2.0, got {version.text if version is not None else 'None'}"
 
-        # Validate message type
         msg_type = header.find('type')
-        valid_types = list(MESSAGE_TYPES.values())
-        if msg_type is None or msg_type.text not in valid_types:
+        if msg_type is None or msg_type.text not in MESSAGE_TYPES.values():
             return False, f"Invalid message type: {msg_type.text if msg_type is not None else 'None'}"
 
         return True, None
@@ -108,7 +94,6 @@ class ReceiverV2:
             xml_content = body.decode('utf-8')
             print(f'[receiver_v2] Received message: {method.delivery_tag}')
 
-            # Parse XML
             try:
                 root = ET.fromstring(xml_content)
             except ET.ParseError as error:
@@ -117,7 +102,6 @@ class ReceiverV2:
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
-            # Validate XML
             valid, error = self.validate_xml_message(root)
             if not valid:
                 print(f'[receiver_v2] Validation error: {error}')
@@ -125,19 +109,14 @@ class ReceiverV2:
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
-            # Extract header and body
             header = root.find('header')
             body_elem = root.find('body')
-
             message_id = header.find('message_id').text
             message_type = header.find('type').text
 
             print(f'[receiver_v2] Processing message type: {message_type}, ID: {message_id}')
-
-            # Route message
             self.route_message(header, body_elem)
 
-            # Acknowledge
             ch.basic_ack(delivery_tag=method.delivery_tag)
             print(f'[receiver_v2] Message processed successfully: {message_id}')
 
@@ -148,21 +127,28 @@ class ReceiverV2:
     def route_message(self, header, body):
         """Route message to appropriate handler"""
         msg_type = header.find('type').text
-
-        if msg_type == MESSAGE_TYPES['NEW_REGISTRATION']:
-            self.handle_new_registration(header, body)
-        elif msg_type == MESSAGE_TYPES['PAYMENT_REGISTERED']:
-            self.handle_payment_registered(header, body)
-        elif msg_type == MESSAGE_TYPES['BADGE_SCANNED']:
-            self.handle_badge_scanned(header, body)
-        elif msg_type == MESSAGE_TYPES['SESSION_UPDATE']:
-            self.handle_session_update(header, body)
-        elif msg_type == MESSAGE_TYPES['INVOICE_STATUS']:
-            self.handle_invoice_status(header, body)
-        elif msg_type == MESSAGE_TYPES['MAILING_STATUS']:
-            self.handle_mailing_status(header, body)
+        handlers = {
+            MESSAGE_TYPES['NEW_REGISTRATION']: self.handle_new_registration,
+            MESSAGE_TYPES['PAYMENT_REGISTERED']: self.handle_payment_registered,
+            MESSAGE_TYPES['BADGE_SCANNED']: self.handle_badge_scanned,
+            MESSAGE_TYPES['SESSION_UPDATE']: self.handle_session_update,
+            MESSAGE_TYPES['INVOICE_STATUS']: self.handle_invoice_status,
+            MESSAGE_TYPES['MAILING_STATUS']: self.handle_mailing_status,
+        }
+        handler = handlers.get(msg_type)
+        if handler:
+            handler(header, body)
         else:
             print(f'[receiver_v2] Unknown message type: {msg_type}')
+
+    def _find_contact_by_email(self, email):
+        """Return Salesforce Contact Id by email, or None"""
+        result = self.sf.api_call(
+            lambda conn: conn.query(f"SELECT Id FROM Contact WHERE Email = '{email}' LIMIT 1")
+        )
+        if result and result.get('records'):
+            return result['records'][0]['Id']
+        return None
 
     def handle_new_registration(self, header, body):
         """Handle new_registration message"""
@@ -184,33 +170,27 @@ class ReceiverV2:
                 print(f'[receiver_v2] DRY RUN: Would create Contact: {contact_data}')
                 return
 
-            # Create Contact
-            contact_result = self.sf.api_call('POST', '/sobjects/Contact', contact_data)
-            print(f"[receiver_v2] Created Contact: {contact_result.get('id')}")
+            contact_result = self.sf.api_call(lambda conn: conn.Contact.create(contact_data))
+            contact_id = contact_result.get('id')
+            print(f'[receiver_v2] Created Contact: {contact_id}')
 
-            # Check if company linked
             is_company_linked = self.get_element_text(customer, 'is_company_linked')
-            if is_company_linked in ('true', 'True', True):
+            if is_company_linked in ('true', 'True'):
                 address = customer.find('address')
                 account_data = {
-                    'Name': self.get_element_text(customer, 'company_name'),
-                    'BillingStreet': self.get_element_text(address, 'street') if address is not None else None,
-                    'BillingCity': self.get_element_text(address, 'city') if address is not None else None,
-                    'BillingPostalCode': self.get_element_text(address, 'postal_code') if address is not None else None,
-                    'BillingCountry': self.get_element_text(address, 'country') if address is not None else None,
-                    'Description': f"Company for customer: {self.get_element_text(customer, 'first_name')} {self.get_element_text(customer, 'last_name')}"
+                    k: v for k, v in {
+                        'Name': self.get_element_text(customer, 'company_name'),
+                        'BillingStreet': self.get_element_text(address, 'street') if address is not None else None,
+                        'BillingCity': self.get_element_text(address, 'city') if address is not None else None,
+                        'BillingPostalCode': self.get_element_text(address, 'postal_code') if address is not None else None,
+                        'BillingCountry': self.get_element_text(address, 'country') if address is not None else None,
+                    }.items() if v is not None
                 }
+                account_result = self.sf.api_call(lambda conn: conn.Account.create(account_data))
+                account_id = account_result.get('id')
+                print(f'[receiver_v2] Created Account: {account_id}')
 
-                # Remove None values
-                account_data = {k: v for k, v in account_data.items() if v is not None}
-
-                account_result = self.sf.api_call('POST', '/sobjects/Account', account_data)
-                print(f"[receiver_v2] Created Account: {account_result.get('id')}")
-
-                # Link Contact to Account
-                self.sf.api_call('PATCH', f"/sobjects/Contact/{contact_result.get('id')}", {
-                    'AccountId': account_result.get('id')
-                })
+                self.sf.api_call(lambda conn: conn.Contact.update(contact_id, {'AccountId': account_id}))
                 print('[receiver_v2] Linked Contact to Account')
 
         except Exception as error:
@@ -225,7 +205,12 @@ class ReceiverV2:
 
             task_data = {
                 'Subject': f"Payment registered for invoice: {self.get_element_text(invoice, 'id')}",
-                'Description': f"Payment Method: {self.get_element_text(transaction, 'payment_method')}\nAmount Paid: {self.get_element_text(invoice, 'amount_paid')}\nDue Date: {self.get_element_text(invoice, 'due_date')}\nStatus: {self.get_element_text(invoice, 'status')}",
+                'Description': (
+                    f"Payment Method: {self.get_element_text(transaction, 'payment_method')}\n"
+                    f"Amount Paid: {self.get_element_text(invoice, 'amount_paid')}\n"
+                    f"Due Date: {self.get_element_text(invoice, 'due_date')}\n"
+                    f"Status: {self.get_element_text(invoice, 'status')}"
+                ),
                 'Status': 'Completed',
                 'Type': 'Payment',
                 'ActivityDate': datetime.now().date().isoformat()
@@ -235,15 +220,14 @@ class ReceiverV2:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
-            # Try to find Contact by email
             email = self.get_element_text(body, 'email')
             if email:
-                contacts = self.sf.api_call('GET', f"/query?q=SELECT%20Id%20FROM%20Contact%20WHERE%20Email='{email}'")
-                if contacts.get('records') and len(contacts['records']) > 0:
-                    task_data['WhoId'] = contacts['records'][0]['Id']
+                contact_id = self._find_contact_by_email(email)
+                if contact_id:
+                    task_data['WhoId'] = contact_id
 
-            task_result = self.sf.api_call('POST', '/sobjects/Task', task_data)
-            print(f"[receiver_v2] Created Task for payment: {task_result.get('id')}")
+            result = self.sf.api_call(lambda conn: conn.Task.create(task_data))
+            print(f"[receiver_v2] Created Task for payment: {result.get('id')}")
 
         except Exception as error:
             print(f'[receiver_v2] Error in handle_payment_registered: {str(error)}')
@@ -254,9 +238,13 @@ class ReceiverV2:
         try:
             task_data = {
                 'Subject': f"Badge scanned: {self.get_element_text(body, 'badge_id')}",
-                'Description': f"Scan Type: {self.get_element_text(body, 'scan_type')}\nLocation: {self.get_element_text(body, 'location')}\nEmail: {self.get_element_text(body, 'email')}",
+                'Description': (
+                    f"Scan Type: {self.get_element_text(body, 'scan_type')}\n"
+                    f"Location: {self.get_element_text(body, 'location')}\n"
+                    f"Email: {self.get_element_text(body, 'email')}"
+                ),
                 'Status': 'Completed',
-                'Type': 'Badge Scan',
+                'Type': 'Other',
                 'ActivityDate': datetime.now().date().isoformat()
             }
 
@@ -264,15 +252,14 @@ class ReceiverV2:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
-            # Try to find Contact by email
             email = self.get_element_text(body, 'email')
             if email:
-                contacts = self.sf.api_call('GET', f"/query?q=SELECT%20Id%20FROM%20Contact%20WHERE%20Email='{email}'")
-                if contacts.get('records') and len(contacts['records']) > 0:
-                    task_data['WhoId'] = contacts['records'][0]['Id']
+                contact_id = self._find_contact_by_email(email)
+                if contact_id:
+                    task_data['WhoId'] = contact_id
 
-            task_result = self.sf.api_call('POST', '/sobjects/Task', task_data)
-            print(f"[receiver_v2] Created Task for badge scan: {task_result.get('id')}")
+            result = self.sf.api_call(lambda conn: conn.Task.create(task_data))
+            print(f"[receiver_v2] Created Task for badge scan: {result.get('id')}")
 
         except Exception as error:
             print(f'[receiver_v2] Error in handle_badge_scanned: {str(error)}')
@@ -283,9 +270,14 @@ class ReceiverV2:
         try:
             task_data = {
                 'Subject': f"Session update: {self.get_element_text(body, 'session_name')}",
-                'Description': f"Speaker: {self.get_element_text(body, 'speaker')}\nStart Time: {self.get_element_text(body, 'start_time')}\nEnd Time: {self.get_element_text(body, 'end_time')}\nStatus: {self.get_element_text(body, 'status')}",
+                'Description': (
+                    f"Speaker: {self.get_element_text(body, 'speaker')}\n"
+                    f"Start Time: {self.get_element_text(body, 'start_time')}\n"
+                    f"End Time: {self.get_element_text(body, 'end_time')}\n"
+                    f"Status: {self.get_element_text(body, 'status')}"
+                ),
                 'Status': 'Completed',
-                'Type': 'Session',
+                'Type': 'Other',
                 'ActivityDate': datetime.now().date().isoformat()
             }
 
@@ -293,8 +285,8 @@ class ReceiverV2:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
-            task_result = self.sf.api_call('POST', '/sobjects/Task', task_data)
-            print(f"[receiver_v2] Created Task for session update: {task_result.get('id')}")
+            result = self.sf.api_call(lambda conn: conn.Task.create(task_data))
+            print(f"[receiver_v2] Created Task for session update: {result.get('id')}")
 
         except Exception as error:
             print(f'[receiver_v2] Error in handle_session_update: {str(error)}')
@@ -307,9 +299,12 @@ class ReceiverV2:
 
             task_data = {
                 'Subject': f"Invoice status update: {self.get_element_text(invoice, 'id')}",
-                'Description': f"Status: {self.get_element_text(invoice, 'status')}\nAmount Paid: {self.get_element_text(invoice, 'amount_paid')}",
+                'Description': (
+                    f"Status: {self.get_element_text(invoice, 'status')}\n"
+                    f"Amount Paid: {self.get_element_text(invoice, 'amount_paid')}"
+                ),
                 'Status': 'Completed',
-                'Type': 'Invoice',
+                'Type': 'Other',
                 'ActivityDate': datetime.now().date().isoformat()
             }
 
@@ -317,15 +312,14 @@ class ReceiverV2:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
-            # Try to find Contact by email
             email = self.get_element_text(body, 'email')
             if email:
-                contacts = self.sf.api_call('GET', f"/query?q=SELECT%20Id%20FROM%20Contact%20WHERE%20Email='{email}'")
-                if contacts.get('records') and len(contacts['records']) > 0:
-                    task_data['WhoId'] = contacts['records'][0]['Id']
+                contact_id = self._find_contact_by_email(email)
+                if contact_id:
+                    task_data['WhoId'] = contact_id
 
-            task_result = self.sf.api_call('POST', '/sobjects/Task', task_data)
-            print(f"[receiver_v2] Created Task for invoice status: {task_result.get('id')}")
+            result = self.sf.api_call(lambda conn: conn.Task.create(task_data))
+            print(f"[receiver_v2] Created Task for invoice status: {result.get('id')}")
 
         except Exception as error:
             print(f'[receiver_v2] Error in handle_invoice_status: {str(error)}')
@@ -336,9 +330,13 @@ class ReceiverV2:
         try:
             task_data = {
                 'Subject': f"Mailing status: {self.get_element_text(body, 'mailing_id')}",
-                'Description': f"Status: {self.get_element_text(body, 'status')}\nDelivered: {self.get_element_text(body, 'delivered')}\nBounced: {self.get_element_text(body, 'bounced')}",
+                'Description': (
+                    f"Status: {self.get_element_text(body, 'status')}\n"
+                    f"Delivered: {self.get_element_text(body, 'delivered')}\n"
+                    f"Bounced: {self.get_element_text(body, 'bounced')}"
+                ),
                 'Status': 'Completed',
-                'Type': 'Mailing',
+                'Type': 'Other',
                 'ActivityDate': datetime.now().date().isoformat()
             }
 
@@ -346,8 +344,8 @@ class ReceiverV2:
                 print(f'[receiver_v2] DRY RUN: Would create Task: {task_data}')
                 return
 
-            task_result = self.sf.api_call('POST', '/sobjects/Task', task_data)
-            print(f"[receiver_v2] Created Task for mailing status: {task_result.get('id')}")
+            result = self.sf.api_call(lambda conn: conn.Task.create(task_data))
+            print(f"[receiver_v2] Created Task for mailing status: {result.get('id')}")
 
         except Exception as error:
             print(f'[receiver_v2] Error in handle_mailing_status: {str(error)}')
@@ -361,7 +359,6 @@ class ReceiverV2:
                 'error_reason': reason,
                 'timestamp': datetime.now().isoformat(),
             }
-
             ch.basic_publish(
                 exchange='',
                 routing_key=DEAD_LETTER_QUEUE,
@@ -395,7 +392,6 @@ def main():
     """Main entry point"""
     receiver = ReceiverV2()
 
-    # Setup signal handlers
     signal.signal(signal.SIGINT, receiver.shutdown)
     signal.signal(signal.SIGTERM, receiver.shutdown)
 
