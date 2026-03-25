@@ -158,34 +158,70 @@ class ReceiverV2:
                 print('[receiver_v2] Missing customer element in body')
                 return
 
-            contact_data = {
+            address = customer.find('address')
+            reg_fee = customer.find('registration_fee')
+
+            # Build mailing address
+            street = self.get_element_text(address, 'street')
+            number = self.get_element_text(address, 'number')
+            mailing_street = f"{street} {number}".strip() if street else None
+
+            # Build description with non-standard fields
+            description_parts = [
+                f"user_id: {self.get_element_text(customer, 'id')}",
+                f"type_user: {self.get_element_text(customer, 'type_user')}",
+                f"badge_id: {self.get_element_text(customer, 'badge_id')}",
+                f"registration_date: {self.get_element_text(customer, 'registration_date')}",
+            ]
+            if reg_fee is not None:
+                amount = self.get_element_text(reg_fee, 'amount')
+                currency = reg_fee.find('amount').get('currency', 'eur') if reg_fee.find('amount') is not None else 'eur'
+                paid = self.get_element_text(reg_fee, 'paid')
+                description_parts.append(f"registration_fee: {amount} {currency} - paid: {paid}")
+
+            contact_data = {k: v for k, v in {
                 'FirstName': self.get_element_text(customer, 'first_name'),
                 'LastName': self.get_element_text(customer, 'last_name'),
                 'Email': self.get_element_text(customer, 'email'),
                 'Phone': self.get_element_text(customer, 'phone'),
-                'Description': f"New registration from message: {header.find('message_id').text}"
-            }
+                'Birthdate': self.get_element_text(customer, 'date_of_birth'),
+                'MailingStreet': mailing_street,
+                'MailingCity': self.get_element_text(address, 'city') if address is not None else None,
+                'MailingPostalCode': self.get_element_text(address, 'postal_code') if address is not None else None,
+                'MailingCountryCode': self.get_element_text(address, 'country').upper() if address is not None and self.get_element_text(address, 'country') else None,
+                'Description': '\n'.join(description_parts),
+            }.items() if v is not None}
 
             if not self.sf.is_connected:
-                print(f'[receiver_v2] DRY RUN: Would create Contact: {contact_data}')
+                print(f'[receiver_v2] DRY RUN: Would upsert Contact: {contact_data}')
                 return
 
-            contact_result = self.sf.api_call(lambda conn: conn.Contact.create(contact_data))
-            contact_id = contact_result.get('id')
-            print(f'[receiver_v2] Created Contact: {contact_id}')
+            # Upsert: update if email exists, create otherwise
+            email = contact_data.get('Email')
+            existing_id = self._find_contact_by_email(email) if email else None
+
+            if existing_id:
+                self.sf.api_call(lambda conn: conn.Contact.update(existing_id, contact_data))
+                contact_id = existing_id
+                print(f'[receiver_v2] Updated Contact: {contact_id}')
+            else:
+                contact_result = self.sf.api_call(
+                    lambda conn: conn.Contact.create(
+                        contact_data,
+                        headers={'Sforce-Duplicate-Rule-Header': 'allowSave=true'}
+                    )
+                )
+                contact_id = contact_result.get('id')
+                print(f'[receiver_v2] Created Contact: {contact_id}')
 
             is_company_linked = self.get_element_text(customer, 'is_company_linked')
-            if is_company_linked in ('true', 'True'):
-                address = customer.find('address')
-                account_data = {
-                    k: v for k, v in {
-                        'Name': self.get_element_text(customer, 'company_name'),
-                        'BillingStreet': self.get_element_text(address, 'street') if address is not None else None,
-                        'BillingCity': self.get_element_text(address, 'city') if address is not None else None,
-                        'BillingPostalCode': self.get_element_text(address, 'postal_code') if address is not None else None,
-                        'BillingCountry': self.get_element_text(address, 'country') if address is not None else None,
-                    }.items() if v is not None
-                }
+            if is_company_linked == 'true':
+                btw_number = self.get_element_text(customer, 'btw_number')
+                account_data = {k: v for k, v in {
+                    'Name': self.get_element_text(customer, 'company_name'),
+                    'Description': f"btw_number: {btw_number}" if btw_number else None,
+                }.items() if v is not None}
+
                 account_result = self.sf.api_call(lambda conn: conn.Account.create(account_data))
                 account_id = account_result.get('id')
                 print(f'[receiver_v2] Created Account: {account_id}')
