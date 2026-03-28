@@ -13,7 +13,7 @@ on:
 jobs:
   build-and-push:
     name: Build and Push Docker Image
-    needs: [] # Placeholder: Vul hier de namen in van test-jobs als die aan deze file worden toegevoegd
+    needs: [ci.yml] # Placeholder: Vul hier de namen in van test-jobs als die aan deze file worden toegevoegd
     runs-on: ubuntu-latest
     permissions:
       contents: read
