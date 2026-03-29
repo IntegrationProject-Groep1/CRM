@@ -14,33 +14,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
-          cache: "pip"
+          node-version: "20"
+          cache: "npm"
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install flake8
+        run: npm ci
 
-      - name: Lint with flake8
-        run: |
-          flake8 src/ --max-line-length=120 --extend-ignore=E501 --exclude=__pycache__ --statistics
+      - name: Lint with ESLint
+        run: npm run lint
 
       - name: Check syntax
         run: |
-          python -m py_compile src/sender.py
-          python -m py_compile src/receiver_v2.py
-          python -m py_compile src/heartbeat_v2.py
-          python -m py_compile src/sf_connection.py
-          echo "All files compile successfully"
-
-      - name: Install pytest
-        run: pip install pytest
+          node --check src/sfConnection.js
+          node --check src/sender.js
+          node --check src/receiver.js
+          node --check src/heartbeat.js
+          echo "All files syntax OK"
 
       - name: Run unit tests
-        run: |
-          python -m pytest tests/ -v
+        run: npm test
