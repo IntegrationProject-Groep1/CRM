@@ -2,19 +2,17 @@ name: Deploy Pipeline
 
 on:
   workflow_run:
-    workflows: ["CI Pipeline"]
+    workflows: ["CI"] # He listens here to the name of file 1 (has to be exact)
     types:
       - completed
 
 jobs:
   build-and-push:
     name: Build and Push Docker Image
-    # Only runs if CI passed on main, prod, or a version tag.
+    # Only runs if CI passed and the branch is main, prod, or a version tag
     if: >
       github.event.workflow_run.conclusion == 'success' &&
-      (startsWith(github.event.workflow_run.head_branch, 'v') ||
-       github.event.workflow_run.head_branch == 'main' ||
-       github.event.workflow_run.head_branch == 'prod')
+      startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,6 +22,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          #  Takes the code of the exact commit that just happened and succeeded
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Lowercase repo name
