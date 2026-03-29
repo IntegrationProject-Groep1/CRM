@@ -1,20 +1,20 @@
-name: CI/CD Pipeline
+name: Deploy Pipeline
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["CI Pipeline"]
     types:
       - completed
-    branches:
-      - main
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   build-and-push:
     name: Build and Push Docker Image
-    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
+    # Only runs if CI passed on main, prod, or a version tag.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      (startsWith(github.event.workflow_run.head_branch, 'v') ||
+       github.event.workflow_run.head_branch == 'main' ||
+       github.event.workflow_run.head_branch == 'prod')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -23,11 +23,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      # STAP: Forceer repository naam naar lowercase voor Docker
       - name: Lowercase repo name
-        run: |
-          echo "REPO_LOWER=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+        id: repo_name
+        run: echo "value=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -41,7 +42,6 @@ jobs:
         with:
           context: .
           push: true
-          # Geef automatisch tags op basis van de repository naam en de git tag/branch
           tags: |
-            ghcr.io/${{ env.REPO_LOWER }}:latest
-            ghcr.io/${{ env.REPO_LOWER }}:${{ github.ref_name }}
+            ghcr.io/${{ steps.repo_name.outputs.value }}:latest
+            ghcr.io/${{ steps.repo_name.outputs.value }}:${{ github.event.workflow_run.head_branch }}
