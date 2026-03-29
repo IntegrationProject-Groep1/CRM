@@ -154,6 +154,160 @@ class CRMSender {
     }
   }
 
+  // ── Kassa outbound flows ────────────────────────────────────────────────────
+
+  buildNewRegistrationForKassaXml(data) {
+    const messageId = `reg-crm-${uuidv4()}`;
+    const timestamp = new Date().toISOString();
+
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(messageId);
+    header.ele('type').txt('new_registration');
+    header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
+    if (data.correlation_id) {
+      header.ele('correlation_id').txt(data.correlation_id);
+    }
+
+    const body = root.ele('body');
+    const customer = body.ele('customer');
+    customer.ele('email').txt(data.customer.email);
+
+    const contact = customer.ele('contact');
+    contact.ele('first_name').txt(data.customer.first_name);
+    contact.ele('last_name').txt(data.customer.last_name);
+
+    if (data.customer.company_name) {
+      customer.ele('company_name').txt(data.customer.company_name);
+    }
+    customer.ele('type').txt(data.customer.type || 'private');
+    if (data.customer.vat_number) {
+      customer.ele('vat_number').txt(data.customer.vat_number);
+    }
+    customer.ele('user_id').txt(data.customer.user_id);
+    customer.ele('age').txt(String(data.customer.age));
+
+    const paymentDue = body.ele('payment_due');
+    paymentDue.ele('amount').txt(String(data.payment_due.amount));
+    paymentDue.ele('status').txt(data.payment_due.status || 'unpaid');
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendNewRegistrationToKassa(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildNewRegistrationForKassaXml(data);
+      const queue = 'kassa.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      console.log(`New registration forwarded to queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send new registration to Kassa: ${error}`);
+      throw error;
+    }
+  }
+
+  buildProfileUpdateXml(data) {
+    const messageId = `prof-crm-${uuidv4()}`;
+    const timestamp = new Date().toISOString();
+
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(messageId);
+    header.ele('type').txt('profile_update');
+    header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
+    if (data.correlation_id) {
+      header.ele('correlation_id').txt(data.correlation_id);
+    }
+
+    const body = root.ele('body');
+    body.ele('user_id').txt(data.user_id);
+    body.ele('email').txt(data.email);
+
+    const contact = body.ele('contact');
+    contact.ele('first_name').txt(data.first_name);
+    contact.ele('last_name').txt(data.last_name);
+
+    if (data.company_name) body.ele('company_name').txt(data.company_name);
+    body.ele('age').txt(String(data.age));
+    body.ele('type').txt(data.type || 'private');
+    if (data.vat_number) body.ele('vat_number').txt(data.vat_number);
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendProfileUpdateToKassa(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildProfileUpdateXml(data);
+      const queue = 'kassa.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      console.log(`Profile update forwarded to queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send profile update to Kassa: ${error}`);
+      throw error;
+    }
+  }
+
+  buildCancelRegistrationXml(data) {
+    const messageId = `cancel-crm-${uuidv4()}`;
+    const timestamp = new Date().toISOString();
+
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(messageId);
+    header.ele('type').txt('cancel_registration');
+    header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
+    if (data.correlation_id) {
+      header.ele('correlation_id').txt(data.correlation_id);
+    }
+
+    const body = root.ele('body');
+    body.ele('user_id').txt(data.user_id);
+    body.ele('session_id').txt(data.session_id);
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendCancelRegistrationToKassa(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildCancelRegistrationXml(data);
+      const queue = 'kassa.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      console.log(`Cancel registration forwarded to queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send cancel registration to Kassa: ${error}`);
+      throw error;
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+
   async close() {
     try {
       if (this.connection) await this.connection.close();

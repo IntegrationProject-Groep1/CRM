@@ -4,8 +4,10 @@ require('dotenv').config();
 const amqp = require('amqplib');
 const { XMLParser } = require('fast-xml-parser');
 const SFConnection = require('./sfConnection');
+const CRMSender = require('./sender');
 
 const QUEUE_NAME = 'crm.incoming';
+const KASSA_QUEUE = 'kassa.payments';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
 
 const MESSAGE_TYPES = {
@@ -15,6 +17,11 @@ const MESSAGE_TYPES = {
   SESSION_UPDATE: 'session_update',
   INVOICE_STATUS: 'invoice_status',
   MAILING_STATUS: 'mailing_status',
+  // Kassa → CRM (via kassa.payments)
+  CONSUMPTION_ORDER: 'consumption_order',
+  BADGE_ASSIGNED: 'badge_assigned',
+  REFUND_PROCESSED: 'refund_processed',
+  INVOICE_REQUEST: 'invoice_request',
 };
 
 const parser = new XMLParser({
@@ -30,11 +37,13 @@ class ReceiverV2 {
     this.connection = null;
     this.channel = null;
     this.sf = new SFConnection();
+    this.sender = new CRMSender();
     this.running = true;
   }
 
   async start() {
     await this.sf.init();
+    await this.sender.init();
     await this.connectRabbitMQ();
   }
 
@@ -50,10 +59,11 @@ class ReceiverV2 {
         this.channel = await this.connection.createChannel();
 
         await this.channel.assertQueue(QUEUE_NAME, { durable: true });
+        await this.channel.assertQueue(KASSA_QUEUE, { durable: true });
         await this.channel.assertQueue(DEAD_LETTER_QUEUE, { durable: true });
         await this.channel.prefetch(1);
 
-        this.channel.consume(QUEUE_NAME, async (msg) => {
+        const consume = async (msg) => {
           if (msg) {
             try {
               await this.handleMessage(msg);
@@ -61,9 +71,12 @@ class ReceiverV2 {
               console.log(`[receiver] Unhandled error in message handler: ${err}`);
             }
           }
-        }, { noAck: false });
+        };
 
-        console.log(`[receiver] Connected to RabbitMQ, listening on queue: ${QUEUE_NAME}`);
+        this.channel.consume(QUEUE_NAME, consume, { noAck: false });
+        this.channel.consume(KASSA_QUEUE, consume, { noAck: false });
+
+        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}`);
 
         await new Promise((resolve, reject) => {
           this.connection.on('error', reject);
@@ -155,6 +168,10 @@ class ReceiverV2 {
       [MESSAGE_TYPES.SESSION_UPDATE]: () => this.handleSessionUpdate(header, body),
       [MESSAGE_TYPES.INVOICE_STATUS]: () => this.handleInvoiceStatus(header, body),
       [MESSAGE_TYPES.MAILING_STATUS]: () => this.handleMailingStatus(header, body),
+      [MESSAGE_TYPES.CONSUMPTION_ORDER]: () => this.handleConsumptionOrder(header, body),
+      [MESSAGE_TYPES.BADGE_ASSIGNED]: () => this.handleBadgeAssigned(header, body),
+      [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body),
+      [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -260,6 +277,38 @@ class ReceiverV2 {
         await this.sf.apiCall(conn => conn.sobject('Contact').update({ Id: contactId, AccountId: accountId }));
         console.log('[receiver] Linked Contact to Account');
       }
+
+      // Forward new_registration to kassa.incoming in Kassa's required format
+      const userId = ReceiverV2.getElementText(customer, 'id');
+      const typeUser = ReceiverV2.getElementText(customer, 'type_user');
+      const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
+      const age = dateOfBirth
+        ? new Date().getFullYear() - new Date(dateOfBirth).getFullYear()
+        : null;
+
+      if (userId && age !== null) {
+        const kassaPayload = {
+          customer: {
+            email: ReceiverV2.getElementText(customer, 'email'),
+            first_name: ReceiverV2.getElementText(customer, 'first_name'),
+            last_name: ReceiverV2.getElementText(customer, 'last_name'),
+            user_id: userId,
+            type: isCompanyLinked === 'true' ? 'company' : (typeUser || 'private'),
+            company_name: ReceiverV2.getElementText(customer, 'company_name'),
+            vat_number: ReceiverV2.getElementText(customer, 'btw_number'),
+            age,
+          },
+          payment_due: {
+            amount: regFee ? (typeof regFee.amount === 'object' ? regFee.amount['#text'] : regFee.amount) : '0',
+            status: regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'unpaid',
+          },
+          correlation_id: header.message_id,
+        };
+        await this.sender.sendNewRegistrationToKassa(kassaPayload);
+      } else {
+        console.log('[receiver] Skipping Kassa forward: missing user_id or date_of_birth for age calculation');
+      }
+
     } catch (err) {
       console.log(`[receiver] Error in handleNewRegistration: ${err}`);
       throw err;
@@ -270,15 +319,22 @@ class ReceiverV2 {
     try {
       const invoice = body ? body.invoice : null;
       const transaction = body ? body.transaction : null;
+      const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+
+      const amountVal = invoice ? invoice.amount_paid : null;
+      const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
 
       const taskData = {
-        Subject: `Payment registered for invoice: ${ReceiverV2.getElementText(invoice, 'id')}`,
+        Subject: `Payment registered [${paymentContext}] invoice: ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
         Description: [
+          `Context: ${paymentContext}`,
           `Payment Method: ${ReceiverV2.getElementText(transaction, 'payment_method')}`,
-          `Amount Paid: ${ReceiverV2.getElementText(invoice, 'amount_paid')}`,
+          `Amount Paid: ${amountPaid}`,
           `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
           `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
-        ].join('\n'),
+          userId ? `User ID: ${userId}` : null,
+        ].filter(Boolean).join('\n'),
         Status: 'Completed',
         Type: 'Payment',
         ActivityDate: new Date().toISOString().split('T')[0],
@@ -289,14 +345,18 @@ class ReceiverV2 {
         return;
       }
 
+      // Try to link to contact via email (crm.incoming) or user_id lookup (kassa.payments)
       const email = ReceiverV2.getElementText(body, 'email');
       if (email) {
         const contactId = await this._findContactByEmail(email);
         if (contactId) taskData.WhoId = contactId;
+      } else if (userId) {
+        const contactId = await this._findContactByUserId(userId);
+        if (contactId) taskData.WhoId = contactId;
       }
 
       const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
-      console.log(`[receiver] Created Task for payment: ${result?.id}`);
+      console.log(`[receiver] Created Task for payment [${paymentContext}]: ${result?.id}`);
     } catch (err) {
       console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
       throw err;
@@ -425,6 +485,203 @@ class ReceiverV2 {
     }
   }
 
+  async _findContactByUserId(userId) {
+    const safeId = userId.replace(/'/g, "\\'");
+    const result = await this.sf.apiCall(
+      conn => conn.query(`SELECT Id FROM Contact WHERE user_id__c = '${safeId}' LIMIT 1`)
+    );
+    if (result && result.records && result.records.length > 0) {
+      return result.records[0].Id;
+    }
+    return null;
+  }
+
+  async handleConsumptionOrder(header, body) {
+    try {
+      const isAnonymous = ReceiverV2.getElementText(body, 'is_anonymous') === 'true';
+      const customer = body ? body.customer : null;
+      const items = body ? body.items : null;
+
+      const itemList = items
+        ? (Array.isArray(items.item) ? items.item : [items.item]).filter(Boolean)
+        : [];
+
+      const itemSummary = itemList.map(item => {
+        const unitPriceVal = item.unit_price;
+        const price = typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal;
+        const currency = typeof unitPriceVal === 'object' ? (unitPriceVal.currency || 'eur') : 'eur';
+        return `${item.quantity}x ${item.description} @ ${price} ${currency}`;
+      }).join(', ');
+
+      const taskData = {
+        Subject: `Consumption order${isAnonymous ? ' (anonymous)' : ''}: ${itemList.length} item(s)`,
+        Description: [
+          `Anonymous: ${isAnonymous}`,
+          `Items: ${itemSummary}`,
+          customer ? `Customer email: ${ReceiverV2.getElementText(customer, 'email')}` : null,
+          customer ? `User ID: ${ReceiverV2.getElementText(customer, 'user_id')}` : null,
+        ].filter(Boolean).join('\n'),
+        Status: 'Completed',
+        Type: 'Other',
+        ActivityDate: new Date().toISOString().split('T')[0],
+      };
+
+      if (!this.sf.isConnected) {
+        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        return;
+      }
+
+      if (!isAnonymous && customer) {
+        const email = ReceiverV2.getElementText(customer, 'email');
+        const userId = ReceiverV2.getElementText(customer, 'user_id');
+        const contactId = email
+          ? await this._findContactByEmail(email)
+          : (userId ? await this._findContactByUserId(userId) : null);
+        if (contactId) taskData.WhoId = contactId;
+      }
+
+      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
+      console.log(`[receiver] Created Task for consumption order: ${result?.id}`);
+    } catch (err) {
+      console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
+      throw err;
+    }
+  }
+
+  async handleBadgeAssigned(header, body) {
+    try {
+      const badgeId = ReceiverV2.getElementText(body, 'badge_id');
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const assignedAt = ReceiverV2.getElementText(body, 'assigned_at');
+
+      if (!this.sf.isConnected) {
+        console.log(`[receiver] DRY RUN: Would update Contact badge_id=${badgeId} for user_id=${userId}`);
+        return;
+      }
+
+      const contactId = userId ? await this._findContactByUserId(userId) : null;
+      if (contactId) {
+        await this.sf.apiCall(conn => conn.sobject('Contact').update({
+          Id: contactId,
+          Description: `badge_id: ${badgeId} assigned_at: ${assignedAt}`,
+        }));
+        console.log(`[receiver] Updated Contact ${contactId} with badge_id: ${badgeId}`);
+      } else {
+        console.log(`[receiver] Badge assigned but no Contact found for user_id: ${userId}`);
+      }
+    } catch (err) {
+      console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);
+      throw err;
+    }
+  }
+
+  async handleRefundProcessed(header, body) {
+    try {
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const refund = body ? body.refund : null;
+      const refundType = ReceiverV2.getElementText(body, 'refund_type');
+      const originalTxId = ReceiverV2.getElementText(body, 'original_transaction_id');
+
+      const amountVal = refund ? refund.amount : null;
+      const amount = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
+      const currency = typeof amountVal === 'object' ? (amountVal.currency || 'eur') : 'eur';
+
+      const walletVal = body ? body.new_wallet_balance : null;
+      const newWallet = typeof walletVal === 'object' ? walletVal['#text'] : walletVal;
+
+      const taskData = {
+        Subject: `Refund processed [${refundType}]: ${amount} ${currency}`,
+        Description: [
+          `Type: ${refundType}`,
+          `Amount: ${amount} ${currency}`,
+          `Method: ${ReceiverV2.getElementText(refund, 'method')}`,
+          `Reason: ${ReceiverV2.getElementText(refund, 'reason')}`,
+          `Description: ${ReceiverV2.getElementText(refund, 'description')}`,
+          `Original Transaction: ${originalTxId}`,
+          newWallet ? `New Wallet Balance: ${newWallet} ${currency}` : null,
+          userId ? `User ID: ${userId}` : null,
+        ].filter(Boolean).join('\n'),
+        Status: 'Completed',
+        Type: 'Other',
+        ActivityDate: new Date().toISOString().split('T')[0],
+      };
+
+      if (!this.sf.isConnected) {
+        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        return;
+      }
+
+      if (userId) {
+        const contactId = await this._findContactByUserId(userId);
+        if (contactId) taskData.WhoId = contactId;
+      }
+
+      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
+      console.log(`[receiver] Created Task for refund: ${result?.id}`);
+    } catch (err) {
+      console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
+      throw err;
+    }
+  }
+
+  async handleInvoiceRequestFromKassa(header, body) {
+    try {
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const invoiceData = body ? body.invoice_data : null;
+      const address = invoiceData ? invoiceData.address : null;
+
+      const taskData = {
+        Subject: `Invoice request from Kassa for user: ${userId}`,
+        Description: [
+          `User ID: ${userId}`,
+          `Name: ${ReceiverV2.getElementText(invoiceData, 'first_name')} ${ReceiverV2.getElementText(invoiceData, 'last_name')}`,
+          `Email: ${ReceiverV2.getElementText(invoiceData, 'email')}`,
+          `VAT: ${ReceiverV2.getElementText(invoiceData, 'vat_number')}`,
+          address ? `Address: ${ReceiverV2.getElementText(address, 'street')} ${ReceiverV2.getElementText(address, 'number')}, ${ReceiverV2.getElementText(address, 'postal_code')} ${ReceiverV2.getElementText(address, 'city')}` : null,
+          `Correlation ID: ${header.correlation_id || 'N/A'}`,
+        ].filter(Boolean).join('\n'),
+        Status: 'Not Started',
+        Type: 'Other',
+        ActivityDate: new Date().toISOString().split('T')[0],
+      };
+
+      if (!this.sf.isConnected) {
+        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        return;
+      }
+
+      const email = ReceiverV2.getElementText(invoiceData, 'email');
+      if (email) {
+        const contactId = await this._findContactByEmail(email);
+        if (contactId) taskData.WhoId = contactId;
+      }
+
+      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
+      console.log(`[receiver] Created Task for Kassa invoice request: ${result?.id}`);
+
+      // Forward to facturatie queue
+      await this.sender.sendInvoiceRequest({
+        customer: {
+          email: ReceiverV2.getElementText(invoiceData, 'email'),
+          first_name: ReceiverV2.getElementText(invoiceData, 'first_name'),
+          last_name: ReceiverV2.getElementText(invoiceData, 'last_name'),
+        },
+        invoice: {
+          description: `Invoice request for user ${userId}`,
+          amount: 0,
+          currency: 'eur',
+          due_date: new Date().toISOString().split('T')[0],
+        },
+        items: [],
+        correlation_id: header.correlation_id || header.message_id,
+      });
+      console.log('[receiver] Invoice request forwarded to facturatie queue');
+    } catch (err) {
+      console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
+      throw err;
+    }
+  }
+
   sendToDeadLetter(originalBody, reason) {
     try {
       const deadLetterMessage = JSON.stringify({
@@ -457,6 +714,7 @@ class ReceiverV2 {
     this.running = false;
     if (this.channel) await this.channel.close();
     if (this.connection) await this.connection.close();
+    await this.sender.close();
     process.exit(0);
   }
 }
