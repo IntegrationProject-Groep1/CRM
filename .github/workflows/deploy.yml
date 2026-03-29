@@ -1,19 +1,20 @@
 name: CI/CD Pipeline
 
 on:
-  push:
-    tags:
-      - 'v*' # Trigger bij een nieuwe release tag (bijv. v1.0.1)
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
     branches:
       - main
-      - master
-      - prod
-      - production # Trigger bij een push of merge naar een van deze productie-branches
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build-and-push:
     name: Build and Push Docker Image
-    needs: [ci.yml] # Placeholder: Vul hier de namen in van test-jobs als die aan deze file worden toegevoegd
+    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

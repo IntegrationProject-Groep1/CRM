@@ -13,7 +13,7 @@
     "amqplib": "^0.10.4",
     "dotenv": "^16.4.5",
     "fast-xml-parser": "^4.4.1",
-    "jsforce": "^2.0.0",
+    "jsforce": "^3.0.0",
     "uuid": "^9.0.1",
     "xmlbuilder2": "^3.1.1"
   },
