@@ -9,7 +9,8 @@ on:
 jobs:
   build-and-push:
     name: Build and Push Docker Image
-    # Only deploy if CI was successful AND the trigger was a TAG (v*)
+    # Only deploy if the CI Pipeline was successful AND the trigger was a version tag (starts with 'v')
+    # This prevents development branches from being pushed to the production registry.
     if: >
       github.event.workflow_run.conclusion == 'success' && 
       (github.event.workflow_run.head_branch == null || 
@@ -23,15 +24,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # Check out the exact commit SHA that passed the CI
+          # Check out the specific commit SHA that passed the CI tests
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      # STEP: Force repository name to lowercase for Docker compatibility
       - name: Lowercase repo name
         id: repo_name
+        # Docker image names must be lowercase. This step converts 'User/Repo' to 'user/repo'.
         run: echo "value=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GitHub Container Registry (GHCR)
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -43,7 +44,11 @@ jobs:
         with:
           context: .
           push: true
-          # Tags: ':latest' for Watchtower to pull, and ':SHA' for version tracking
+          # THE FIX: We now provide three tags for the image:
+          # 1. ':latest' - For Watchtower to automatically pull the newest version.
+          # 2. ':vX.X.X' - Using the branch/tag name (e.g., v1.2.1) for easy rollbacks and identification.
+          # 3. ':SHA'    - Using the unique commit hash as a fallback for absolute version tracking.
           tags: |
             ghcr.io/${{ steps.repo_name.outputs.value }}:latest
+            ghcr.io/${{ steps.repo_name.outputs.value }}:${{ github.event.workflow_run.head_branch }}
             ghcr.io/${{ steps.repo_name.outputs.value }}:${{ github.event.workflow_run.head_sha }}
