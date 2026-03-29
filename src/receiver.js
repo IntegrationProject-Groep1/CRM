@@ -5,6 +5,7 @@ const amqp = require('amqplib');
 const { XMLParser } = require('fast-xml-parser');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
+const SupabaseService = require('./supabaseClient');
 
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
@@ -38,12 +39,14 @@ class ReceiverV2 {
     this.channel = null;
     this.sf = new SFConnection();
     this.sender = new CRMSender();
+    this.db = new SupabaseService();
     this.running = true;
   }
 
   async start() {
     await this.sf.init();
     await this.sender.init();
+    this.db.init();
     await this.connectRabbitMQ();
   }
 
@@ -258,6 +261,32 @@ class ReceiverV2 {
         console.log(`[receiver] Created Contact: ${contactId}`);
       }
 
+      // Upsert person into Supabase
+      const externalUserId = ReceiverV2.getElementText(customer, 'id');
+      const personPayload = {
+        external_user_id: externalUserId,
+        first_name: contactData.FirstName,
+        last_name: contactData.LastName,
+        email: contactData.Email,
+        phone: contactData.Phone || null,
+        date_of_birth: contactData.Birthdate || null,
+        street: address ? ReceiverV2.getElementText(address, 'street') : null,
+        house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
+        postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
+        city: address ? ReceiverV2.getElementText(address, 'city') : null,
+        country: address ? (ReceiverV2.getElementText(address, 'country') || 'Belgium') : 'Belgium',
+        person_type: ReceiverV2.getElementText(customer, 'type_user') || 'private',
+        salesforce_contact_id: contactId,
+        updated_at: new Date().toISOString(),
+      };
+      const sbPersonId = await this.db.upsertPerson(
+        Object.fromEntries(Object.entries(personPayload).filter(([, v]) => v !== null))
+      );
+      if (sbPersonId) {
+        console.log(`[supabase] Upserted person: ${sbPersonId}`);
+        await this.db.syncSalesforceStatus(sbPersonId, 'synced');
+      }
+
       const isCompanyLinked = ReceiverV2.getElementText(customer, 'is_company_linked');
       if (isCompanyLinked === 'true') {
         const btwNumber = ReceiverV2.getElementText(customer, 'btw_number');
@@ -276,6 +305,18 @@ class ReceiverV2 {
 
         await this.sf.apiCall(conn => conn.sobject('Contact').update({ Id: contactId, AccountId: accountId }));
         console.log('[receiver] Linked Contact to Account');
+
+        // Upsert company into Supabase
+        const companyPayload = {
+          name: rawAccountData.Name,
+          vat_number: btwNumber || null,
+          salesforce_account_id: accountId,
+          updated_at: new Date().toISOString(),
+        };
+        const sbCompanyId = await this.db.upsertCompany(
+          Object.fromEntries(Object.entries(companyPayload).filter(([, v]) => v !== null))
+        );
+        if (sbCompanyId) console.log(`[supabase] Upserted company: ${sbCompanyId}`);
       }
 
       // Forward new_registration to kassa.incoming in Kassa's required format
@@ -357,6 +398,23 @@ class ReceiverV2 {
 
       const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for payment [${paymentContext}]: ${result?.id}`);
+
+      // Insert payment into Supabase
+      let eventAttendeeId = null;
+      if (userId) {
+        const personId = await this.db.findPersonByExternalId(userId);
+        if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
+      }
+      const paymentPayload = {
+        amount: parseFloat(amountPaid) || 0,
+        payment_type: paymentContext === 'consumption' ? 'consumption' : 'registration',
+        status: 'completed',
+        payment_method: ReceiverV2.getElementText(transaction, 'payment_method') || null,
+        paid_at: new Date().toISOString(),
+      };
+      if (eventAttendeeId) paymentPayload.event_attendee_id = eventAttendeeId;
+      const sbPaymentId = await this.db.insertPayment(paymentPayload);
+      if (sbPaymentId) console.log(`[supabase] Inserted payment: ${sbPaymentId}`);
     } catch (err) {
       console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
       throw err;
@@ -390,6 +448,15 @@ class ReceiverV2 {
 
       const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for badge scan: ${result?.id}`);
+
+      // Record check-in time in Supabase
+      const scanEmail = ReceiverV2.getElementText(body, 'email');
+      if (scanEmail) {
+        const { data: person } = await (this.db.isConnected
+          ? this.db.client.from('people').select('id').eq('email', scanEmail).maybeSingle()
+          : Promise.resolve({ data: null }));
+        if (person) await this.db.updateEventAttendeeCheckIn(person.id);
+      }
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeScanned: ${err}`);
       throw err;
@@ -542,6 +609,32 @@ class ReceiverV2 {
 
       const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for consumption order: ${result?.id}`);
+
+      // Insert each item into Supabase consumptions (requires event_attendee_id)
+      if (!isAnonymous && customer) {
+        const userId = ReceiverV2.getElementText(customer, 'user_id');
+        let eventAttendeeId = null;
+        if (userId) {
+          const personId = await this.db.findPersonByExternalId(userId);
+          if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
+        }
+        if (eventAttendeeId) {
+          for (const item of itemList) {
+            const unitPriceVal = item.unit_price;
+            const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
+            const qty = parseInt(item.quantity, 10) || 1;
+            await this.db.insertConsumption({
+              event_attendee_id: eventAttendeeId,
+              item_name: String(item.description),
+              quantity: qty,
+              unit_price: unitPrice,
+              total_price: unitPrice * qty,
+              paid: false,
+            });
+          }
+          console.log(`[supabase] Inserted ${itemList.length} consumption(s) for attendee: ${eventAttendeeId}`);
+        }
+      }
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
       throw err;
