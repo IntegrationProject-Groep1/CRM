@@ -205,10 +205,6 @@ class ReceiverV2 {
       const address = customer.address || null;
       const regFee = customer.registration_fee || null;
 
-      const street = ReceiverV2.getElementText(address, 'street');
-      const number = ReceiverV2.getElementText(address, 'number');
-      const mailingStreet = street ? `${street} ${number || ''}`.trim() : null;
-
       const descriptionParts = [
         `user_id: ${ReceiverV2.getElementText(customer, 'user_id')}`,
         `type: ${ReceiverV2.getElementText(customer, 'type')}`,
@@ -635,7 +631,6 @@ class ReceiverV2 {
     try {
       const badgeId = ReceiverV2.getElementText(body, 'badge_id');
       const userId = ReceiverV2.getElementText(body, 'user_id');
-      const assignedAt = ReceiverV2.getElementText(body, 'assigned_at');
 
       if (!this.sf.isConnected) {
         console.log(`[receiver] DRY RUN: Would update User__c Badge_ID__c=${badgeId} for User_ID__c=${userId}`);
