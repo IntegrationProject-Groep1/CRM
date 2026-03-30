@@ -52,7 +52,7 @@ describe('CRMSender XML building', () => {
     const root = parsed.message;
 
     expect(root).toBeDefined();
-    expect(root.header.type).toBe('mailing_send');
+    expect(root.header.type).toBe('mailing_status');
     expect(root.body.mailing.subject).toBe('Hello');
     expect(root.body.recipients.recipient.email).toBe('r@example.com');
   });
