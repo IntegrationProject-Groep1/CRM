@@ -184,9 +184,9 @@ class ReceiverV2 {
     }
   }
 
-  async _findContactByEmail(email) {
+  async _findUserByEmail(email) {
     const result = await this.sf.apiCall(
-      conn => conn.query(`SELECT Id FROM Contact WHERE Email = '${email.replace(/'/g, "''")}' LIMIT 1`)
+      conn => conn.query(`SELECT Id FROM User__c WHERE Email__c = '${email.replace(/'/g, "''")}' LIMIT 1`)
     );
     if (result && result.records && result.records.length > 0) {
       return result.records[0].Id;
@@ -223,60 +223,59 @@ class ReceiverV2 {
         descriptionParts.push(`registration_fee: ${amount} ${currency} - paid: ${paid}`);
       }
 
-      const rawContactData = {
-        FirstName: ReceiverV2.getElementText(customer, 'first_name'),
-        LastName: ReceiverV2.getElementText(customer, 'last_name'),
-        Email: ReceiverV2.getElementText(customer, 'email'),
-        Phone: ReceiverV2.getElementText(customer, 'phone'),
-        Birthdate: ReceiverV2.getElementText(customer, 'date_of_birth'),
-        MailingStreet: mailingStreet,
-        MailingCity: address ? ReceiverV2.getElementText(address, 'city') : null,
-        MailingPostalCode: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
-        MailingCountryCode: address
-          ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null
-          : null,
-        Description: descriptionParts.join('\n'),
+      const externalUserId = ReceiverV2.getElementText(customer, 'user_id');
+      const isCompanyLinked = ReceiverV2.getElementText(customer, 'is_company_linked');
+      const rawType = ReceiverV2.getElementText(customer, 'type');
+      const userType = (isCompanyLinked === 'true' || rawType === 'company') ? 'Bedrijf' : 'Particulier';
+
+      const paymentStatus = regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'pending';
+      const amountVal = regFee ? regFee.amount : null;
+      const registrationAmount = typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || null);
+
+      const rawUserData = {
+        User_ID__c: externalUserId,
+        First_Name__c: ReceiverV2.getElementText(customer, 'first_name'),
+        Last_Name__c: ReceiverV2.getElementText(customer, 'last_name'),
+        Email__c: ReceiverV2.getElementText(customer, 'email'),
+        Birthdate__c: ReceiverV2.getElementText(customer, 'date_of_birth'),
+        User_Type__c: userType,
+        Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+        House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
+        Postal_Code__c: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
+        City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
+        Country_Code__c: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
+        Amount__c: registrationAmount ? parseFloat(registrationAmount) : null,
+        Payment_Status__c: paymentStatus,
+        Badge_ID__c: ReceiverV2.getElementText(customer, 'badge_id') || null,
+        Company_Name__c: isCompanyLinked === 'true' ? ReceiverV2.getElementText(customer, 'company_name') : null,
+        BTW_Number__c: isCompanyLinked === 'true' ? ReceiverV2.getElementText(customer, 'vat_number') : null,
       };
-      const contactData = Object.fromEntries(
-        Object.entries(rawContactData).filter(([, v]) => v !== null && v !== '')
+      const userData = Object.fromEntries(
+        Object.entries(rawUserData).filter(([, v]) => v !== null && v !== '')
       );
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would upsert Contact: ${JSON.stringify(contactData)}`);
-        return;
-      }
-
-      const email = contactData.Email;
-      const existingId = email ? await this._findContactByEmail(email) : null;
-
-      let contactId;
-      if (existingId) {
-        await this.sf.apiCall(conn => conn.sobject('Contact').update({ Id: existingId, ...contactData }));
-        contactId = existingId;
-        console.log(`[receiver] Updated Contact: ${contactId}`);
+        console.log(`[receiver] DRY RUN: Would upsert User__c: ${JSON.stringify(userData)}`);
       } else {
-        const contactResult = await this.sf.apiCall(conn => conn.sobject('Contact').create(contactData));
-        if (!contactResult) throw new Error('apiCall returned null creating Contact');
-        contactId = contactResult.id;
-        console.log(`[receiver] Created Contact: ${contactId}`);
+        const sfResult = await this.sf.apiCall(
+          conn => conn.sobject('User__c').upsert(userData, 'User_ID__c')
+        );
+        console.log(`[receiver] Upserted User__c: ${sfResult?.id || externalUserId}`);
       }
 
       // Upsert person into Supabase
-      const externalUserId = ReceiverV2.getElementText(customer, 'user_id');
       const personPayload = {
         external_user_id: externalUserId,
-        first_name: contactData.FirstName,
-        last_name: contactData.LastName,
-        email: contactData.Email,
-        phone: contactData.Phone || null,
-        date_of_birth: contactData.Birthdate || null,
-        street: address ? ReceiverV2.getElementText(address, 'street') : null,
-        house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
-        postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
-        city: address ? ReceiverV2.getElementText(address, 'city') : null,
-        country: address ? (ReceiverV2.getElementText(address, 'country') || 'Belgium') : 'Belgium',
-        person_type: ReceiverV2.getElementText(customer, 'type') || 'private',
-        salesforce_contact_id: contactId,
+        first_name: rawUserData.First_Name__c,
+        last_name: rawUserData.Last_Name__c,
+        email: rawUserData.Email__c,
+        date_of_birth: rawUserData.Birthdate__c || null,
+        street: rawUserData.Street__c || null,
+        house_number: rawUserData.House_Number__c || null,
+        postal_code: rawUserData.Postal_Code__c || null,
+        city: rawUserData.City__c || null,
+        country: rawUserData.Country_Code__c || null,
+        person_type: userType,
         updated_at: new Date().toISOString(),
       };
       const sbPersonId = await this.db.upsertPerson(
@@ -285,48 +284,6 @@ class ReceiverV2 {
       if (sbPersonId) {
         console.log(`[supabase] Upserted person: ${sbPersonId}`);
         await this.db.syncSalesforceStatus(sbPersonId, 'synced');
-      }
-
-      const isCompanyLinked = ReceiverV2.getElementText(customer, 'is_company_linked');
-      if (isCompanyLinked === 'true') {
-        const btwNumber = ReceiverV2.getElementText(customer, 'vat_number');
-        const rawAccountData = {
-          Name: ReceiverV2.getElementText(customer, 'company_name'),
-          Description: btwNumber ? `vat_number: ${btwNumber}` : null,
-        };
-        const accountData = Object.fromEntries(
-          Object.entries(rawAccountData).filter(([, v]) => v !== null)
-        );
-
-        const safeName = (accountData.Name || '').replace(/'/g, "''");
-        const existingAccount = await this.sf.apiCall(
-          conn => conn.query(`SELECT Id FROM Account WHERE Name = '${safeName}' LIMIT 1`)
-        );
-        let accountId = existingAccount?.records?.[0]?.Id;
-        if (accountId) {
-          await this.sf.apiCall(conn => conn.sobject('Account').update({ Id: accountId, ...accountData }));
-          console.log(`[receiver] Updated Account: ${accountId}`);
-        } else {
-          const accountResult = await this.sf.apiCall(conn => conn.sobject('Account').create(accountData));
-          if (!accountResult) throw new Error('apiCall returned null creating Account');
-          accountId = accountResult.id;
-          console.log(`[receiver] Created Account: ${accountId}`);
-        }
-
-        await this.sf.apiCall(conn => conn.sobject('Contact').update({ Id: contactId, AccountId: accountId }));
-        console.log('[receiver] Linked Contact to Account');
-
-        // Upsert company into Supabase
-        const companyPayload = {
-          name: rawAccountData.Name,
-          vat_number: btwNumber || null,
-          salesforce_account_id: accountId,
-          updated_at: new Date().toISOString(),
-        };
-        const sbCompanyId = await this.db.upsertCompany(
-          Object.fromEntries(Object.entries(companyPayload).filter(([, v]) => v !== null))
-        );
-        if (sbCompanyId) console.log(`[supabase] Upserted company: ${sbCompanyId}`);
       }
 
       // Forward new_registration to kassa.incoming in Kassa's required format
@@ -406,10 +363,10 @@ class ReceiverV2 {
       // Try to link to contact via email (crm.incoming) or user_id lookup (kassa.payments)
       const email = ReceiverV2.getElementText(body, 'email');
       if (email) {
-        const contactId = await this._findContactByEmail(email);
+        const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
       } else if (userId) {
-        const contactId = await this._findContactByUserId(userId);
+        const contactId = await this._findUserById(userId);
         if (contactId) taskData.WhoId = contactId;
       }
 
@@ -463,7 +420,7 @@ class ReceiverV2 {
 
       const email = ReceiverV2.getElementText(body, 'email');
       if (email) {
-        const contactId = await this._findContactByEmail(email);
+        const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
       }
 
@@ -542,7 +499,7 @@ class ReceiverV2 {
 
       const email = ReceiverV2.getElementText(body, 'email');
       if (email) {
-        const contactId = await this._findContactByEmail(email);
+        const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
       }
 
@@ -585,10 +542,10 @@ class ReceiverV2 {
     }
   }
 
-  async _findContactByUserId(userId) {
+  async _findUserById(userId) {
     const safeId = userId.replace(/'/g, "''");
     const result = await this.sf.apiCall(
-      conn => conn.query(`SELECT Id FROM Contact WHERE user_id__c = '${safeId}' LIMIT 1`)
+      conn => conn.query(`SELECT Id FROM User__c WHERE User_ID__c = '${safeId}' LIMIT 1`)
     );
     if (result && result.records && result.records.length > 0) {
       return result.records[0].Id;
@@ -635,8 +592,8 @@ class ReceiverV2 {
         const email = ReceiverV2.getElementText(customer, 'email');
         const userId = ReceiverV2.getElementText(customer, 'user_id');
         const contactId = email
-          ? await this._findContactByEmail(email)
-          : (userId ? await this._findContactByUserId(userId) : null);
+          ? await this._findUserByEmail(email)
+          : (userId ? await this._findUserById(userId) : null);
         if (contactId) taskData.WhoId = contactId;
       }
 
@@ -681,25 +638,19 @@ class ReceiverV2 {
       const assignedAt = ReceiverV2.getElementText(body, 'assigned_at');
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would update Contact badge_id=${badgeId} for user_id=${userId}`);
+        console.log(`[receiver] DRY RUN: Would update User__c Badge_ID__c=${badgeId} for User_ID__c=${userId}`);
         return;
       }
 
-      const contactId = userId ? await this._findContactByUserId(userId) : null;
-      if (contactId) {
-        const existing = await this.sf.apiCall(
-          conn => conn.query(`SELECT Description FROM Contact WHERE Id = '${contactId}' LIMIT 1`)
-        );
-        const currentDesc = existing?.records?.[0]?.Description || '';
-        const badgeEntry = `badge_id: ${badgeId} assigned_at: ${assignedAt}`;
-        const newDesc = currentDesc ? `${currentDesc}\n${badgeEntry}` : badgeEntry;
-        await this.sf.apiCall(conn => conn.sobject('Contact').update({
-          Id: contactId,
-          Description: newDesc,
+      const sfUserId = userId ? await this._findUserById(userId) : null;
+      if (sfUserId) {
+        await this.sf.apiCall(conn => conn.sobject('User__c').update({
+          Id: sfUserId,
+          Badge_ID__c: badgeId,
         }));
-        console.log(`[receiver] Updated Contact ${contactId} with badge_id: ${badgeId}`);
+        console.log(`[receiver] Updated User__c ${sfUserId} Badge_ID__c: ${badgeId}`);
       } else {
-        console.log(`[receiver] Badge assigned but no Contact found for user_id: ${userId}`);
+        console.log(`[receiver] Badge assigned but no User__c found for User_ID__c: ${userId}`);
       }
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);
@@ -744,7 +695,7 @@ class ReceiverV2 {
       }
 
       if (userId) {
-        const contactId = await this._findContactByUserId(userId);
+        const contactId = await this._findUserById(userId);
         if (contactId) taskData.WhoId = contactId;
       }
 
@@ -784,7 +735,7 @@ class ReceiverV2 {
 
       const email = ReceiverV2.getElementText(invoiceData, 'email');
       if (email) {
-        const contactId = await this._findContactByEmail(email);
+        const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
       }
 
