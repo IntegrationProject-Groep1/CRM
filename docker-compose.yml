@@ -8,16 +8,6 @@ services:
         condition: service_healthy
     restart: on-failure
 
-  crm-heartbeat:
-    build: .
-    command: node src/heartbeat.js
-    env_file:
-      - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    restart: on-failure
-
   rabbitmq:
     image: rabbitmq:3-management
     ports:
