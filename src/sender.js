@@ -81,7 +81,7 @@ class CRMSender {
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
     header.ele('version').txt('2.0');
-    header.ele('type').txt('mailing_send');
+    header.ele('type').txt('mailing_status');
     header.ele('timestamp').txt(timestamp);
     header.ele('source').txt('crm');
     if (data.correlation_id) {
@@ -192,7 +192,7 @@ class CRMSender {
 
     const paymentDue = body.ele('payment_due');
     paymentDue.ele('amount').txt(String(data.payment_due.amount));
-    paymentDue.ele('status').txt(data.payment_due.status || 'unpaid');
+    paymentDue.ele('status').txt(data.payment_due.status || 'pending');
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }

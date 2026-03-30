@@ -210,8 +210,8 @@ class ReceiverV2 {
       const mailingStreet = street ? `${street} ${number || ''}`.trim() : null;
 
       const descriptionParts = [
-        `user_id: ${ReceiverV2.getElementText(customer, 'id')}`,
-        `type_user: ${ReceiverV2.getElementText(customer, 'type_user')}`,
+        `user_id: ${ReceiverV2.getElementText(customer, 'user_id')}`,
+        `type: ${ReceiverV2.getElementText(customer, 'type')}`,
         `badge_id: ${ReceiverV2.getElementText(customer, 'badge_id')}`,
         `registration_date: ${ReceiverV2.getElementText(customer, 'registration_date')}`,
       ];
@@ -262,7 +262,7 @@ class ReceiverV2 {
       }
 
       // Upsert person into Supabase
-      const externalUserId = ReceiverV2.getElementText(customer, 'id');
+      const externalUserId = ReceiverV2.getElementText(customer, 'user_id');
       const personPayload = {
         external_user_id: externalUserId,
         first_name: contactData.FirstName,
@@ -275,7 +275,7 @@ class ReceiverV2 {
         postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
         city: address ? ReceiverV2.getElementText(address, 'city') : null,
         country: address ? (ReceiverV2.getElementText(address, 'country') || 'Belgium') : 'Belgium',
-        person_type: ReceiverV2.getElementText(customer, 'type_user') || 'private',
+        person_type: ReceiverV2.getElementText(customer, 'type') || 'private',
         salesforce_contact_id: contactId,
         updated_at: new Date().toISOString(),
       };
@@ -289,10 +289,10 @@ class ReceiverV2 {
 
       const isCompanyLinked = ReceiverV2.getElementText(customer, 'is_company_linked');
       if (isCompanyLinked === 'true') {
-        const btwNumber = ReceiverV2.getElementText(customer, 'btw_number');
+        const btwNumber = ReceiverV2.getElementText(customer, 'vat_number');
         const rawAccountData = {
           Name: ReceiverV2.getElementText(customer, 'company_name'),
-          Description: btwNumber ? `btw_number: ${btwNumber}` : null,
+          Description: btwNumber ? `vat_number: ${btwNumber}` : null,
         };
         const accountData = Object.fromEntries(
           Object.entries(rawAccountData).filter(([, v]) => v !== null)
@@ -320,8 +320,8 @@ class ReceiverV2 {
       }
 
       // Forward new_registration to kassa.incoming in Kassa's required format
-      const userId = ReceiverV2.getElementText(customer, 'id');
-      const typeUser = ReceiverV2.getElementText(customer, 'type_user');
+      const userId = ReceiverV2.getElementText(customer, 'user_id');
+      const typeUser = ReceiverV2.getElementText(customer, 'type');
       const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
       const age = dateOfBirth
         ? new Date().getFullYear() - new Date(dateOfBirth).getFullYear()
@@ -336,12 +336,12 @@ class ReceiverV2 {
             user_id: userId,
             type: isCompanyLinked === 'true' ? 'company' : (typeUser || 'private'),
             company_name: ReceiverV2.getElementText(customer, 'company_name'),
-            vat_number: ReceiverV2.getElementText(customer, 'btw_number'),
+            vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
             age,
           },
           payment_due: {
             amount: regFee ? (typeof regFee.amount === 'object' ? regFee.amount['#text'] : regFee.amount) : '0',
-            status: regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'unpaid',
+            status: regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'pending',
           },
           correlation_id: header.message_id,
         };
