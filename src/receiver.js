@@ -93,6 +93,10 @@ class ReceiverV2 {
         }
       }
     }
+
+    if (!this.running) return;
+    console.log('[receiver] Max retries reached, exiting process.');
+    process.exit(1);
   }
 
   validateXmlMessage(parsed) {
@@ -185,13 +189,10 @@ class ReceiverV2 {
   }
 
   async _findUserByEmail(email) {
-    const result = await this.sf.apiCall(
-      conn => conn.query(`SELECT Id FROM User__c WHERE Email__c = '${email.replace(/'/g, "''")}' LIMIT 1`)
+    const records = await this.sf.apiCall(
+      conn => conn.sobject('User__c').find({ Email__c: email }, ['Id']).limit(1)
     );
-    if (result && result.records && result.records.length > 0) {
-      return result.records[0].Id;
-    }
-    return null;
+    return records && records.length > 0 ? records[0].Id : null;
   }
 
   async handleNewRegistration(header, body) {
@@ -539,14 +540,10 @@ class ReceiverV2 {
   }
 
   async _findUserById(userId) {
-    const safeId = userId.replace(/'/g, "''");
-    const result = await this.sf.apiCall(
-      conn => conn.query(`SELECT Id FROM User__c WHERE User_ID__c = '${safeId}' LIMIT 1`)
+    const records = await this.sf.apiCall(
+      conn => conn.sobject('User__c').find({ User_ID__c: userId }, ['Id']).limit(1)
     );
-    if (result && result.records && result.records.length > 0) {
-      return result.records[0].Id;
-    }
-    return null;
+    return records && records.length > 0 ? records[0].Id : null;
   }
 
   async handleConsumptionOrder(header, body) {
@@ -767,11 +764,12 @@ class ReceiverV2 {
         error_reason: reason,
         timestamp: new Date().toISOString(),
       });
-      this.channel.sendToQueue(
+      const ok = this.channel.sendToQueue(
         DEAD_LETTER_QUEUE,
         Buffer.from(deadLetterMessage),
         { deliveryMode: 2 }
       );
+      if (!ok) console.log('[receiver] Warning: write buffer full, dead letter message may be dropped');
       console.log(`[receiver] Message sent to dead letter queue: ${reason}`);
     } catch (err) {
       console.log(`[receiver] Error sending to dead letter queue: ${err}`);
@@ -790,9 +788,9 @@ class ReceiverV2 {
   async shutdown() {
     console.log('[receiver] Signal received, shutting down gracefully...');
     this.running = false;
-    if (this.channel) await this.channel.close();
-    if (this.connection) await this.connection.close();
-    await this.sender.close();
+    try { if (this.channel) await this.channel.close(); } catch { /* ignore */ }
+    try { if (this.connection) await this.connection.close(); } catch { /* ignore */ }
+    try { await this.sender.close(); } catch { /* ignore */ }
     process.exit(0);
   }
 }
