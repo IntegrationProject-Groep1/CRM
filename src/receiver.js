@@ -205,13 +205,15 @@ class ReceiverV2 {
 
       const address = customer.address || null;
       const regFee = customer.registration_fee || null;
+      const sessionId = ReceiverV2.getElementText(body, 'session_id');
 
       const descriptionParts = [
         `user_id: ${ReceiverV2.getElementText(customer, 'user_id')}`,
         `type: ${ReceiverV2.getElementText(customer, 'type')}`,
         `badge_id: ${ReceiverV2.getElementText(customer, 'badge_id')}`,
         `registration_date: ${ReceiverV2.getElementText(customer, 'registration_date')}`,
-      ];
+        sessionId ? `session_id: ${sessionId}` : null,
+      ].filter(Boolean);
       if (regFee) {
         const amountVal = regFee.amount;
         const amount = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
@@ -314,6 +316,7 @@ class ReceiverV2 {
             amount: regFee ? (typeof regFee.amount === 'object' ? regFee.amount['#text'] : regFee.amount) : '0',
             status: regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'pending',
           },
+          session_id: sessionId || undefined,
           correlation_id: header.message_id,
         };
         await this.sender.sendNewRegistrationToKassa(kassaPayload);

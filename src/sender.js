@@ -196,6 +196,10 @@ class CRMSender {
     paymentDue.ele('amount').txt(String(data.payment_due.amount));
     paymentDue.ele('status').txt(data.payment_due.status || 'pending');
 
+    if (data.session_id) {
+      body.ele('session_id').txt(data.session_id);
+    }
+
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }
 
