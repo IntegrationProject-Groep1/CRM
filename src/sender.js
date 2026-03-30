@@ -122,10 +122,11 @@ class CRMSender {
       const xmlPayload = this.buildInvoiceRequestXml(data);
       const queue = 'crm.to.facturatie';
       await this.channel.assertQueue(queue, { durable: true });
-      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
         deliveryMode: 2,
       });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Invoice request sent to queue "${queue}"`);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
@@ -142,10 +143,11 @@ class CRMSender {
       const xmlPayload = this.buildMailingSendXml(data);
       const queue = 'crm.to.mailing';
       await this.channel.assertQueue(queue, { durable: true });
-      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
         deliveryMode: 2,
       });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Mailing send request sent to queue "${queue}"`);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
@@ -203,10 +205,11 @@ class CRMSender {
       const xmlPayload = this.buildNewRegistrationForKassaXml(data);
       const queue = 'kassa.incoming';
       await this.channel.assertQueue(queue, { durable: true });
-      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
         deliveryMode: 2,
       });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`New registration forwarded to queue "${queue}"`);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
@@ -253,10 +256,11 @@ class CRMSender {
       const xmlPayload = this.buildProfileUpdateXml(data);
       const queue = 'kassa.incoming';
       await this.channel.assertQueue(queue, { durable: true });
-      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
         deliveryMode: 2,
       });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Profile update forwarded to queue "${queue}"`);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
@@ -294,10 +298,11 @@ class CRMSender {
       const xmlPayload = this.buildCancelRegistrationXml(data);
       const queue = 'kassa.incoming';
       await this.channel.assertQueue(queue, { durable: true });
-      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
         deliveryMode: 2,
       });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Cancel registration forwarded to queue "${queue}"`);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {

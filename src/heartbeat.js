@@ -90,7 +90,8 @@ class Heartbeat {
       const heartbeat = this.generateHeartbeat();
 
       if (this.channel) {
-        this.channel.sendToQueue(this.queue, Buffer.from(heartbeat), { deliveryMode: 2 });
+        const ok = this.channel.sendToQueue(this.queue, Buffer.from(heartbeat), { deliveryMode: 2 });
+        if (!ok) console.log('[Heartbeat] Warning: write buffer full, heartbeat may be dropped');
         console.log(`[Heartbeat] Sent (${this.getStatus()}) - Counter: ${this.healthCheckCounter}`);
       }
     } catch (err) {
@@ -127,8 +128,12 @@ class Heartbeat {
 
     await this.sendHeartbeat();
 
-    if (this.channel) await this.channel.close();
-    if (this.connection) await this.connection.close();
+    try {
+      if (this.channel) await this.channel.close();
+    } catch { /* ignore */ }
+    try {
+      if (this.connection) await this.connection.close();
+    } catch { /* ignore */ }
 
     console.log('[Heartbeat] Shutdown complete');
     process.exit(0);

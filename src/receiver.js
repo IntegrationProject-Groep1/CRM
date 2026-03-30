@@ -186,7 +186,7 @@ class ReceiverV2 {
 
   async _findContactByEmail(email) {
     const result = await this.sf.apiCall(
-      conn => conn.query(`SELECT Id FROM Contact WHERE Email = '${email.replace(/'/g, "\\'")}' LIMIT 1`)
+      conn => conn.query(`SELECT Id FROM Contact WHERE Email = '${email.replace(/'/g, "''")}' LIMIT 1`)
     );
     if (result && result.records && result.records.length > 0) {
       return result.records[0].Id;
@@ -298,10 +298,20 @@ class ReceiverV2 {
           Object.entries(rawAccountData).filter(([, v]) => v !== null)
         );
 
-        const accountResult = await this.sf.apiCall(conn => conn.sobject('Account').create(accountData));
-        if (!accountResult) throw new Error('apiCall returned null creating Account');
-        const accountId = accountResult.id;
-        console.log(`[receiver] Created Account: ${accountId}`);
+        const safeName = (accountData.Name || '').replace(/'/g, "''");
+        const existingAccount = await this.sf.apiCall(
+          conn => conn.query(`SELECT Id FROM Account WHERE Name = '${safeName}' LIMIT 1`)
+        );
+        let accountId = existingAccount?.records?.[0]?.Id;
+        if (accountId) {
+          await this.sf.apiCall(conn => conn.sobject('Account').update({ Id: accountId, ...accountData }));
+          console.log(`[receiver] Updated Account: ${accountId}`);
+        } else {
+          const accountResult = await this.sf.apiCall(conn => conn.sobject('Account').create(accountData));
+          if (!accountResult) throw new Error('apiCall returned null creating Account');
+          accountId = accountResult.id;
+          console.log(`[receiver] Created Account: ${accountId}`);
+        }
 
         await this.sf.apiCall(conn => conn.sobject('Contact').update({ Id: contactId, AccountId: accountId }));
         console.log('[receiver] Linked Contact to Account');
@@ -323,9 +333,16 @@ class ReceiverV2 {
       const userId = ReceiverV2.getElementText(customer, 'user_id');
       const typeUser = ReceiverV2.getElementText(customer, 'type');
       const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
-      const age = dateOfBirth
-        ? new Date().getFullYear() - new Date(dateOfBirth).getFullYear()
-        : null;
+      let age = null;
+      if (dateOfBirth) {
+        const today = new Date();
+        const dob = new Date(dateOfBirth);
+        age = today.getFullYear() - dob.getFullYear();
+        const birthdayPassedThisYear =
+          today.getMonth() > dob.getMonth() ||
+          (today.getMonth() === dob.getMonth() && today.getDate() >= dob.getDate());
+        if (!birthdayPassedThisYear) age -= 1;
+      }
 
       if (userId && age !== null) {
         const kassaPayload = {
@@ -423,6 +440,10 @@ class ReceiverV2 {
 
   async handleBadgeScanned(header, body) {
     try {
+      if (!body) {
+        console.log('[receiver] Missing body in badge_scanned message');
+        return;
+      }
       const taskData = {
         Subject: `Badge scanned: ${ReceiverV2.getElementText(body, 'badge_id')}`,
         Description: [
@@ -452,10 +473,14 @@ class ReceiverV2 {
       // Record check-in time in Supabase
       const scanEmail = ReceiverV2.getElementText(body, 'email');
       if (scanEmail) {
-        const { data: person } = await (this.db.isConnected
+        const { data: person, error: sbError } = await (this.db.isConnected
           ? this.db.client.from('people').select('id').eq('email', scanEmail).maybeSingle()
-          : Promise.resolve({ data: null }));
-        if (person) await this.db.updateEventAttendeeCheckIn(person.id);
+          : Promise.resolve({ data: null, error: null }));
+        if (sbError) {
+          console.log(`[supabase] Error looking up person for badge scan: ${sbError.message}`);
+        } else if (person) {
+          await this.db.updateEventAttendeeCheckIn(person.id);
+        }
       }
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeScanned: ${err}`);
@@ -465,6 +490,10 @@ class ReceiverV2 {
 
   async handleSessionUpdate(header, body) {
     try {
+      if (!body) {
+        console.log('[receiver] Missing body in session_update message');
+        return;
+      }
       const taskData = {
         Subject: `Session update: ${ReceiverV2.getElementText(body, 'session_name')}`,
         Description: [
@@ -527,6 +556,10 @@ class ReceiverV2 {
 
   async handleMailingStatus(header, body) {
     try {
+      if (!body) {
+        console.log('[receiver] Missing body in mailing_status message');
+        return;
+      }
       const taskData = {
         Subject: `Mailing status: ${ReceiverV2.getElementText(body, 'mailing_id')}`,
         Description: [
@@ -553,7 +586,7 @@ class ReceiverV2 {
   }
 
   async _findContactByUserId(userId) {
-    const safeId = userId.replace(/'/g, "\\'");
+    const safeId = userId.replace(/'/g, "''");
     const result = await this.sf.apiCall(
       conn => conn.query(`SELECT Id FROM Contact WHERE user_id__c = '${safeId}' LIMIT 1`)
     );
@@ -654,9 +687,15 @@ class ReceiverV2 {
 
       const contactId = userId ? await this._findContactByUserId(userId) : null;
       if (contactId) {
+        const existing = await this.sf.apiCall(
+          conn => conn.query(`SELECT Description FROM Contact WHERE Id = '${contactId}' LIMIT 1`)
+        );
+        const currentDesc = existing?.records?.[0]?.Description || '';
+        const badgeEntry = `badge_id: ${badgeId} assigned_at: ${assignedAt}`;
+        const newDesc = currentDesc ? `${currentDesc}\n${badgeEntry}` : badgeEntry;
         await this.sf.apiCall(conn => conn.sobject('Contact').update({
           Id: contactId,
-          Description: `badge_id: ${badgeId} assigned_at: ${assignedAt}`,
+          Description: newDesc,
         }));
         console.log(`[receiver] Updated Contact ${contactId} with badge_id: ${badgeId}`);
       } else {
