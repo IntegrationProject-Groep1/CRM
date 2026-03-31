@@ -43,7 +43,7 @@ class SupabaseService {
       return null;
     }
 
-    const normalizedPaymentStatus = data.payment_status === 'paid' ? 'paid' : 'unpaid';
+    const normalizedPaymentStatus = data.payment_status === 'paid' ? 'paid' : 'pending';
     const normalizedAmount = Number.isFinite(Number(data.amount)) ? Number(data.amount) : 0;
 
     const payload = {
