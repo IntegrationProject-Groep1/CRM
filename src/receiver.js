@@ -559,44 +559,44 @@ class ReceiverV2 {
         ? (Array.isArray(items.item) ? items.item : [items.item]).filter(Boolean)
         : [];
 
-      const itemSummary = itemList.map(item => {
-        const unitPriceVal = item.unit_price;
-        const price = typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal;
-        const currency = typeof unitPriceVal === 'object' ? (unitPriceVal.currency || 'eur') : 'eur';
-        return `${item.quantity}x ${item.description} @ ${price} ${currency}`;
-      }).join(', ');
-
-      const taskData = {
-        Subject: `Consumption order${isAnonymous ? ' (anonymous)' : ''}: ${itemList.length} item(s)`,
-        Description: [
-          `Anonymous: ${isAnonymous}`,
-          `Items: ${itemSummary}`,
-          customer ? `Customer email: ${ReceiverV2.getElementText(customer, 'email')}` : null,
-          customer ? `User ID: ${ReceiverV2.getElementText(customer, 'user_id')}` : null,
-        ].filter(Boolean).join('\n'),
-        Status: 'Completed',
-        Type: 'Other',
-        ActivityDate: new Date().toISOString().split('T')[0],
-      };
-
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
-        return;
-      }
-
+      // Resolve Salesforce Member__c record ID
+      let memberId = null;
       if (!isAnonymous && customer) {
         const email = ReceiverV2.getElementText(customer, 'email');
         const userId = ReceiverV2.getElementText(customer, 'user_id');
-        const contactId = email
+        memberId = email
           ? await this._findUserByEmail(email)
           : (userId ? await this._findUserById(userId) : null);
-        if (contactId) taskData.WhoId = contactId;
       }
 
-      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
-      console.log(`[receiver] Created Task for consumption order: ${result?.id}`);
+      if (!this.sf.isConnected) {
+        console.log(`[receiver] DRY RUN: Would upsert ${itemList.length} Consumption__c record(s)`);
+        return;
+      }
 
-      // Insert each item into Supabase consumptions (requires event_attendee_id)
+      // Upsert each item as a Consumption__c record
+      for (let i = 0; i < itemList.length; i++) {
+        const item = itemList[i];
+        const unitPriceVal = item.unit_price;
+        const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
+        const qty = parseInt(item.quantity, 10) || 1;
+
+        const consumptionData = {
+          Consumption_ID__c: `${header.message_id}-${i}`,
+          Product_Name__c: String(item.description),
+          Quantity__c: qty,
+          Total_Amount__c: unitPrice * qty,
+          Price_Per_Unit__c: unitPrice,
+        };
+        if (memberId) {
+          consumptionData.Member__c = memberId;
+        }
+
+        await this.sf.apiCall(conn => conn.sobject('Consumption__c').upsert(consumptionData, 'Consumption_ID__c'));
+        console.log(`[receiver] Upserted Consumption__c: ${consumptionData.Consumption_ID__c}`);
+      }
+
+      // Insert each item into Supabase
       if (!isAnonymous && customer) {
         const userId = ReceiverV2.getElementText(customer, 'user_id');
         let eventAttendeeId = null;
