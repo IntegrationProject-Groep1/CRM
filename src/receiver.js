@@ -49,7 +49,7 @@ class ReceiverV2 {
     http.createServer((req, res) => {
       res.writeHead(200);
       res.end('OK');
-    }).listen(port, () => {
+    }).listen(port, '0.0.0.0', () => {
       console.log(`[receiver] Health check server listening on port ${port}`);
     });
   }
