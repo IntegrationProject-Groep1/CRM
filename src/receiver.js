@@ -442,13 +442,11 @@ class ReceiverV2 {
       // Record check-in time in Supabase
       const scanEmail = ReceiverV2.getElementText(body, 'email');
       if (scanEmail) {
-        const { data: person, error: sbError } = await (this.db.isConnected
-          ? this.db.client.from('people').select('id').eq('email', scanEmail).maybeSingle()
-          : Promise.resolve({ data: null, error: null }));
+        const { personId, error: sbError } = await this.db.findPersonByEmailForCheckIn(scanEmail);
         if (sbError) {
           console.log(`[supabase] Error looking up person for badge scan: ${sbError.message}`);
-        } else if (person) {
-          await this.db.updateEventAttendeeCheckIn(person.id);
+        } else if (personId) {
+          await this.db.updateEventAttendeeCheckIn(personId);
         }
       }
     } catch (err) {

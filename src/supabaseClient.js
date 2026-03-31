@@ -6,6 +6,7 @@ const { createClient } = require('@supabase/supabase-js');
 class SupabaseService {
   constructor() {
     this.client = null;
+    this.userTable = process.env.SUPABASE_USER_TABLE || 'crm_user_sync';
   }
 
   init() {
@@ -27,40 +28,92 @@ class SupabaseService {
 
   async upsertPerson(data) {
     if (!this.isConnected) return null;
+
+    const payload = {
+      User_ID__c: data.external_user_id,
+      First_Name__c: data.first_name,
+      Last_Name__c: data.last_name,
+      Email__c: data.email,
+      Birthdate__c: data.date_of_birth || null,
+      Street__c: data.street || null,
+      House_Number__c: data.house_number || null,
+      Postal_Code__c: data.postal_code || null,
+      City__c: data.city || null,
+      Country_Code__c: data.country || null,
+      User_Type__c: data.person_type || null,
+      updated_at: data.updated_at || new Date().toISOString(),
+    };
+
+    const cleanPayload = Object.fromEntries(
+      Object.entries(payload).filter(([, value]) => value !== undefined)
+    );
+
     const { data: result, error } = await this.client
-      .from('people')
-      .upsert(data, { onConflict: 'external_user_id' })
-      .select('id')
+      .from(this.userTable)
+      .upsert(cleanPayload, { onConflict: 'User_ID__c' })
+      .select('User_ID__c')
       .single();
     if (error) {
       console.log(`[supabase] Error upserting person: ${error.message}`);
       return null;
     }
-    return result.id;
+    return result.User_ID__c;
   }
 
   async findPersonByExternalId(externalUserId) {
     if (!this.isConnected) return null;
     const { data, error } = await this.client
-      .from('people')
-      .select('id')
-      .eq('external_user_id', externalUserId)
+      .from(this.userTable)
+      .select('User_ID__c')
+      .eq('User_ID__c', externalUserId)
       .maybeSingle();
     if (error) {
       console.log(`[supabase] Error finding person: ${error.message}`);
       return null;
     }
-    return data ? data.id : null;
+    return data ? data.User_ID__c : null;
+  }
+
+  async findPersonByEmail(email) {
+    if (!this.isConnected) return null;
+    const { data, error } = await this.client
+      .from(this.userTable)
+      .select('User_ID__c')
+      .eq('Email__c', email)
+      .maybeSingle();
+    if (error) {
+      console.log(`[supabase] Error finding person by email: ${error.message}`);
+      return null;
+    }
+    return data ? data.User_ID__c : null;
+  }
+
+  async findPersonByEmailForCheckIn(email) {
+    if (!this.isConnected) {
+      return { personId: null, error: null };
+    }
+
+    const { data, error } = await this.client
+      .from(this.userTable)
+      .select('User_ID__c')
+      .eq('Email__c', email)
+      .maybeSingle();
+
+    if (error) {
+      return { personId: null, error };
+    }
+
+    return { personId: data ? data.User_ID__c : null, error: null };
   }
 
   async updatePersonSalesforceId(externalUserId, salesforceContactId) {
     if (!this.isConnected) return;
     const { error } = await this.client
-      .from('people')
-      .update({ salesforce_contact_id: salesforceContactId, updated_at: new Date().toISOString() })
-      .eq('external_user_id', externalUserId);
+      .from(this.userTable)
+      .update({ Member__c: salesforceContactId, updated_at: new Date().toISOString() })
+      .eq('User_ID__c', externalUserId);
     if (error) {
-      console.log(`[supabase] Error updating salesforce_contact_id: ${error.message}`);
+      console.log(`[supabase] Error updating Member__c: ${error.message}`);
     }
   }
 
@@ -112,23 +165,22 @@ class SupabaseService {
   async updateEventAttendeeCheckIn(personId) {
     if (!this.isConnected) return;
     const { error } = await this.client
-      .from('event_attendees')
-      .update({ check_in_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq('person_id', personId)
-      .is('check_in_at', null);
+      .from(this.userTable)
+      .update({ iot_last_scan: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('User_ID__c', personId);
     if (error) {
-      console.log(`[supabase] Error updating check_in_at: ${error.message}`);
+      console.log(`[supabase] Error updating iot_last_scan: ${error.message}`);
     }
   }
 
   async syncSalesforceStatus(personId, status) {
     if (!this.isConnected) return;
     const { error } = await this.client
-      .from('event_attendees')
-      .update({ salesforce_sync_status: status, updated_at: new Date().toISOString() })
-      .eq('person_id', personId);
+      .from(this.userTable)
+      .update({ sync_status: status, updated_at: new Date().toISOString() })
+      .eq('User_ID__c', personId);
     if (error) {
-      console.log(`[supabase] Error updating salesforce_sync_status: ${error.message}`);
+      console.log(`[supabase] Error updating sync_status: ${error.message}`);
     }
   }
 
