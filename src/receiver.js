@@ -1,6 +1,7 @@
 'use strict';
 
 require('dotenv').config();
+const http = require('http');
 const amqp = require('amqplib');
 const { XMLParser } = require('fast-xml-parser');
 const SFConnection = require('./sfConnection');
@@ -43,7 +44,18 @@ class ReceiverV2 {
     this.running = true;
   }
 
+  startHealthServer() {
+    const port = process.env.HEALTH_PORT || 3000;
+    http.createServer((req, res) => {
+      res.writeHead(200);
+      res.end('OK');
+    }).listen(port, () => {
+      console.log(`[receiver] Health check server listening on port ${port}`);
+    });
+  }
+
   async start() {
+    this.startHealthServer();
     await this.sf.init();
     await this.sender.init();
     this.db.init();
