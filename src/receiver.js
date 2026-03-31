@@ -287,7 +287,6 @@ class ReceiverV2 {
         city: rawUserData.City__c || null,
         country: rawUserData.Country_Code__c || null,
         person_type: userType,
-        updated_at: new Date().toISOString(),
       };
       const sbPersonId = await this.db.upsertPerson(
         Object.fromEntries(Object.entries(personPayload).filter(([, v]) => v !== null))

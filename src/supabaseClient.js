@@ -41,7 +41,6 @@ class SupabaseService {
       City__c: data.city || null,
       Country_Code__c: data.country || null,
       User_Type__c: data.person_type || null,
-      updated_at: data.updated_at || new Date().toISOString(),
     };
 
     const cleanPayload = Object.fromEntries(
@@ -110,7 +109,7 @@ class SupabaseService {
     if (!this.isConnected) return;
     const { error } = await this.client
       .from(this.userTable)
-      .update({ Member__c: salesforceContactId, updated_at: new Date().toISOString() })
+      .update({ Member__c: salesforceContactId })
       .eq('User_ID__c', externalUserId);
     if (error) {
       console.log(`[supabase] Error updating Member__c: ${error.message}`);
@@ -137,7 +136,7 @@ class SupabaseService {
     if (!this.isConnected) return;
     const { error } = await this.client
       .from('companies')
-      .update({ salesforce_account_id: salesforceAccountId, updated_at: new Date().toISOString() })
+      .update({ salesforce_account_id: salesforceAccountId })
       .eq('vat_number', vatNumber);
     if (error) {
       console.log(`[supabase] Error updating salesforce_account_id: ${error.message}`);
@@ -166,7 +165,7 @@ class SupabaseService {
     if (!this.isConnected) return;
     const { error } = await this.client
       .from(this.userTable)
-      .update({ iot_last_scan: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .update({ iot_last_scan: new Date().toISOString() })
       .eq('User_ID__c', personId);
     if (error) {
       console.log(`[supabase] Error updating iot_last_scan: ${error.message}`);
@@ -177,7 +176,7 @@ class SupabaseService {
     if (!this.isConnected) return;
     const { error } = await this.client
       .from(this.userTable)
-      .update({ sync_status: status, updated_at: new Date().toISOString() })
+      .update({ sync_status: status })
       .eq('User_ID__c', personId);
     if (error) {
       console.log(`[supabase] Error updating sync_status: ${error.message}`);
