@@ -241,7 +241,7 @@ class ReceiverV2 {
 
       const paymentStatus = regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'pending';
       const amountVal = regFee ? regFee.amount : null;
-      const registrationAmount = typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || null);
+      const registrationAmount = amountVal !== null && typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || null);
 
       const rawUserData = {
         User_ID__c: externalUserId,
