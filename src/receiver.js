@@ -190,7 +190,7 @@ class ReceiverV2 {
 
   async _findUserByEmail(email) {
     const records = await this.sf.apiCall(
-      conn => conn.sobject('User__c').find({ Email__c: email }, ['Id']).limit(1)
+      conn => conn.sobject('Member__c').find({ Email__c: email }, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
   }
@@ -254,12 +254,12 @@ class ReceiverV2 {
       );
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would upsert User__c: ${JSON.stringify(userData)}`);
+        console.log(`[receiver] DRY RUN: Would upsert Member__c: ${JSON.stringify(userData)}`);
       } else {
         const sfResult = await this.sf.apiCall(
-          conn => conn.sobject('User__c').upsert(userData, 'User_ID__c')
+          conn => conn.sobject('Member__c').upsert(userData, 'User_ID__c')
         );
-        console.log(`[receiver] Upserted User__c: ${sfResult?.id || externalUserId}`);
+        console.log(`[receiver] Upserted Member__c: ${sfResult?.id || externalUserId}`);
       }
 
       // Upsert person into Supabase
@@ -544,7 +544,7 @@ class ReceiverV2 {
 
   async _findUserById(userId) {
     const records = await this.sf.apiCall(
-      conn => conn.sobject('User__c').find({ User_ID__c: userId }, ['Id']).limit(1)
+      conn => conn.sobject('Member__c').find({ User_ID__c: userId }, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
   }
@@ -633,19 +633,19 @@ class ReceiverV2 {
       const userId = ReceiverV2.getElementText(body, 'user_id');
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would update User__c Badge_ID__c=${badgeId} for User_ID__c=${userId}`);
+        console.log(`[receiver] DRY RUN: Would update Member__c Badge_ID__c=${badgeId} for User_ID__c=${userId}`);
         return;
       }
 
       const sfUserId = userId ? await this._findUserById(userId) : null;
       if (sfUserId) {
-        await this.sf.apiCall(conn => conn.sobject('User__c').update({
+        await this.sf.apiCall(conn => conn.sobject('Member__c').update({
           Id: sfUserId,
           Badge_ID__c: badgeId,
         }));
-        console.log(`[receiver] Updated User__c ${sfUserId} Badge_ID__c: ${badgeId}`);
+        console.log(`[receiver] Updated Member__c ${sfUserId} Badge_ID__c: ${badgeId}`);
       } else {
-        console.log(`[receiver] Badge assigned but no User__c found for User_ID__c: ${userId}`);
+        console.log(`[receiver] Badge assigned but no Member__c found for User_ID__c: ${userId}`);
       }
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);

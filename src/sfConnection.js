@@ -35,7 +35,7 @@ class SFConnection {
             instanceUrl: tokenData.instance_url,
             accessToken: tokenData.access_token,
           });
-          await this.connection.query('SELECT COUNT() FROM Contact');
+          await this.connection.query('SELECT COUNT() FROM Member__c');
           this.instanceUrl = tokenData.instance_url;
           this.authMethod = 'oauth2';
           console.log('[SF Connection] Connected (OAuth2 refresh token)');
@@ -53,7 +53,7 @@ class SFConnection {
           instanceUrl: this.instanceUrl,
           accessToken: this.accessToken,
         });
-        await this.connection.query('SELECT COUNT() FROM Contact');
+        await this.connection.query('SELECT COUNT() FROM Member__c');
         this.authMethod = 'direct';
         console.log('[SF Connection] Connected (direct access token)');
         console.log(`[SF Connection] Instance: ${this.instanceUrl}`);
@@ -126,7 +126,7 @@ class SFConnection {
   async healthCheck() {
     if (!this.connection) return false;
     try {
-      await this.apiCall(conn => conn.query('SELECT COUNT() FROM Account'));
+      await this.apiCall(conn => conn.query('SELECT COUNT() FROM Member__c'));
       return true;
     } catch (err) {
       console.log(`[SF Connection] Health check failed: ${err}`);
