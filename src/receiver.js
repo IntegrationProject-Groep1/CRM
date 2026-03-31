@@ -277,15 +277,22 @@ class ReceiverV2 {
       // Upsert person into Supabase
       const personPayload = {
         external_user_id: externalUserId,
+        company_name: rawUserData.Company_Name__c || null,
+        vat_number: rawUserData.BTW_Number__c || null,
+        language: 'NL',
+        salutation: rawUserData.Salutation__c || null,
         first_name: rawUserData.First_Name__c,
         last_name: rawUserData.Last_Name__c,
         email: rawUserData.Email__c,
         date_of_birth: rawUserData.Birthdate__c || null,
+        amount: rawUserData.Amount__c,
         street: rawUserData.Street__c || null,
         house_number: rawUserData.House_Number__c || null,
         postal_code: rawUserData.Postal_Code__c || null,
         city: rawUserData.City__c || null,
         country: rawUserData.Country_Code__c || null,
+        payment_status: rawUserData.Payment_Status__c,
+        badge_id: rawUserData.Badge_ID__c || null,
         person_type: userType,
       };
       const sbPersonId = await this.db.upsertPerson(

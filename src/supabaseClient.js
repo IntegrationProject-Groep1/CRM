@@ -11,11 +11,20 @@ class SupabaseService {
 
   init() {
     const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_ANON_KEY;
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const anonKey = process.env.SUPABASE_ANON_KEY;
+    const key = serviceRoleKey || anonKey;
     if (!url || !key) {
-      console.log('[supabase] SUPABASE_URL or SUPABASE_ANON_KEY not set — Supabase disabled');
+      console.log('[supabase] Missing SUPABASE_URL and/or Supabase key (SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY) — Supabase disabled');
       return;
     }
+
+    if (serviceRoleKey) {
+      console.log('[supabase] Using SUPABASE_SERVICE_ROLE_KEY for server-side writes');
+    } else {
+      console.log('[supabase] Warning: using SUPABASE_ANON_KEY; RLS may block inserts/updates');
+    }
+
     this.client = createClient(url, key);
     console.log('[supabase] Client initialized');
   }
@@ -29,18 +38,36 @@ class SupabaseService {
   async upsertPerson(data) {
     if (!this.isConnected) return null;
 
+    if (!data.external_user_id) {
+      console.log('[supabase] Error upserting person: missing external_user_id');
+      return null;
+    }
+
+    const normalizedPaymentStatus = data.payment_status === 'paid' ? 'paid' : 'unpaid';
+    const normalizedAmount = Number.isFinite(Number(data.amount)) ? Number(data.amount) : 0;
+
     const payload = {
       User_ID__c: data.external_user_id,
-      First_Name__c: data.first_name,
-      Last_Name__c: data.last_name,
-      Email__c: data.email,
-      Birthdate__c: data.date_of_birth || null,
-      Street__c: data.street || null,
-      House_Number__c: data.house_number || null,
-      Postal_Code__c: data.postal_code || null,
-      City__c: data.city || null,
-      Country_Code__c: data.country || null,
-      User_Type__c: data.person_type || null,
+      User_Type__c: data.person_type || 'Particulier',
+      Company_Name__c: data.company_name || null,
+      BTW_Number__c: data.vat_number || null,
+      Language__c: data.language || 'NL',
+      Salutation__c: data.salutation || null,
+      First_Name__c: data.first_name || '',
+      Last_Name__c: data.last_name || '',
+      Email__c: data.email || '',
+      Birthdate__c: data.date_of_birth || '1970-01-01',
+      Amount__c: normalizedAmount,
+      Street__c: data.street || '',
+      House_Number__c: data.house_number || '',
+      Postal_Code__c: data.postal_code || '',
+      City__c: data.city || '',
+      Country_Code__c: data.country || 'BE',
+      Payment_Status__c: normalizedPaymentStatus,
+      Badge_ID__c: data.badge_id || null,
+      sync_status: data.sync_status || null,
+      sync_log: data.sync_log || null,
+      auth_user_id: data.auth_user_id || null,
     };
 
     const cleanPayload = Object.fromEntries(
