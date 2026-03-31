@@ -75,7 +75,7 @@ class ReceiverV2 {
 
         await this.channel.assertQueue(QUEUE_NAME, { durable: true });
         await this.channel.assertQueue(KASSA_QUEUE, { durable: true });
-        await this.channel.assertQueue(DEAD_LETTER_QUEUE, { durable: true });
+        await this.channel.assertQueue(DEAD_LETTER_QUEUE, { durable: true, arguments: { 'x-dead-letter-exchange': '' } });
         await this.channel.prefetch(1);
 
         const consume = async (msg) => {
