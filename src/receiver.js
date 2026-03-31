@@ -325,7 +325,7 @@ class ReceiverV2 {
           },
           payment_due: {
             amount: regFee ? (typeof regFee.amount === 'object' ? regFee.amount['#text'] : regFee.amount) : '0',
-            status: regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'pending',
+            status: regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'unpaid',
           },
           session_id: sessionId || undefined,
           correlation_id: header.message_id,

@@ -170,9 +170,6 @@ class CRMSender {
     header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
     header.ele('version').txt('2.0');
-    if (data.correlation_id) {
-      header.ele('correlation_id').txt(data.correlation_id);
-    }
 
     const body = root.ele('body');
     const customer = body.ele('customer');
@@ -194,11 +191,8 @@ class CRMSender {
 
     const paymentDue = body.ele('payment_due');
     paymentDue.ele('amount').txt(String(data.payment_due.amount));
-    paymentDue.ele('status').txt(data.payment_due.status || 'pending');
-
-    if (data.session_id) {
-      body.ele('session_id').txt(data.session_id);
-    }
+    const normalizedStatus = data.payment_due.status === 'paid' ? 'paid' : 'unpaid';
+    paymentDue.ele('status').txt(normalizedStatus);
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }

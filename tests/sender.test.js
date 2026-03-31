@@ -68,4 +68,29 @@ describe('CRMSender XML building', () => {
     expect(xml).not.toContain('<script>');
     expect(xml).toContain('&lt;script&gt;');
   });
+
+  test('new_registration xml matches kassa xsd expectations', () => {
+    const xml = sender.buildNewRegistrationForKassaXml({
+      customer: {
+        email: 'x@example.com',
+        first_name: 'A',
+        last_name: 'B',
+        user_id: 'u-1',
+        age: 30,
+      },
+      payment_due: {
+        amount: '25.00',
+        status: 'pending',
+      },
+      correlation_id: 'corr-1',
+      session_id: 'sess-1',
+    });
+
+    const parsed = parser.parse(xml);
+    const root = parsed.message;
+
+    expect(root.header.correlation_id).toBeUndefined();
+    expect(root.body.session_id).toBeUndefined();
+    expect(root.body.payment_due.status).toBe('unpaid');
+  });
 });
