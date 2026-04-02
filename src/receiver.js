@@ -606,7 +606,7 @@ class ReceiverV2 {
     // 2. Gebruik het ID van Kassa voor de Upsert
         Consumption_ID__c: lineId || `${header.message_id}-${i}`, 
         Product_Name__c: String(item.description),
-        Product_SKU__c: String(sku), // Optioneel: voeg SKU toe aan Salesforce
+        //Product_SKU__c: String(sku), // Optioneel: voeg SKU toe aan Salesforce
         Quantity__c: qty,
         Total_Amount__c: unitPrice * qty,
         Price_Per_Unit__c: unitPrice,
