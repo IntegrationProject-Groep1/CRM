@@ -1,0 +1,82 @@
+CREATE DATABASE IF NOT EXISTS crm_demo;
+USE crm_demo;
+
+CREATE TABLE IF NOT EXISTS crm_user_sync (
+  User_ID__c VARCHAR(255) NOT NULL,
+  User_Type__c VARCHAR(100) DEFAULT NULL,
+  Company_Name__c VARCHAR(255) DEFAULT NULL,
+  BTW_Number__c VARCHAR(100) DEFAULT NULL,
+  Language__c VARCHAR(20) DEFAULT NULL,
+  Salutation__c VARCHAR(50) DEFAULT NULL,
+  First_Name__c VARCHAR(255) DEFAULT NULL,
+  Last_Name__c VARCHAR(255) DEFAULT NULL,
+  Email__c VARCHAR(255) DEFAULT NULL,
+  Birthdate__c DATE DEFAULT NULL,
+  Amount__c DECIMAL(10,2) DEFAULT 0.00,
+  Street__c VARCHAR(255) DEFAULT NULL,
+  House_Number__c VARCHAR(50) DEFAULT NULL,
+  Postal_Code__c VARCHAR(50) DEFAULT NULL,
+  City__c VARCHAR(255) DEFAULT NULL,
+  Country_Code__c VARCHAR(10) DEFAULT NULL,
+  Payment_Status__c VARCHAR(50) DEFAULT NULL,
+  Badge_ID__c VARCHAR(100) DEFAULT NULL,
+  sync_status VARCHAR(50) DEFAULT NULL,
+  sync_log TEXT,
+  auth_user_id VARCHAR(255) DEFAULT NULL,
+  Member__c VARCHAR(255) DEFAULT NULL,
+  iot_last_scan DATETIME DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (User_ID__c),
+  UNIQUE KEY uq_crm_user_sync_email (Email__c),
+  KEY idx_crm_user_sync_badge (Badge_ID__c),
+  KEY idx_crm_user_sync_btw (BTW_Number__c)
+);
+
+CREATE TABLE IF NOT EXISTS companies (
+  id INT NOT NULL AUTO_INCREMENT,
+  company_name VARCHAR(255) DEFAULT NULL,
+  vat_number VARCHAR(100) NOT NULL,
+  salesforce_account_id VARCHAR(255) DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_companies_vat_number (vat_number)
+);
+
+CREATE TABLE IF NOT EXISTS event_attendees (
+  id INT NOT NULL AUTO_INCREMENT,
+  person_id VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_event_attendees_person_id (person_id)
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id INT NOT NULL AUTO_INCREMENT,
+  event_attendee_id INT DEFAULT NULL,
+  amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  payment_type VARCHAR(100) DEFAULT NULL,
+  status VARCHAR(50) DEFAULT NULL,
+  payment_method VARCHAR(100) DEFAULT NULL,
+  paid_at DATETIME DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_payments_event_attendee_id (event_attendee_id)
+);
+
+CREATE TABLE IF NOT EXISTS consumptions (
+  id INT NOT NULL AUTO_INCREMENT,
+  event_attendee_id INT DEFAULT NULL,
+  item_name VARCHAR(255) NOT NULL,
+  quantity INT NOT NULL DEFAULT 1,
+  unit_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  total_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  paid TINYINT(1) NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_consumptions_event_attendee_id (event_attendee_id)
+);

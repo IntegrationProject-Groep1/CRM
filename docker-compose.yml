@@ -6,17 +6,54 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      rabbitmq:
+      rabbitmq_broker:
+        condition: service_healthy
+      mysql:
         condition: service_healthy
     restart: on-failure
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: crm_demo
+      MYSQL_USER: crm_user
+      MYSQL_PASSWORD: crm_pass
 
-  rabbitmq:
+  rabbitmq_broker:
     image: rabbitmq:3-management
     ports:
       - "5672:5672"
       - "15672:15672"
+    environment:
+      # The broker is initialized with the same credentials that the receiver
+      # uses, so the two containers can authenticate without a separate URL.
+      # When the host-side RabbitMQ variables are missing, Compose falls back
+      # to guest/guest so local development still starts cleanly.
+      RABBITMQ_DEFAULT_USER: ${RABBITMQCRM_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQCRM_PASSRAW:-guest}
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: crm_demo
+      MYSQL_USER: crm_user
+      MYSQL_PASSWORD: crm_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ucrm_user", "-pcrm_pass"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql_data:

@@ -2,6 +2,7 @@
 
 require('dotenv').config();
 const amqp = require('amqplib');
+const { getAmqpOptions } = require('./amqpUrl');
 const { create } = require('xmlbuilder2');
 const { v4: uuidv4 } = require('uuid');
 
@@ -9,12 +10,12 @@ class CRMSender {
   constructor() {
     this.connection = null;
     this.channel = null;
-    this.rabbitmqUrl = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost/';
+    this.rabbitmqOptions = getAmqpOptions();
   }
 
   async init() {
     try {
-      this.connection = await amqp.connect(this.rabbitmqUrl);
+      this.connection = await amqp.connect(this.rabbitmqOptions);
       this.channel = await this.connection.createChannel();
       console.log('CRM Sender initialized');
     } catch (error) {

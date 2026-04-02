@@ -4,9 +4,10 @@ require('dotenv').config();
 const amqp = require('amqplib');
 const { create } = require('xmlbuilder2');
 const { v4: uuidv4 } = require('uuid');
+const { getAmqpOptions } = require('./src/amqpUrl');
 
 async function sendTestMessage() {
-  const conn = await amqp.connect(process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost/');
+  const conn = await amqp.connect(getAmqpOptions());
   const channel = await conn.createChannel();
 
   // Test 1: new_registration on crm.incoming
