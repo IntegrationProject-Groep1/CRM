@@ -12,6 +12,8 @@ services:
         condition: service_healthy
     restart: on-failure
     environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       MYSQL_DATABASE: crm_demo
