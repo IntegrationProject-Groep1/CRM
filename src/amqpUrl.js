@@ -1,23 +1,29 @@
 'use strict';
 
 /**
- * Builds an AMQP connection URL from environment variables.
+ * Builds an amqplib connection-options object from environment variables.
+ *
+ * Using a plain options object (instead of an amqp:// URL string) means
+ * special characters in the password are passed as-is — no URL-encoding
+ * required.  This mirrors the approach used by the other teams in this
+ * project (e.g. pika.ConnectionParameters in the Python services).
  *
  * Supported variables:
- *   RABBITMQ_HOST  – hostname (default: localhost)
- *   RABBITMQ_PORT  – port     (default: 5672)
- *   RABBITMQ_USER  – username (default: guest)
- *   RABBITMQ_PASS  – password (default: guest); special characters are handled automatically
- *   RABBITMQ_VHOST – virtual host (default: /)
+ *   RABBITMQ_HOST  – hostname      (default: localhost)
+ *   RABBITMQ_PORT  – port number   (default: 5672)
+ *   RABBITMQ_USER  – username      (default: guest)
+ *   RABBITMQ_PASS  – password      (default: guest)
+ *   RABBITMQ_VHOST – virtual host  (default: /)
  */
-function getAmqpUrl() {
-  const host  = process.env.RABBITMQ_HOST  || 'localhost';
-  const port  = process.env.RABBITMQ_PORT  || '5672';
-  const user  = encodeURIComponent(process.env.RABBITMQ_USER  || 'guest');
-  const pass  = encodeURIComponent(process.env.RABBITMQ_PASS  || 'guest');
-  const vhost = encodeURIComponent(process.env.RABBITMQ_VHOST || '/');
-
-  return `amqp://${user}:${pass}@${host}:${port}/${vhost}`;
+function getAmqpOptions() {
+  return {
+    protocol: 'amqp',
+    hostname: process.env.RABBITMQ_HOST  || 'localhost',
+    port:     parseInt(process.env.RABBITMQ_PORT  || '5672', 10),
+    username: process.env.RABBITMQ_USER  || 'guest',
+    password: process.env.RABBITMQ_PASS  || 'guest',
+    vhost:    process.env.RABBITMQ_VHOST || '/',
+  };
 }
 
-module.exports = { getAmqpUrl };
+module.exports = { getAmqpOptions };

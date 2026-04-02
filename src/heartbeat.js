@@ -2,7 +2,7 @@
 
 require('dotenv').config();
 const amqp = require('amqplib');
-const { getAmqpUrl } = require('./amqpUrl');
+const { getAmqpOptions } = require('./amqpUrl');
 const { v4: uuidv4 } = require('uuid');
 const SFConnection = require('./sfConnection');
 
@@ -22,7 +22,7 @@ class Heartbeat {
 
   async connect() {
     try {
-      this.connection = await amqp.connect(getAmqpUrl());
+      this.connection = await amqp.connect(getAmqpOptions());
       this.channel = await this.connection.createChannel();
       await this.channel.assertQueue(this.queue, { durable: true });
       console.log(`[Heartbeat] Connected to RabbitMQ, queue: ${this.queue}`);
