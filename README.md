@@ -166,7 +166,11 @@ Elke 10 seconden wordt ook een Salesforce health check uitgevoerd. De status is:
 Kopieer `.env.example` naar `.env` en vul aan:
 
 ```env
-RABBITMQ_URL=amqp://user:password@host:port/
+RABBITMQ_HOST=integrationproject-2526s2-dag01.westeurope.cloudapp.azure.com
+RABBITMQ_PORT=30000
+RABBITMQ_USER=guest
+RABBITMQ_PASS=guest
+RABBITMQ_VHOST=/
 
 SF_INSTANCE_URL=https://yourorg.my.salesforce.com
 SF_CLIENT_ID=...
