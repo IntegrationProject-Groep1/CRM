@@ -6,7 +6,7 @@ const amqp = require('amqplib');
 const { XMLParser } = require('fast-xml-parser');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
-const SupabaseService = require('./supabaseClient');
+const MySQLService = require('./mysqlClient');
 
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
@@ -40,7 +40,7 @@ class ReceiverV2 {
     this.channel = null;
     this.sf = new SFConnection();
     this.sender = new CRMSender();
-    this.db = new SupabaseService();
+    this.db = new MySQLService();
     this.running = true;
   }
 
@@ -75,7 +75,10 @@ class ReceiverV2 {
 
         await this.channel.assertQueue(QUEUE_NAME, { durable: true });
         await this.channel.assertQueue(KASSA_QUEUE, { durable: true });
-        await this.channel.assertQueue(DEAD_LETTER_QUEUE, { durable: true, arguments: { 'x-dead-letter-exchange': '' } });
+        await this.channel.assertQueue(DEAD_LETTER_QUEUE, {
+          durable: true,
+          arguments: { 'x-dead-letter-exchange': '' },
+        });
         await this.channel.prefetch(1);
 
         const consume = async (msg) => {
@@ -101,7 +104,7 @@ class ReceiverV2 {
         retryCount++;
         console.log(`[receiver] RabbitMQ connection error: ${err}`);
         if (retryCount < maxRetries) {
-          await new Promise(r => setTimeout(r, 5000));
+          await new Promise((r) => setTimeout(r, 5000));
         }
       }
     }
@@ -122,7 +125,7 @@ class ReceiverV2 {
     }
 
     const requiredFields = ['message_id', 'version', 'type', 'timestamp', 'source'];
-    const missingFields = requiredFields.filter(f => header[f] === undefined || header[f] === null);
+    const missingFields = requiredFields.filter((f) => header[f] === undefined || header[f] === null);
     if (missingFields.length > 0) {
       return [false, `Missing required header fields: ${missingFields.join(', ')}`];
     }
@@ -202,7 +205,7 @@ class ReceiverV2 {
 
   async _findUserByEmail(email) {
     const records = await this.sf.apiCall(
-      conn => conn.sobject('Member__c').find({ Email__c: email }, ['Id']).limit(1)
+      (conn) => conn.sobject('Member__c').find({ Email__c: email }, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
   }
@@ -226,6 +229,7 @@ class ReceiverV2 {
         `registration_date: ${ReceiverV2.getElementText(customer, 'registration_date')}`,
         sessionId ? `session_id: ${sessionId}` : null,
       ].filter(Boolean);
+
       if (regFee) {
         const amountVal = regFee.amount;
         const amount = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
@@ -241,7 +245,9 @@ class ReceiverV2 {
 
       const paymentStatus = regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'pending';
       const amountVal = regFee ? regFee.amount : null;
-      const registrationAmount = amountVal !== null && typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || null);
+      const registrationAmount = amountVal !== null && typeof amountVal === 'object'
+        ? amountVal['#text']
+        : (amountVal || null);
 
       const rawUserData = {
         User_ID__c: externalUserId,
@@ -258,90 +264,95 @@ class ReceiverV2 {
         Amount__c: registrationAmount ? parseFloat(registrationAmount) : null,
         Payment_Status__c: paymentStatus,
         Badge_ID__c: ReceiverV2.getElementText(customer, 'badge_id') || null,
-        Company_Name__c: isCompanyLinked === 'true' ? ReceiverV2.getElementText(customer, 'company_name') : null,
-        BTW_Number__c: isCompanyLinked === 'true' ? ReceiverV2.getElementText(customer, 'vat_number') : null,
       };
+
       const userData = Object.fromEntries(
-        Object.entries(rawUserData).filter(([, v]) => v !== null && v !== '')
+        Object.entries(rawUserData).filter(([, value]) => value !== null && value !== undefined && value !== '')
       );
+
+      let companyId = null;
+      const companyData = body ? body.company : null;
+      if (isCompanyLinked === 'true' && companyData) {
+        const companyName = ReceiverV2.getElementText(companyData, 'name');
+        const companyVat = ReceiverV2.getElementText(companyData, 'vat_number');
+        const companyEmail = ReceiverV2.getElementText(companyData, 'email');
+
+        if (companyName && companyVat) {
+          if (!this.sf.isConnected) {
+            console.log(`[receiver] DRY RUN: Would upsert Account for company VAT=${companyVat}`);
+          } else {
+            const result = await this.sf.apiCall((conn) =>
+              conn.sobject('Account').upsert({
+                Company_Name__c: companyName,
+                VAT_Number__c: companyVat,
+                Email__c: companyEmail || null,
+              }, 'VAT_Number__c')
+            );
+            companyId = result.id || null;
+            console.log(`[receiver] Upserted Account: ${companyId} for VAT ${companyVat}`);
+          }
+
+          const dbCompanyId = await this.db.upsertCompany({
+            name: companyName,
+            vat_number: companyVat,
+            email: companyEmail,
+            salesforce_account_id: companyId,
+          });
+          if (dbCompanyId) {
+            console.log(`[mysql] Upserted company: ${dbCompanyId}`);
+          }
+        }
+      }
+
+      if (companyId) {
+        userData.Account__c = companyId;
+      }
 
       if (!this.sf.isConnected) {
         console.log(`[receiver] DRY RUN: Would upsert Member__c: ${JSON.stringify(userData)}`);
       } else {
-        const sfResult = await this.sf.apiCall(
-          conn => conn.sobject('Member__c').upsert(userData, 'User_ID__c')
+        const result = await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert(userData, 'User_ID__c')
         );
-        console.log(`[receiver] Upserted Member__c: ${sfResult?.id || externalUserId}`);
+        console.log(`[receiver] Upserted Member__c: ${result.id || externalUserId}`);
       }
 
-      // Upsert person into Supabase
-      const personPayload = {
+      const dbPersonId = await this.db.upsertPerson({
         external_user_id: externalUserId,
-        company_name: rawUserData.Company_Name__c || null,
-        vat_number: rawUserData.BTW_Number__c || null,
-        language: 'NL',
-        salutation: rawUserData.Salutation__c || null,
-        first_name: rawUserData.First_Name__c,
-        last_name: rawUserData.Last_Name__c,
-        email: rawUserData.Email__c,
-        date_of_birth: rawUserData.Birthdate__c || null,
-        amount: rawUserData.Amount__c,
-        street: rawUserData.Street__c || null,
-        house_number: rawUserData.House_Number__c || null,
-        postal_code: rawUserData.Postal_Code__c || null,
-        city: rawUserData.City__c || null,
-        country: rawUserData.Country_Code__c || null,
-        payment_status: rawUserData.Payment_Status__c,
-        badge_id: rawUserData.Badge_ID__c || null,
-        person_type: userType,
+        first_name: ReceiverV2.getElementText(customer, 'first_name'),
+        last_name: ReceiverV2.getElementText(customer, 'last_name'),
+        email: ReceiverV2.getElementText(customer, 'email'),
+        date_of_birth: ReceiverV2.getElementText(customer, 'date_of_birth') || null,
+        user_type: userType,
+        badge_id: ReceiverV2.getElementText(customer, 'badge_id') || null,
+        is_company_linked: isCompanyLinked === 'true',
+        company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
+        vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+        street: address ? ReceiverV2.getElementText(address, 'street') : null,
+        house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
+        postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
+        city: address ? ReceiverV2.getElementText(address, 'city') : null,
+        country_code: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
+        amount: registrationAmount ? parseFloat(registrationAmount) : null,
+        payment_status: paymentStatus,
+      });
+
+      if (dbPersonId) {
+        console.log(`[mysql] Upserted person: ${dbPersonId}`);
+      }
+
+      const kassaPayload = {
+        message_id: header.message_id,
+        user_id: externalUserId,
+        first_name: ReceiverV2.getElementText(customer, 'first_name'),
+        last_name: ReceiverV2.getElementText(customer, 'last_name'),
+        email: ReceiverV2.getElementText(customer, 'email'),
+        date_of_birth: ReceiverV2.getElementText(customer, 'date_of_birth') || null,
+        badge_id: ReceiverV2.getElementText(customer, 'badge_id') || null,
       };
-      const sbPersonId = await this.db.upsertPerson(
-        Object.fromEntries(Object.entries(personPayload).filter(([, v]) => v !== null))
-      );
-      if (sbPersonId) {
-        console.log(`[supabase] Upserted person: ${sbPersonId}`);
-        await this.db.syncSalesforceStatus(sbPersonId, 'synced');
-      }
 
-      // Forward new_registration to kassa.incoming in Kassa's required format
-      const userId = ReceiverV2.getElementText(customer, 'user_id');
-      const typeUser = ReceiverV2.getElementText(customer, 'type');
-      const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
-      let age = null;
-      if (dateOfBirth) {
-        const today = new Date();
-        const dob = new Date(dateOfBirth);
-        age = today.getFullYear() - dob.getFullYear();
-        const birthdayPassedThisYear =
-          today.getMonth() > dob.getMonth() ||
-          (today.getMonth() === dob.getMonth() && today.getDate() >= dob.getDate());
-        if (!birthdayPassedThisYear) age -= 1;
-      }
-
-      if (userId && age !== null) {
-        const kassaPayload = {
-          customer: {
-            email: ReceiverV2.getElementText(customer, 'email'),
-            first_name: ReceiverV2.getElementText(customer, 'first_name'),
-            last_name: ReceiverV2.getElementText(customer, 'last_name'),
-            user_id: userId,
-            type: isCompanyLinked === 'true' ? 'company' : (typeUser || 'private'),
-            company_name: ReceiverV2.getElementText(customer, 'company_name'),
-            vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
-            age,
-          },
-          payment_due: {
-            amount: regFee ? (typeof regFee.amount === 'object' ? regFee.amount['#text'] : regFee.amount) : '0',
-            status: regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'unpaid',
-          },
-          session_id: sessionId || undefined,
-          correlation_id: header.message_id,
-        };
-        await this.sender.sendNewRegistrationToKassa(kassaPayload);
-      } else {
-        console.log('[receiver] Skipping Kassa forward: missing user_id or date_of_birth for age calculation');
-      }
-
+      await this.sender.sendNewRegistrationToKassa(kassaPayload);
+      console.log(`[receiver] Forwarded new_registration to Kassa for user_id=${externalUserId}`);
     } catch (err) {
       console.log(`[receiver] Error in handleNewRegistration: ${err}`);
       throw err;
@@ -378,7 +389,6 @@ class ReceiverV2 {
         return;
       }
 
-      // Try to link to contact via email (crm.incoming) or user_id lookup (kassa.payments)
       const email = ReceiverV2.getElementText(body, 'email');
       if (email) {
         const contactId = await this._findUserByEmail(email);
@@ -388,15 +398,16 @@ class ReceiverV2 {
         if (contactId) taskData.WhoId = contactId;
       }
 
-      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
+      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for payment [${paymentContext}]: ${result?.id}`);
 
-      // Insert payment into Supabase
+      // Insert payment into MySQL
       let eventAttendeeId = null;
       if (userId) {
         const personId = await this.db.findPersonByExternalId(userId);
         if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
       }
+
       const paymentPayload = {
         amount: parseFloat(amountPaid) || 0,
         payment_type: paymentContext === 'consumption' ? 'consumption' : 'registration',
@@ -404,9 +415,11 @@ class ReceiverV2 {
         payment_method: ReceiverV2.getElementText(transaction, 'payment_method') || null,
         paid_at: new Date().toISOString(),
       };
+
       if (eventAttendeeId) paymentPayload.event_attendee_id = eventAttendeeId;
-      const sbPaymentId = await this.db.insertPayment(paymentPayload);
-      if (sbPaymentId) console.log(`[supabase] Inserted payment: ${sbPaymentId}`);
+
+      const dbPaymentId = await this.db.insertPayment(paymentPayload);
+      if (dbPaymentId) console.log(`[mysql] Inserted payment: ${dbPaymentId}`);
     } catch (err) {
       console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
       throw err;
@@ -419,6 +432,7 @@ class ReceiverV2 {
         console.log('[receiver] Missing body in badge_scanned message');
         return;
       }
+
       const taskData = {
         Subject: `Badge scanned: ${ReceiverV2.getElementText(body, 'badge_id')}`,
         Description: [
@@ -442,15 +456,15 @@ class ReceiverV2 {
         if (contactId) taskData.WhoId = contactId;
       }
 
-      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
+      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for badge scan: ${result?.id}`);
 
-      // Record check-in time in Supabase
+      // Record check-in time in MySQL
       const scanEmail = ReceiverV2.getElementText(body, 'email');
       if (scanEmail) {
-        const { personId, error: sbError } = await this.db.findPersonByEmailForCheckIn(scanEmail);
-        if (sbError) {
-          console.log(`[supabase] Error looking up person for badge scan: ${sbError.message}`);
+        const { personId, error: dbError } = await this.db.findPersonByEmailForCheckIn(scanEmail);
+        if (dbError) {
+          console.log(`[mysql] Error looking up person for badge scan: ${dbError.message}`);
         } else if (personId) {
           await this.db.updateEventAttendeeCheckIn(personId);
         }
@@ -467,6 +481,7 @@ class ReceiverV2 {
         console.log('[receiver] Missing body in session_update message');
         return;
       }
+
       const taskData = {
         Subject: `Session update: ${ReceiverV2.getElementText(body, 'session_name')}`,
         Description: [
@@ -485,7 +500,7 @@ class ReceiverV2 {
         return;
       }
 
-      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
+      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for session update: ${result?.id}`);
     } catch (err) {
       console.log(`[receiver] Error in handleSessionUpdate: ${err}`);
@@ -519,7 +534,7 @@ class ReceiverV2 {
         if (contactId) taskData.WhoId = contactId;
       }
 
-      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
+      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for invoice status: ${result?.id}`);
     } catch (err) {
       console.log(`[receiver] Error in handleInvoiceStatus: ${err}`);
@@ -533,6 +548,7 @@ class ReceiverV2 {
         console.log('[receiver] Missing body in mailing_status message');
         return;
       }
+
       const taskData = {
         Subject: `Mailing status: ${ReceiverV2.getElementText(body, 'mailing_id')}`,
         Description: [
@@ -550,7 +566,7 @@ class ReceiverV2 {
         return;
       }
 
-      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
+      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for mailing status: ${result?.id}`);
     } catch (err) {
       console.log(`[receiver] Error in handleMailingStatus: ${err}`);
@@ -558,9 +574,41 @@ class ReceiverV2 {
     }
   }
 
+  sendToDeadLetter(content, reason) {
+    if (this.channel) {
+      const deadLetterContent = Buffer.from(
+        JSON.stringify({
+          reason,
+          originalContent: content.toString('utf8'),
+          timestamp: new Date().toISOString(),
+        })
+      );
+      this.channel.sendToQueue(DEAD_LETTER_QUEUE, deadLetterContent, { persistent: true });
+      console.log(`[receiver] Message sent to dead-letter queue: ${reason}`);
+    }
+  }
+
+  static getElementText(obj, key) {
+    if (!obj || obj[key] === undefined || obj[key] === null) {
+      return null;
+    }
+    const value = obj[key];
+    if (typeof value === 'object' && value['#text'] !== undefined) {
+      return value['#text'];
+    }
+    if (Array.isArray(value)) {
+      const first = value[0];
+      if (typeof first === 'object' && first['#text'] !== undefined) {
+        return first['#text'];
+      }
+      return String(first);
+    }
+    return String(value);
+  }
+
   async _findUserById(userId) {
     const records = await this.sf.apiCall(
-      conn => conn.sobject('Member__c').find({ User_ID__c: userId }, ['Id']).limit(1)
+      (conn) => conn.sobject('Member__c').find({ User_ID__c: userId }, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
   }
@@ -575,7 +623,6 @@ class ReceiverV2 {
         ? (Array.isArray(items.item) ? items.item : [items.item]).filter(Boolean)
         : [];
 
-      // Resolve Salesforce Member__c record ID
       let memberId = null;
       if (!isAnonymous && customer) {
         const email = ReceiverV2.getElementText(customer, 'email');
@@ -590,41 +637,47 @@ class ReceiverV2 {
         return;
       }
 
-      // Upsert each item as a Consumption__c record
       for (let i = 0; i < itemList.length; i++) {
         const item = itemList[i];
+        const lineId = item.id;
         const unitPriceVal = item.unit_price;
         const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
         const qty = parseInt(item.quantity, 10) || 1;
 
         const consumptionData = {
-          Consumption_ID__c: `${header.message_id}-${i}`,
+          Consumption_ID__c: lineId || `${header.message_id}-${i}`,
           Product_Name__c: String(item.description),
           Quantity__c: qty,
           Total_Amount__c: unitPrice * qty,
           Price_Per_Unit__c: unitPrice,
         };
+
         if (memberId) {
           consumptionData.Member__c = memberId;
         }
 
-        await this.sf.apiCall(conn => conn.sobject('Consumption__c').upsert(consumptionData, 'Consumption_ID__c'));
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Consumption__c').upsert(consumptionData, 'Consumption_ID__c')
+        );
         console.log(`[receiver] Upserted Consumption__c: ${consumptionData.Consumption_ID__c}`);
       }
 
-      // Insert each item into Supabase
+      // Insert each item into MySQL
       if (!isAnonymous && customer) {
         const userId = ReceiverV2.getElementText(customer, 'user_id');
         let eventAttendeeId = null;
+
         if (userId) {
           const personId = await this.db.findPersonByExternalId(userId);
           if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
         }
+
         if (eventAttendeeId) {
           for (const item of itemList) {
             const unitPriceVal = item.unit_price;
             const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
             const qty = parseInt(item.quantity, 10) || 1;
+
             await this.db.insertConsumption({
               event_attendee_id: eventAttendeeId,
               item_name: String(item.description),
@@ -634,7 +687,8 @@ class ReceiverV2 {
               paid: false,
             });
           }
-          console.log(`[supabase] Inserted ${itemList.length} consumption(s) for attendee: ${eventAttendeeId}`);
+
+          console.log(`[mysql] Inserted ${itemList.length} consumption(s) for attendee: ${eventAttendeeId}`);
         }
       }
     } catch (err) {
@@ -655,7 +709,7 @@ class ReceiverV2 {
 
       const sfUserId = userId ? await this._findUserById(userId) : null;
       if (sfUserId) {
-        await this.sf.apiCall(conn => conn.sobject('Member__c').update({
+        await this.sf.apiCall((conn) => conn.sobject('Member__c').update({
           Id: sfUserId,
           Badge_ID__c: badgeId,
         }));
@@ -690,9 +744,8 @@ class ReceiverV2 {
           `Amount: ${amount} ${currency}`,
           `Method: ${ReceiverV2.getElementText(refund, 'method')}`,
           `Reason: ${ReceiverV2.getElementText(refund, 'reason')}`,
-          `Description: ${ReceiverV2.getElementText(refund, 'description')}`,
-          `Original Transaction: ${originalTxId}`,
-          newWallet ? `New Wallet Balance: ${newWallet} ${currency}` : null,
+          originalTxId ? `Original Transaction ID: ${originalTxId}` : null,
+          newWallet ? `New Wallet Balance: ${newWallet}` : null,
           userId ? `User ID: ${userId}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
@@ -705,13 +758,17 @@ class ReceiverV2 {
         return;
       }
 
-      if (userId) {
+      const email = ReceiverV2.getElementText(body, 'email');
+      if (email) {
+        const contactId = await this._findUserByEmail(email);
+        if (contactId) taskData.WhoId = contactId;
+      } else if (userId) {
         const contactId = await this._findUserById(userId);
         if (contactId) taskData.WhoId = contactId;
       }
 
-      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
-      console.log(`[receiver] Created Task for refund: ${result?.id}`);
+      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+      console.log(`[receiver] Created Task for refund_processed: ${result?.id}`);
     } catch (err) {
       console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
       throw err;
@@ -720,21 +777,19 @@ class ReceiverV2 {
 
   async handleInvoiceRequestFromKassa(header, body) {
     try {
+      const invoice = body ? body.invoice : null;
       const userId = ReceiverV2.getElementText(body, 'user_id');
-      const invoiceData = body ? body.invoice_data : null;
-      const address = invoiceData ? invoiceData.address : null;
 
       const taskData = {
-        Subject: `Invoice request from Kassa for user: ${userId}`,
+        Subject: `Invoice request [Kassa]: ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
         Description: [
-          `User ID: ${userId}`,
-          `Name: ${ReceiverV2.getElementText(invoiceData, 'first_name')} ${ReceiverV2.getElementText(invoiceData, 'last_name')}`,
-          `Email: ${ReceiverV2.getElementText(invoiceData, 'email')}`,
-          `VAT: ${ReceiverV2.getElementText(invoiceData, 'vat_number')}`,
-          address ? `Address: ${ReceiverV2.getElementText(address, 'street')} ${ReceiverV2.getElementText(address, 'number')}, ${ReceiverV2.getElementText(address, 'postal_code')} ${ReceiverV2.getElementText(address, 'city')}` : null,
-          `Correlation ID: ${header.correlation_id || 'N/A'}`,
+          `Invoice ID: ${ReceiverV2.getElementText(invoice, 'id')}`,
+          `Amount Paid: ${ReceiverV2.getElementText(invoice, 'amount_paid')}`,
+          `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
+          `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
+          userId ? `User ID: ${userId}` : null,
         ].filter(Boolean).join('\n'),
-        Status: 'Not Started',
+        Status: 'Completed',
         Type: 'Other',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
@@ -744,72 +799,54 @@ class ReceiverV2 {
         return;
       }
 
-      const email = ReceiverV2.getElementText(invoiceData, 'email');
+      const email = ReceiverV2.getElementText(body, 'email');
       if (email) {
         const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
+      } else if (userId) {
+        const contactId = await this._findUserById(userId);
+        if (contactId) taskData.WhoId = contactId;
       }
 
-      const result = await this.sf.apiCall(conn => conn.sobject('Task').create(taskData));
-      console.log(`[receiver] Created Task for Kassa invoice request: ${result?.id}`);
+      const sfResult = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+      console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
 
-      // Forward to facturatie queue
       await this.sender.sendInvoiceRequest({
-        customer: {
-          email: ReceiverV2.getElementText(invoiceData, 'email'),
-          first_name: ReceiverV2.getElementText(invoiceData, 'first_name'),
-          last_name: ReceiverV2.getElementText(invoiceData, 'last_name'),
-        },
-        invoice: {
-          description: `Invoice request for user ${userId}`,
-          amount: 0,
-          currency: 'eur',
-          due_date: new Date().toISOString().split('T')[0],
-        },
-        items: [],
-        correlation_id: header.correlation_id || header.message_id,
+        message_id: header.message_id,
+        customer_name: body.customer_name || ReceiverV2.getElementText(body, 'customer_name'),
+        customer_email: ReceiverV2.getElementText(body, 'email'),
+        amount: ReceiverV2.getElementText(invoice, 'amount_paid'),
+        currency: (invoice && invoice.amount_paid && invoice.amount_paid.currency) || 'eur',
       });
-      console.log('[receiver] Invoice request forwarded to facturatie queue');
+      console.log('[receiver] Forwarded invoice_request to facturatie');
     } catch (err) {
       console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
       throw err;
     }
   }
 
-  sendToDeadLetter(originalBody, reason) {
-    try {
-      const deadLetterMessage = JSON.stringify({
-        original_message: originalBody.toString('utf8'),
-        error_reason: reason,
-        timestamp: new Date().toISOString(),
-      });
-      const ok = this.channel.sendToQueue(
-        DEAD_LETTER_QUEUE,
-        Buffer.from(deadLetterMessage),
-        { deliveryMode: 2 }
-      );
-      if (!ok) console.log('[receiver] Warning: write buffer full, dead letter message may be dropped');
-      console.log(`[receiver] Message sent to dead letter queue: ${reason}`);
-    } catch (err) {
-      console.log(`[receiver] Error sending to dead letter queue: ${err}`);
-    }
-  }
-
-  static getElementText(parent, tagName) {
-    if (!parent) return null;
-    const val = parent[tagName];
-    if (val === undefined || val === null) return null;
-    if (typeof val === 'object' && '#text' in val) return String(val['#text']);
-    if (typeof val === 'object') return null;
-    return String(val);
-  }
-
   async shutdown() {
     console.log('[receiver] Signal received, shutting down gracefully...');
     this.running = false;
-    try { if (this.channel) await this.channel.close(); } catch { /* ignore */ }
-    try { if (this.connection) await this.connection.close(); } catch { /* ignore */ }
-    try { await this.sender.close(); } catch { /* ignore */ }
+
+    try {
+      if (this.channel) await this.channel.close();
+    } catch (err) {
+      console.log(`[receiver] Error closing channel: ${err}`);
+    }
+
+    try {
+      if (this.connection) await this.connection.close();
+    } catch (err) {
+      console.log(`[receiver] Error closing connection: ${err}`);
+    }
+
+    try {
+      await this.sender.close();
+    } catch (err) {
+      console.log(`[receiver] Error closing sender connection: ${err}`);
+    }
+
     process.exit(0);
   }
 }

@@ -8,7 +8,15 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+      mysql:
+        condition: service_healthy
     restart: on-failure
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: crm_demo
+      MYSQL_USER: crm_user
+      MYSQL_PASSWORD: crm_pass
 
   rabbitmq:
     image: rabbitmq:3-management
@@ -20,3 +28,25 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: crm_demo
+      MYSQL_USER: crm_user
+      MYSQL_PASSWORD: crm_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ucrm_user", "-pcrm_pass"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql_data:
