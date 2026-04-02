@@ -217,15 +217,20 @@ class ReceiverV2 {
         return;
       }
 
+      const contact = customer.contact || null;
+      const getCustomerText = (key) =>
+        ReceiverV2.getElementText(customer, key)
+        || ReceiverV2.getElementText(contact, key);
+
       const address = customer.address || null;
-      const regFee = customer.registration_fee || null;
+      const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
       const sessionId = ReceiverV2.getElementText(body, 'session_id');
 
       const descriptionParts = [
-        `user_id: ${ReceiverV2.getElementText(customer, 'user_id')}`,
-        `type: ${ReceiverV2.getElementText(customer, 'type')}`,
-        `badge_id: ${ReceiverV2.getElementText(customer, 'badge_id')}`,
-        `registration_date: ${ReceiverV2.getElementText(customer, 'registration_date')}`,
+        `user_id: ${getCustomerText('user_id')}`,
+        `type: ${getCustomerText('type')}`,
+        `badge_id: ${getCustomerText('badge_id')}`,
+        `registration_date: ${getCustomerText('registration_date')}`,
         sessionId ? `session_id: ${sessionId}` : null,
       ].filter(Boolean);
 
@@ -233,16 +238,19 @@ class ReceiverV2 {
         const amountVal = regFee.amount;
         const amount = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
         const currency = typeof amountVal === 'object' ? (amountVal.currency || 'eur') : 'eur';
-        const paid = ReceiverV2.getElementText(regFee, 'paid');
+        const paid = ReceiverV2.getElementText(regFee, 'paid') || ReceiverV2.getElementText(regFee, 'status');
         descriptionParts.push(`registration_fee: ${amount} ${currency} - paid: ${paid}`);
       }
 
-      const externalUserId = ReceiverV2.getElementText(customer, 'user_id');
-      const isCompanyLinked = ReceiverV2.getElementText(customer, 'is_company_linked');
-      const rawType = ReceiverV2.getElementText(customer, 'type');
+      const externalUserId = getCustomerText('user_id');
+      const isCompanyLinked = getCustomerText('is_company_linked');
+      const rawType = getCustomerText('type');
       const userType = (isCompanyLinked === 'true' || rawType === 'company') ? 'Bedrijf' : 'Particulier';
 
-      const paymentStatus = regFee && ReceiverV2.getElementText(regFee, 'paid') === 'true' ? 'paid' : 'pending';
+      const paymentFlag = ReceiverV2.getElementText(regFee, 'paid');
+      const paymentState = ReceiverV2.getElementText(regFee, 'status');
+      const paymentStatus = (paymentFlag === 'true' || paymentState === 'paid') ? 'paid' : 'pending';
+
       const amountVal = regFee ? regFee.amount : null;
       const registrationAmount = amountVal !== null && typeof amountVal === 'object'
         ? amountVal['#text']
@@ -250,10 +258,10 @@ class ReceiverV2 {
 
       const rawUserData = {
         User_ID__c: externalUserId,
-        First_Name__c: ReceiverV2.getElementText(customer, 'first_name'),
-        Last_Name__c: ReceiverV2.getElementText(customer, 'last_name'),
-        Email__c: ReceiverV2.getElementText(customer, 'email'),
-        Birthdate__c: ReceiverV2.getElementText(customer, 'date_of_birth'),
+        First_Name__c: getCustomerText('first_name'),
+        Last_Name__c: getCustomerText('last_name'),
+        Email__c: getCustomerText('email'),
+        Birthdate__c: getCustomerText('date_of_birth'),
         User_Type__c: userType,
         Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
         House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
@@ -262,7 +270,7 @@ class ReceiverV2 {
         Country_Code__c: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
         Amount__c: registrationAmount ? parseFloat(registrationAmount) : null,
         Payment_Status__c: paymentStatus,
-        Badge_ID__c: ReceiverV2.getElementText(customer, 'badge_id') || null,
+        Badge_ID__c: getCustomerText('badge_id') || null,
       };
 
       const userData = Object.fromEntries(
@@ -292,7 +300,7 @@ class ReceiverV2 {
           }
 
           const dbCompanyId = await this.db.upsertCompany({
-            name: companyName,
+            company_name: companyName,
             vat_number: companyVat,
             email: companyEmail,
             salesforce_account_id: companyId,
@@ -318,12 +326,12 @@ class ReceiverV2 {
 
       const dbPersonId = await this.db.upsertPerson({
         external_user_id: externalUserId,
-        first_name: ReceiverV2.getElementText(customer, 'first_name'),
-        last_name: ReceiverV2.getElementText(customer, 'last_name'),
-        email: ReceiverV2.getElementText(customer, 'email'),
-        date_of_birth: ReceiverV2.getElementText(customer, 'date_of_birth') || null,
-        user_type: userType,
-        badge_id: ReceiverV2.getElementText(customer, 'badge_id') || null,
+        first_name: getCustomerText('first_name'),
+        last_name: getCustomerText('last_name'),
+        email: getCustomerText('email'),
+        date_of_birth: getCustomerText('date_of_birth') || null,
+        person_type: userType,
+        badge_id: getCustomerText('badge_id') || null,
         is_company_linked: isCompanyLinked === 'true',
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
         vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
@@ -331,7 +339,7 @@ class ReceiverV2 {
         house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
         postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
         city: address ? ReceiverV2.getElementText(address, 'city') : null,
-        country_code: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
+        country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
         amount: registrationAmount ? parseFloat(registrationAmount) : null,
         payment_status: paymentStatus,
       });
@@ -340,14 +348,23 @@ class ReceiverV2 {
         console.log(`[mysql] Upserted person: ${dbPersonId}`);
       }
 
+      const age = Number(getCustomerText('age') || 0);
+
       const kassaPayload = {
-        message_id: header.message_id,
-        user_id: externalUserId,
-        first_name: ReceiverV2.getElementText(customer, 'first_name'),
-        last_name: ReceiverV2.getElementText(customer, 'last_name'),
-        email: ReceiverV2.getElementText(customer, 'email'),
-        date_of_birth: ReceiverV2.getElementText(customer, 'date_of_birth') || null,
-        badge_id: ReceiverV2.getElementText(customer, 'badge_id') || null,
+        customer: {
+          email: getCustomerText('email'),
+          first_name: getCustomerText('first_name'),
+          last_name: getCustomerText('last_name'),
+          user_id: externalUserId,
+          type: isCompanyLinked === 'true' ? 'company' : (rawType || 'private'),
+          company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
+          vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+          age,
+        },
+        payment_due: {
+          amount: registrationAmount || '0',
+          status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
+        },
       };
 
       await this.sender.sendNewRegistrationToKassa(kassaPayload);
