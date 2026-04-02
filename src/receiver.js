@@ -596,7 +596,7 @@ class ReceiverV2 {
   
          // 1. Haal het unieke ID uit de XML (LINE-xxx)
         const lineId = item.id; // Het veld <id> uit de XSD v2.3
-        const sku = item.sku;   // Het product-ID <sku>
+        //const sku = item.sku;   // Het product-ID <sku>
   
         const unitPriceVal = item.unit_price;
         const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
