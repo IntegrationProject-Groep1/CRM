@@ -593,24 +593,32 @@ class ReceiverV2 {
       // Upsert each item as a Consumption__c record
       for (let i = 0; i < itemList.length; i++) {
         const item = itemList[i];
+  
+         // 1. Haal het unieke ID uit de XML (LINE-xxx)
+        const lineId = item.id; // Het veld <id> uit de XSD v2.3
+        const sku = item.sku;   // Het product-ID <sku>
+  
         const unitPriceVal = item.unit_price;
         const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
         const qty = parseInt(item.quantity, 10) || 1;
 
         const consumptionData = {
-          Consumption_ID__c: `${header.message_id}-${i}`,
-          Product_Name__c: String(item.description),
-          Quantity__c: qty,
-          Total_Amount__c: unitPrice * qty,
-          Price_Per_Unit__c: unitPrice,
-        };
-        if (memberId) {
-          consumptionData.Member__c = memberId;
-        }
+    // 2. Gebruik het ID van Kassa voor de Upsert
+        Consumption_ID__c: lineId || `${header.message_id}-${i}`, 
+        Product_Name__c: String(item.description),
+        Product_SKU__c: String(sku), // Optioneel: voeg SKU toe aan Salesforce
+        Quantity__c: qty,
+        Total_Amount__c: unitPrice * qty,
+        Price_Per_Unit__c: unitPrice,
+      };
 
-        await this.sf.apiCall(conn => conn.sobject('Consumption__c').upsert(consumptionData, 'Consumption_ID__c'));
-        console.log(`[receiver] Upserted Consumption__c: ${consumptionData.Consumption_ID__c}`);
+      if (memberId) {
+        consumptionData.Member__c = memberId;
       }
+
+      // Salesforce Upsert
+      await this.sf.apiCall(conn => conn.sobject('Consumption__c').upsert(consumptionData, 'Consumption_ID__c'));
+    }
 
       // Insert each item into Supabase
       if (!isAnonymous && customer) {
