@@ -14,14 +14,19 @@
  *   RABBITMQ_USER  – username      (default: guest)
  *   RABBITMQ_PASS  – password      (default: guest)
  *   RABBITMQ_VHOST – virtual host  (default: /)
+ *
+ * If the password is stored in a Compose-friendly form, every "$$" sequence
+ * is normalized back to a single "$" before connecting.
  */
 function getAmqpOptions() {
+  const rawPassword = process.env.RABBITMQ_PASS || 'guest';
+
   return {
     protocol: 'amqp',
     hostname: process.env.RABBITMQ_HOST  || 'localhost',
     port:     parseInt(process.env.RABBITMQ_PORT  || '5672', 10),
     username: process.env.RABBITMQ_USER  || 'guest',
-    password: process.env.RABBITMQ_PASS  || 'guest',
+    password: rawPassword.replace(/\$\$/g, '$'),
     vhost:    process.env.RABBITMQ_VHOST || '/',
   };
 }

@@ -6,6 +6,8 @@ services:
     ports:
       - "3000:3000"
     depends_on:
+      rabbitmq_broker:
+        condition: service_healthy
       mysql:
         condition: service_healthy
     restart: on-failure
@@ -16,12 +18,18 @@ services:
       MYSQL_USER: crm_user
       MYSQL_PASSWORD: crm_pass
 
-  rabbitmq:
+  rabbitmq_broker:
     image: rabbitmq:3-management
-    profiles: [local]
     ports:
       - "5672:5672"
       - "15672:15672"
+    environment:
+      # The broker is initialized with the same credentials that the receiver
+      # uses, so the two containers can authenticate without a separate URL.
+      # When the host-side RabbitMQ variables are missing, Compose falls back
+      # to guest/guest so local development still starts cleanly.
+      RABBITMQ_DEFAULT_USER: ${RABBITMQCRM_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQCRM_PASSRAW:-guest}
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
