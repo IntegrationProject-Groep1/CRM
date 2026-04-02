@@ -4,7 +4,7 @@ require('dotenv').config();
 const http = require('http');
 const amqp = require('amqplib');
 const { XMLParser } = require('fast-xml-parser');
-const { getAmqpUrl } = require('./amqpUrl');
+const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
 const MySQLService = require('./mysqlClient');
@@ -69,7 +69,7 @@ class ReceiverV2 {
 
     while (retryCount < maxRetries && this.running) {
       try {
-        this.connection = await amqp.connect(getAmqpUrl());
+        this.connection = await amqp.connect(getAmqpOptions());
         this.channel = await this.connection.createChannel();
 
         await this.channel.assertQueue(QUEUE_NAME, { durable: true });
