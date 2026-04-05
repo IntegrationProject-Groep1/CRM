@@ -348,7 +348,7 @@ class ReceiverV2 {
         console.log(`[mysql] Upserted person: ${dbPersonId}`);
       }
 
-      const age = Number(getCustomerText('age') || 0);
+      //const age = Number(getCustomerText('age') || 0);
 
       const kassaPayload = {
         customer: {
@@ -359,7 +359,7 @@ class ReceiverV2 {
           type: isCompanyLinked === 'true' ? 'company' : (rawType || 'private'),
           company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
           vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-          age,
+          date_of_birth: getCustomerText('date_of_birth'), // <-- AANGEPAST VOOR TEAM KASSA
         },
         payment_due: {
           amount: registrationAmount || '0',
@@ -656,16 +656,27 @@ class ReceiverV2 {
       for (let i = 0; i < itemList.length; i++) {
         const item = itemList[i];
         const lineId = item.id;
+        
+        // Haal waarden op
         const unitPriceVal = item.unit_price;
         const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
         const qty = parseInt(item.quantity, 10) || 1;
+        
+        // Nieuwe Kassa velden ophalen
+        const sku = item.sku || null;
+        const vatRate = item.vat_rate ? parseFloat(item.vat_rate) : null;
+        const totalAmountVal = item.total_amount;
+        const providedTotal = parseFloat(typeof totalAmountVal === 'object' ? totalAmountVal['#text'] : totalAmountVal);
+        const finalTotalAmount = isNaN(providedTotal) ? (unitPrice * qty) : providedTotal; // Gebruik Kassa totaal, anders bereken zelf
 
         const consumptionData = {
           Consumption_ID__c: lineId || `${header.message_id}-${i}`,
           Product_Name__c: String(item.description),
           Quantity__c: qty,
-          Total_Amount__c: unitPrice * qty,
+          Total_Amount__c: finalTotalAmount, // <-- AANGEPAST
           Price_Per_Unit__c: unitPrice,
+          SKU__c: sku,                       // <-- NIEUW (Zorg dat dit veld bestaat in Salesforce!)
+          VAT_Rate__c: vatRate               // <-- NIEUW (Zorg dat dit veld bestaat in Salesforce!)
         };
 
         if (memberId) {
@@ -699,7 +710,9 @@ class ReceiverV2 {
               item_name: String(item.description),
               quantity: qty,
               unit_price: unitPrice,
-              total_price: unitPrice * qty,
+              total_price: finalTotalAmount, // <-- AANGEPAST
+              sku: sku,                      // <-- NIEUW
+              vat_rate: vatRate,             // <-- NIEUW
               paid: false,
             });
           }
