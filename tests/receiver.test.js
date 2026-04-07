@@ -47,6 +47,8 @@ jest.mock('../src/mysqlClient', () => {
     findPersonByEmailForCheckIn: jest.fn().mockResolvedValue({ personId: null, error: null }),
     findEventAttendeeByPersonId: jest.fn().mockResolvedValue(null),
     updateEventAttendeeCheckIn: jest.fn().mockResolvedValue(undefined),
+    softDeletePerson: jest.fn().mockResolvedValue(true),
+    softDeleteConsumptionsByUserId: jest.fn().mockResolvedValue(true),
   }));
 });
 
@@ -785,8 +787,8 @@ describe('handleInvoiceRequestFromKassa', () => {
     await receiver.handleMessage(buildMsg(kassaInvoiceXml()));
     expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
       expect.objectContaining({
-        customer_email: 'kassa@example.com',
-        amount: '150.00',
+        customer: expect.objectContaining({ email: 'kassa@example.com' }),
+        invoice: expect.objectContaining({ amount: 150 }),
       }),
     );
   });
