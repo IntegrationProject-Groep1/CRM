@@ -350,7 +350,16 @@ class ReceiverV2 {
         console.log(`[mysql] Upserted person: ${dbPersonId}`);
       }
 
-      //const age = Number(getCustomerText('age') || 0);
+      const dateOfBirth = getCustomerText('date_of_birth');
+      let age = null;
+      if (dateOfBirth) {
+        const today = new Date();
+        const dob = new Date(dateOfBirth);
+        age = today.getFullYear() - dob.getFullYear();
+        const birthdayPassed = today.getMonth() > dob.getMonth() ||
+          (today.getMonth() === dob.getMonth() && today.getDate() >= dob.getDate());
+        if (!birthdayPassed) age -= 1;
+      }
 
       const kassaPayload = {
         customer: {
@@ -361,7 +370,7 @@ class ReceiverV2 {
           type: isCompanyLinked === 'true' ? 'company' : (rawType || 'private'),
           company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
           vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-          date_of_birth: getCustomerText('date_of_birth'), // <-- AANGEPAST VOOR TEAM KASSA
+          age: age !== null ? age : undefined,
         },
         payment_due: {
           amount: registrationAmount || '0',
@@ -712,9 +721,7 @@ class ReceiverV2 {
               item_name: String(item.description),
               quantity: qty,
               unit_price: unitPrice,
-              total_price: finalTotalAmount, // <-- AANGEPAST
-              sku: sku,                      // <-- NIEUW
-              vat_rate: vatRate,             // <-- NIEUW
+              total_price: unitPrice * qty,
               paid: false,
             });
           }
@@ -736,13 +743,16 @@ class ReceiverV2 {
         return;
       }
 
-      // Soft delete in MySQL
+      // Soft delete user and their consumptions in MySQL
       const deleted = await this.db.softDeletePerson(userId);
       if (deleted) {
         console.log(`[receiver] Soft-deleted user in MySQL: ${userId}`);
       } else {
         console.log(`[receiver] User not found or already deleted in MySQL: ${userId}`);
       }
+
+      await this.db.softDeleteConsumptionsByUserId(userId);
+      console.log(`[receiver] Soft-deleted consumptions for user: ${userId}`);
 
       // Salesforce record is intentionally left intact — soft delete only for now
     } catch (err) {
@@ -865,12 +875,26 @@ class ReceiverV2 {
       const sfResult = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
 
+      const amountPaidVal = invoice ? invoice.amount_paid : null;
+      const amountPaid = amountPaidVal !== null && typeof amountPaidVal === 'object' ? amountPaidVal['#text'] : amountPaidVal;
+      const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';
+      const email = ReceiverV2.getElementText(body, 'email');
+
       await this.sender.sendInvoiceRequest({
-        message_id: header.message_id,
-        customer_name: body.customer_name || ReceiverV2.getElementText(body, 'customer_name'),
-        customer_email: ReceiverV2.getElementText(body, 'email'),
-        amount: ReceiverV2.getElementText(invoice, 'amount_paid'),
-        currency: (invoice && invoice.amount_paid && invoice.amount_paid.currency) || 'eur',
+        correlation_id: header.message_id,
+        customer: {
+          email: email || '',
+          first_name: ReceiverV2.getElementText(body, 'first_name') || '',
+          last_name: ReceiverV2.getElementText(body, 'last_name') || '',
+        },
+        invoice: {
+          description: `Invoice ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
+          amount: parseFloat(amountPaid) || 0,
+          currency,
+          due_date: ReceiverV2.getElementText(invoice, 'due_date') || new Date().toISOString().split('T')[0],
+          invoice_number: ReceiverV2.getElementText(invoice, 'id') || undefined,
+        },
+        items: [],
       });
       console.log('[receiver] Forwarded invoice_request to facturatie');
     } catch (err) {
