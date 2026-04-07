@@ -744,18 +744,7 @@ class ReceiverV2 {
         console.log(`[receiver] User not found or already deleted in MySQL: ${userId}`);
       }
 
-      // Hard delete in Salesforce
-      const sfId = await this._findUserById(userId);
-      if (sfId) {
-        if (!this.sf.isConnected) {
-          console.log(`[receiver] DRY RUN: Would delete Member__c ${sfId} from Salesforce`);
-        } else {
-          await this.sf.apiCall(conn => conn.sobject('Member__c').destroy(sfId));
-          console.log(`[receiver] Deleted Member__c from Salesforce: ${sfId}`);
-        }
-      } else {
-        console.log(`[receiver] No Salesforce record found for user_id: ${userId}`);
-      }
+      // Salesforce record is intentionally left intact — soft delete only for now
     } catch (err) {
       console.log(`[receiver] Error in handleDeleteUser: ${err}`);
       throw err;
