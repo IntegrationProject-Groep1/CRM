@@ -878,7 +878,6 @@ class ReceiverV2 {
       const amountPaidVal = invoice ? invoice.amount_paid : null;
       const amountPaid = amountPaidVal !== null && typeof amountPaidVal === 'object' ? amountPaidVal['#text'] : amountPaidVal;
       const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';
-      const email = ReceiverV2.getElementText(body, 'email');
 
       await this.sender.sendInvoiceRequest({
         correlation_id: header.message_id,
