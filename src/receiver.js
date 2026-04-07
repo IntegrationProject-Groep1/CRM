@@ -25,6 +25,7 @@ const MESSAGE_TYPES = {
   BADGE_ASSIGNED: 'badge_assigned',
   REFUND_PROCESSED: 'refund_processed',
   INVOICE_REQUEST: 'invoice_request',
+  DELETE_USER: 'delete_user',
 };
 
 const parser = new XMLParser({
@@ -193,6 +194,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.BADGE_ASSIGNED]: () => this.handleBadgeAssigned(header, body),
       [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body),
       [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
+      [MESSAGE_TYPES.DELETE_USER]: () => this.handleDeleteUser(header, body),
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -722,6 +724,40 @@ class ReceiverV2 {
       }
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
+      throw err;
+    }
+  }
+
+  async handleDeleteUser(header, body) {
+    try {
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      if (!userId) {
+        console.log('[receiver] handleDeleteUser: missing user_id');
+        return;
+      }
+
+      // Soft delete in MySQL
+      const deleted = await this.db.softDeletePerson(userId);
+      if (deleted) {
+        console.log(`[receiver] Soft-deleted user in MySQL: ${userId}`);
+      } else {
+        console.log(`[receiver] User not found or already deleted in MySQL: ${userId}`);
+      }
+
+      // Hard delete in Salesforce
+      const sfId = await this._findUserById(userId);
+      if (sfId) {
+        if (!this.sf.isConnected) {
+          console.log(`[receiver] DRY RUN: Would delete Member__c ${sfId} from Salesforce`);
+        } else {
+          await this.sf.apiCall(conn => conn.sobject('Member__c').destroy(sfId));
+          console.log(`[receiver] Deleted Member__c from Salesforce: ${sfId}`);
+        }
+      } else {
+        console.log(`[receiver] No Salesforce record found for user_id: ${userId}`);
+      }
+    } catch (err) {
+      console.log(`[receiver] Error in handleDeleteUser: ${err}`);
       throw err;
     }
   }
