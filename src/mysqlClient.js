@@ -367,6 +367,41 @@ class MySQLService {
 
   // ── Consumptions ──────────────────────────────────────────────────────────
 
+  async softDeleteConsumptionsByUserId(externalUserId) {
+    if (!this.isConnected) return false;
+
+    const [result, error] = await this.query(
+      `UPDATE consumptions c
+       JOIN event_attendees ea ON c.event_attendee_id = ea.id
+       SET c.deleted_at = NOW()
+       WHERE ea.person_id = ? AND c.deleted_at IS NULL`,
+      [externalUserId]
+    );
+
+    if (error) {
+      console.log(`[mysql] Error soft-deleting consumptions for user ${externalUserId}: ${error.message}`);
+      return false;
+    }
+
+    return result.affectedRows > 0;
+  }
+
+  async softDeletePerson(externalUserId) {
+    if (!this.isConnected) return false;
+
+    const [result, error] = await this.query(
+      `UPDATE ${this.userTable} SET deleted_at = NOW() WHERE User_ID__c = ? AND deleted_at IS NULL`,
+      [externalUserId]
+    );
+
+    if (error) {
+      console.log(`[mysql] Error soft-deleting person: ${error.message}`);
+      return false;
+    }
+
+    return result.affectedRows > 0;
+  }
+
   async insertConsumption(data) {
     if (!this.isConnected) return null;
 

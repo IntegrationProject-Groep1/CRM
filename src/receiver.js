@@ -25,6 +25,7 @@ const MESSAGE_TYPES = {
   BADGE_ASSIGNED: 'badge_assigned',
   REFUND_PROCESSED: 'refund_processed',
   INVOICE_REQUEST: 'invoice_request',
+  DELETE_USER: 'delete_user',
 };
 
 const parser = new XMLParser({
@@ -193,6 +194,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.BADGE_ASSIGNED]: () => this.handleBadgeAssigned(header, body),
       [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body),
       [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
+      [MESSAGE_TYPES.DELETE_USER]: () => this.handleDeleteUser(header, body),
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -210,173 +212,162 @@ class ReceiverV2 {
   }
 
   async handleNewRegistration(header, body) {
-    try {
-      // 1. MASTER UUID UIT HEADER HALEN (Cruciaal voor Frontend/Infra)
-      const masterUuid = header.master_uuid; 
-      
-      const customer = body ? body.customer : null;
-      if (!customer) {
-        console.log('[receiver] Missing customer element in body');
-        return;
-      }
+  try {
+    const masterUuid = header.master_uuid;
+    const customer = body ? body.customer : null;
 
-      const contact = customer.contact || null;
-      const getCustomerText = (key) =>
-        ReceiverV2.getElementText(customer, key)
-        || ReceiverV2.getElementText(contact, key);
+    if (!customer) {
+      console.log('[receiver] Missing customer element in body');
+      return;
+    }
 
-      const address = customer.address || null;
-      const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
-      const sessionId = ReceiverV2.getElementText(body, 'session_id');
+    const contact = customer.contact || null;
+    const getCustomerText = (key) =>
+      ReceiverV2.getElementText(customer, key) ||
+      ReceiverV2.getElementText(contact, key);
 
-      // Variabelen voor type-bepaling
-      const externalUserId = getCustomerText('user_id');
-      const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
-      const rawType = getCustomerText('type');
-      // Update: een registratie is een 'Bedrijf' als de link er is OF als het type expliciet 'company' is
-      const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
+    const address = customer.address || null;
+    const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
+    const sessionId = ReceiverV2.getElementText(body, 'session_id');
 
-      // Betaalstatus logica
-      const paymentFlag = ReceiverV2.getElementText(regFee, 'paid');
-      const paymentState = ReceiverV2.getElementText(regFee, 'status');
-      const paymentStatus = (paymentFlag === 'true' || paymentState === 'paid') ? 'paid' : 'pending';
+    const externalUserId = getCustomerText('user_id');
+    const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
+    const rawType = getCustomerText('type');
+    const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
 
-      const amountVal = regFee ? regFee.amount : null;
-      const registrationAmount = amountVal !== null && typeof amountVal === 'object'
-        ? amountVal['#text']
-        : (amountVal || null);
+    const paymentFlag = ReceiverV2.getElementText(regFee, 'paid');
+    const paymentState = ReceiverV2.getElementText(regFee, 'status');
+    const paymentStatus = (paymentFlag === 'true' || paymentState === 'paid') ? 'paid' : 'pending';
 
-      // 2. RAW USER DATA VOOR SALESFORCE (Master UUID toegevoegd)
-      const rawUserData = {
-        Master_UUID__c: masterUuid, // Nieuw veld voor de koppeling
-        User_ID__c: externalUserId,
-        First_Name__c: getCustomerText('first_name'),
-        Last_Name__c: getCustomerText('last_name'),
-        Email__c: getCustomerText('email'),
-        Birthdate__c: getCustomerText('date_of_birth'), // Reeds aangepast voor Kassa
-        User_Type__c: userType,
-        Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
-        House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
-        Postal_Code__c: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
-        City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
-        Country_Code__c: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
-        Amount__c: registrationAmount ? parseFloat(registrationAmount) : null,
-        Payment_Status__c: paymentStatus,
-        Badge_ID__c: getCustomerText('badge_id') || null,
-      };
+    const amountVal = regFee ? regFee.amount : null;
+    const registrationAmount = amountVal !== null && typeof amountVal === 'object' 
+      ? amountVal['#text'] 
+      : (amountVal || null);
 
-      const userData = Object.fromEntries(
-        Object.entries(rawUserData).filter(([, value]) => value !== null && value !== undefined && value !== '')
-      );
+    const rawUserData = {
+      Master_UUID__c: masterUuid,
+      User_ID__c: externalUserId,
+      First_Name__c: getCustomerText('first_name'),
+      Last_Name__c: getCustomerText('last_name'),
+      Email__c: getCustomerText('email'),
+      Birthdate__c: getCustomerText('date_of_birth'),
+      User_Type__c: userType,
+      Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+      House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
+      Postal_Code__c: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
+      City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
+      Country_Code__c: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
+      Amount__c: registrationAmount ? parseFloat(registrationAmount) : null,
+      Payment_Status__c: paymentStatus,
+      Badge_ID__c: getCustomerText('badge_id') || null,
+    };
 
-      // 3. BEDRIJFS-LOGICA (VAT-naamgeving & Master UUID)
-      let companyId = null;
-      const companyData = body ? body.company : null;
-      
-      // We verwerken het bedrijf als het gelinkt is OF als het een pure bedrijfsregistratie is
-      if ((isCompanyLinked || rawType === 'company') && companyData) {
-        const companyName = ReceiverV2.getElementText(companyData, 'name');
-        const companyVat = ReceiverV2.getElementText(companyData, 'vat_number'); // Engelse standaard
-        const companyEmail = ReceiverV2.getElementText(companyData, 'email');
+    const userData = Object.fromEntries(
+      Object.entries(rawUserData).filter(([, value]) => value !== null && value !== undefined && value !== '')
+    );
 
-        if (companyName && companyVat) {
-          if (!this.sf.isConnected) {
-            console.log(`[receiver] DRY RUN: Would upsert Account for company VAT=${companyVat}`);
-          } else {
-            const result = await this.sf.apiCall((conn) =>
-              conn.sobject('Account').upsert({
-                Master_UUID__c: masterUuid, // Master UUID ook op bedrijfsniveau
-                Company_Name__c: companyName,
-                VAT_Number__c: companyVat,
-                Email__c: companyEmail || null,
-              }, 'VAT_Number__c') // We blijven upserten op VAT, maar Master UUID wordt opgeslagen
-            );
-            companyId = result.id || null;
-            console.log(`[receiver] Upserted Account: ${companyId} for VAT ${companyVat}`);
-          }
+    let companyId = null;
+    const companyData = body ? body.company : null;
+    if ((isCompanyLinked || rawType === 'company') && companyData) {
+      const companyName = ReceiverV2.getElementText(companyData, 'name');
+      const companyVat = ReceiverV2.getElementText(companyData, 'vat_number');
+      const companyEmail = ReceiverV2.getElementText(companyData, 'email');
 
-          // MySQL: Master UUID meegeven voor de DB-collega
-          const dbCompanyId = await this.db.upsertCompany({
-            master_uuid: masterUuid, 
-            company_name: companyName,
-            vat_number: companyVat,
-            email: companyEmail,
-            salesforce_account_id: companyId,
-          });
-          if (dbCompanyId) {
-            console.log(`[mysql] Upserted company: ${dbCompanyId}`);
-          }
+      if (companyName && companyVat) {
+        if (!this.sf.isConnected) {
+          console.log(`[receiver] DRY RUN: Would upsert Account for company VAT=${companyVat}`);
+        } else {
+          const result = await this.sf.apiCall((conn) =>
+            conn.sobject('Account').upsert({
+              Master_UUID__c: masterUuid,
+              Company_Name__c: companyName,
+              VAT_Number__c: companyVat,
+              Email__c: companyEmail || null,
+            }, 'VAT_Number__c')
+          );
+          companyId = result.id || null;
+          console.log(`[receiver] Upserted Account: ${companyId} for VAT ${companyVat}`);
+        }
+
+        const dbCompanyId = await this.db.upsertCompany({
+          master_uuid: masterUuid,
+          company_name: companyName,
+          vat_number: companyVat,
+          email: companyEmail,
+          salesforce_account_id: companyId,
+        });
+        if (dbCompanyId) {
+          console.log(`[mysql] Upserted company: ${dbCompanyId}`);
         }
       }
+    }
 
-      if (companyId) {
-        userData.Account__c = companyId;
-      }
+    if (companyId) {
+      userData.Account__c = companyId;
+    }
 
-      // 4. SALESFORCE UPSERT (Nu op Master UUID ipv User ID indien mogelijk)
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would upsert Member__c: ${JSON.stringify(userData)}`);
-      } else {
-        // Tip: Als je Salesforce-beheerder Master_UUID__c als 'External ID' heeft gezet, 
-        // gebruik die dan als tweede argument voor de upsert!
-        const result = await this.sf.apiCall((conn) =>
-          conn.sobject('Member__c').upsert(userData, 'Master_UUID__c') 
-        );
-        console.log(`[receiver] Upserted Member__c via Master UUID: ${result.id}`);
-      }
+    // 4. SALESFORCE UPSERT
+    if (!this.sf.isConnected) {
+      console.log(`[receiver] DRY RUN: Would upsert Member__c: ${JSON.stringify(userData)}`);
+    } else {
+      const result = await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').upsert(userData, 'Master_UUID__c')
+      );
+      console.log(`[receiver] Upserted Member__c via Master UUID: ${result.id}`);
+    }
 
-      // 5. MYSQL PERSON UPSERT (Master UUID & Soft Delete check)
-      const dbPersonId = await this.db.upsertPerson({
-        master_uuid: masterUuid, // Nieuw veld voor de DB
-        external_user_id: externalUserId,
+    // 5. MYSQL PERSON UPSERT
+    const dbPersonId = await this.db.upsertPerson({
+      master_uuid: masterUuid,
+      external_user_id: externalUserId,
+      first_name: getCustomerText('first_name'),
+      last_name: getCustomerText('last_name'),
+      email: getCustomerText('email'),
+      date_of_birth: getCustomerText('date_of_birth') || null,
+      person_type: userType,
+      badge_id: getCustomerText('badge_id') || null,
+      is_company_linked: isCompanyLinked,
+      company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
+      vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+      street: address ? ReceiverV2.getElementText(address, 'street') : null,
+      house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
+      postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
+      city: address ? ReceiverV2.getElementText(address, 'city') : null,
+      country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
+      amount: registrationAmount ? parseFloat(registrationAmount) : null,
+      payment_status: paymentStatus,
+      is_deleted: false
+    });
+
+    if (dbPersonId) {
+      console.log(`[mysql] Upserted person: ${dbPersonId}`);
+    }
+
+    // 6. KASSA PAYLOAD
+    const kassaPayload = {
+      header: { master_uuid: masterUuid },
+      customer: {
+        email: getCustomerText('email'),
         first_name: getCustomerText('first_name'),
         last_name: getCustomerText('last_name'),
-        email: getCustomerText('email'),
-        date_of_birth: getCustomerText('date_of_birth') || null,
-        person_type: userType,
-        badge_id: getCustomerText('badge_id') || null,
-        is_company_linked: isCompanyLinked,
+        user_id: externalUserId,
+        type: (isCompanyLinked || rawType === 'company') ? 'company' : (rawType || 'private'),
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
         vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-        street: address ? ReceiverV2.getElementText(address, 'street') : null,
-        house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
-        postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
-        city: address ? ReceiverV2.getElementText(address, 'city') : null,
-        country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
-        amount: registrationAmount ? parseFloat(registrationAmount) : null,
-        payment_status: paymentStatus,
-        is_deleted: false // Voor de Soft Delete van je teammate: altijd op false bij registratie
-      });
+        date_of_birth: getCustomerText('date_of_birth'),
+      },
+      payment_due: {
+        amount: registrationAmount || '0',
+        status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
+      },
+    };
 
-      if (dbPersonId) {
-        console.log(`[mysql] Upserted person: ${dbPersonId}`);
-      }
-
-      // 6. KASSA PAYLOAD (Inclusief Master UUID voor hun administratie)
-      const kassaPayload = {
-        header: { master_uuid: masterUuid }, // Meesturen in de header naar de kassa
-        customer: {
-          email: getCustomerText('email'),
-          first_name: getCustomerText('first_name'),
-          last_name: getCustomerText('last_name'),
-          user_id: externalUserId,
-          type: (isCompanyLinked || rawType === 'company') ? 'company' : (rawType || 'private'),
-          company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
-          vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-          date_of_birth: getCustomerText('date_of_birth'),
-        },
-        payment_due: {
-          amount: registrationAmount || '0',
-          status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
-        },
-      };
-
-      await this.sender.sendNewRegistrationToKassa(kassaPayload);
-      console.log(`[receiver] Forwarded new_registration to Kassa for Master UUID=${masterUuid}`);
-    } catch (err) {
-      console.log(`[receiver] Error in handleNewRegistration: ${err}`);
-      throw err;
-    }
+    await this.sender.sendNewRegistrationToKassa(kassaPayload);
+    console.log(`[receiver] Forwarded new_registration to Kassa for Master UUID=${masterUuid}`);
+  } catch (err) {
+    console.log(`[receiver] Error in handleNewRegistration: ${err}`);
+    throw err;
+  }
 }
 
   async handlePaymentRegistered(header, body) {
@@ -714,9 +705,7 @@ class ReceiverV2 {
               item_name: String(item.description),
               quantity: qty,
               unit_price: unitPrice,
-              total_price: finalTotalAmount, // <-- AANGEPAST
-              sku: sku,                      // <-- NIEUW
-              vat_rate: vatRate,             // <-- NIEUW
+              total_price: unitPrice * qty,
               paid: false,
             });
           }
@@ -726,6 +715,32 @@ class ReceiverV2 {
       }
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
+      throw err;
+    }
+  }
+
+  async handleDeleteUser(header, body) {
+    try {
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      if (!userId) {
+        console.log('[receiver] handleDeleteUser: missing user_id');
+        return;
+      }
+
+      // Soft delete user and their consumptions in MySQL
+      const deleted = await this.db.softDeletePerson(userId);
+      if (deleted) {
+        console.log(`[receiver] Soft-deleted user in MySQL: ${userId}`);
+      } else {
+        console.log(`[receiver] User not found or already deleted in MySQL: ${userId}`);
+      }
+
+      await this.db.softDeleteConsumptionsByUserId(userId);
+      console.log(`[receiver] Soft-deleted consumptions for user: ${userId}`);
+
+      // Salesforce record is intentionally left intact — soft delete only for now
+    } catch (err) {
+      console.log(`[receiver] Error in handleDeleteUser: ${err}`);
       throw err;
     }
   }
@@ -844,12 +859,25 @@ class ReceiverV2 {
       const sfResult = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
 
+      const amountPaidVal = invoice ? invoice.amount_paid : null;
+      const amountPaid = amountPaidVal !== null && typeof amountPaidVal === 'object' ? amountPaidVal['#text'] : amountPaidVal;
+      const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';
+
       await this.sender.sendInvoiceRequest({
-        message_id: header.message_id,
-        customer_name: body.customer_name || ReceiverV2.getElementText(body, 'customer_name'),
-        customer_email: ReceiverV2.getElementText(body, 'email'),
-        amount: ReceiverV2.getElementText(invoice, 'amount_paid'),
-        currency: (invoice && invoice.amount_paid && invoice.amount_paid.currency) || 'eur',
+        correlation_id: header.message_id,
+        customer: {
+          email: email || '',
+          first_name: ReceiverV2.getElementText(body, 'first_name') || '',
+          last_name: ReceiverV2.getElementText(body, 'last_name') || '',
+        },
+        invoice: {
+          description: `Invoice ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
+          amount: parseFloat(amountPaid) || 0,
+          currency,
+          due_date: ReceiverV2.getElementText(invoice, 'due_date') || new Date().toISOString().split('T')[0],
+          invoice_number: ReceiverV2.getElementText(invoice, 'id') || undefined,
+        },
+        items: [],
       });
       console.log('[receiver] Forwarded invoice_request to facturatie');
     } catch (err) {
