@@ -123,7 +123,7 @@ class ReceiverV2 {
       return [false, 'Missing header element'];
     }
 
-    const requiredFields = ['message_id', 'version', 'type', 'timestamp', 'source'];
+    const requiredFields = ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
     const missingFields = requiredFields.filter((f) => header[f] === undefined || header[f] === null);
     if (missingFields.length > 0) {
       return [false, `Missing required header fields: ${missingFields.join(', ')}`];
@@ -211,6 +211,9 @@ class ReceiverV2 {
 
   async handleNewRegistration(header, body) {
     try {
+      // 1. MASTER UUID UIT HEADER HALEN (Cruciaal voor Frontend/Infra)
+      const masterUuid = header.master_uuid; 
+      
       const customer = body ? body.customer : null;
       if (!customer) {
         console.log('[receiver] Missing customer element in body');
@@ -226,27 +229,14 @@ class ReceiverV2 {
       const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
       const sessionId = ReceiverV2.getElementText(body, 'session_id');
 
-      const descriptionParts = [
-        `user_id: ${getCustomerText('user_id')}`,
-        `type: ${getCustomerText('type')}`,
-        `badge_id: ${getCustomerText('badge_id')}`,
-        `registration_date: ${getCustomerText('registration_date')}`,
-        sessionId ? `session_id: ${sessionId}` : null,
-      ].filter(Boolean);
-
-      if (regFee) {
-        const amountVal = regFee.amount;
-        const amount = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
-        const currency = typeof amountVal === 'object' ? (amountVal.currency || 'eur') : 'eur';
-        const paid = ReceiverV2.getElementText(regFee, 'paid') || ReceiverV2.getElementText(regFee, 'status');
-        descriptionParts.push(`registration_fee: ${amount} ${currency} - paid: ${paid}`);
-      }
-
+      // Variabelen voor type-bepaling
       const externalUserId = getCustomerText('user_id');
-      const isCompanyLinked = getCustomerText('is_company_linked');
+      const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
       const rawType = getCustomerText('type');
-      const userType = (isCompanyLinked === 'true' || rawType === 'company') ? 'Bedrijf' : 'Particulier';
+      // Update: een registratie is een 'Bedrijf' als de link er is OF als het type expliciet 'company' is
+      const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
 
+      // Betaalstatus logica
       const paymentFlag = ReceiverV2.getElementText(regFee, 'paid');
       const paymentState = ReceiverV2.getElementText(regFee, 'status');
       const paymentStatus = (paymentFlag === 'true' || paymentState === 'paid') ? 'paid' : 'pending';
@@ -256,12 +246,14 @@ class ReceiverV2 {
         ? amountVal['#text']
         : (amountVal || null);
 
+      // 2. RAW USER DATA VOOR SALESFORCE (Master UUID toegevoegd)
       const rawUserData = {
+        Master_UUID__c: masterUuid, // Nieuw veld voor de koppeling
         User_ID__c: externalUserId,
         First_Name__c: getCustomerText('first_name'),
         Last_Name__c: getCustomerText('last_name'),
         Email__c: getCustomerText('email'),
-        Birthdate__c: getCustomerText('date_of_birth'),
+        Birthdate__c: getCustomerText('date_of_birth'), // Reeds aangepast voor Kassa
         User_Type__c: userType,
         Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
         House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
@@ -277,11 +269,14 @@ class ReceiverV2 {
         Object.entries(rawUserData).filter(([, value]) => value !== null && value !== undefined && value !== '')
       );
 
+      // 3. BEDRIJFS-LOGICA (VAT-naamgeving & Master UUID)
       let companyId = null;
       const companyData = body ? body.company : null;
-      if (isCompanyLinked === 'true' && companyData) {
+      
+      // We verwerken het bedrijf als het gelinkt is OF als het een pure bedrijfsregistratie is
+      if ((isCompanyLinked || rawType === 'company') && companyData) {
         const companyName = ReceiverV2.getElementText(companyData, 'name');
-        const companyVat = ReceiverV2.getElementText(companyData, 'vat_number');
+        const companyVat = ReceiverV2.getElementText(companyData, 'vat_number'); // Engelse standaard
         const companyEmail = ReceiverV2.getElementText(companyData, 'email');
 
         if (companyName && companyVat) {
@@ -290,16 +285,19 @@ class ReceiverV2 {
           } else {
             const result = await this.sf.apiCall((conn) =>
               conn.sobject('Account').upsert({
+                Master_UUID__c: masterUuid, // Master UUID ook op bedrijfsniveau
                 Company_Name__c: companyName,
                 VAT_Number__c: companyVat,
                 Email__c: companyEmail || null,
-              }, 'VAT_Number__c')
+              }, 'VAT_Number__c') // We blijven upserten op VAT, maar Master UUID wordt opgeslagen
             );
             companyId = result.id || null;
             console.log(`[receiver] Upserted Account: ${companyId} for VAT ${companyVat}`);
           }
 
+          // MySQL: Master UUID meegeven voor de DB-collega
           const dbCompanyId = await this.db.upsertCompany({
+            master_uuid: masterUuid, 
             company_name: companyName,
             vat_number: companyVat,
             email: companyEmail,
@@ -315,16 +313,21 @@ class ReceiverV2 {
         userData.Account__c = companyId;
       }
 
+      // 4. SALESFORCE UPSERT (Nu op Master UUID ipv User ID indien mogelijk)
       if (!this.sf.isConnected) {
         console.log(`[receiver] DRY RUN: Would upsert Member__c: ${JSON.stringify(userData)}`);
       } else {
+        // Tip: Als je Salesforce-beheerder Master_UUID__c als 'External ID' heeft gezet, 
+        // gebruik die dan als tweede argument voor de upsert!
         const result = await this.sf.apiCall((conn) =>
-          conn.sobject('Member__c').upsert(userData, 'User_ID__c')
+          conn.sobject('Member__c').upsert(userData, 'Master_UUID__c') 
         );
-        console.log(`[receiver] Upserted Member__c: ${result.id || externalUserId}`);
+        console.log(`[receiver] Upserted Member__c via Master UUID: ${result.id}`);
       }
 
+      // 5. MYSQL PERSON UPSERT (Master UUID & Soft Delete check)
       const dbPersonId = await this.db.upsertPerson({
+        master_uuid: masterUuid, // Nieuw veld voor de DB
         external_user_id: externalUserId,
         first_name: getCustomerText('first_name'),
         last_name: getCustomerText('last_name'),
@@ -332,7 +335,7 @@ class ReceiverV2 {
         date_of_birth: getCustomerText('date_of_birth') || null,
         person_type: userType,
         badge_id: getCustomerText('badge_id') || null,
-        is_company_linked: isCompanyLinked === 'true',
+        is_company_linked: isCompanyLinked,
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
         vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
         street: address ? ReceiverV2.getElementText(address, 'street') : null,
@@ -342,24 +345,25 @@ class ReceiverV2 {
         country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
         amount: registrationAmount ? parseFloat(registrationAmount) : null,
         payment_status: paymentStatus,
+        is_deleted: false // Voor de Soft Delete van je teammate: altijd op false bij registratie
       });
 
       if (dbPersonId) {
         console.log(`[mysql] Upserted person: ${dbPersonId}`);
       }
 
-      //const age = Number(getCustomerText('age') || 0);
-
+      // 6. KASSA PAYLOAD (Inclusief Master UUID voor hun administratie)
       const kassaPayload = {
+        header: { master_uuid: masterUuid }, // Meesturen in de header naar de kassa
         customer: {
           email: getCustomerText('email'),
           first_name: getCustomerText('first_name'),
           last_name: getCustomerText('last_name'),
           user_id: externalUserId,
-          type: isCompanyLinked === 'true' ? 'company' : (rawType || 'private'),
+          type: (isCompanyLinked || rawType === 'company') ? 'company' : (rawType || 'private'),
           company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
           vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-          date_of_birth: getCustomerText('date_of_birth'), // <-- AANGEPAST VOOR TEAM KASSA
+          date_of_birth: getCustomerText('date_of_birth'),
         },
         payment_due: {
           amount: registrationAmount || '0',
@@ -368,12 +372,12 @@ class ReceiverV2 {
       };
 
       await this.sender.sendNewRegistrationToKassa(kassaPayload);
-      console.log(`[receiver] Forwarded new_registration to Kassa for user_id=${externalUserId}`);
+      console.log(`[receiver] Forwarded new_registration to Kassa for Master UUID=${masterUuid}`);
     } catch (err) {
       console.log(`[receiver] Error in handleNewRegistration: ${err}`);
       throw err;
     }
-  }
+}
 
   async handlePaymentRegistered(header, body) {
     try {
