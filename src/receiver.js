@@ -364,9 +364,99 @@ class ReceiverV2 {
 
     await this.sender.sendNewRegistrationToKassa(kassaPayload);
     console.log(`[receiver] Forwarded new_registration to Kassa for Master UUID=${masterUuid}`);
+
+    
+    // --- STAP 7: FOSSBILLING REGISTRATION (Nieuw voor Facturatie) ---
+    const fossPayload = {
+      master_uuid: masterUuid,
+      customer: {
+        first_name: getCustomerText('first_name'),
+        last_name: getCustomerText('last_name'),
+        email: getCustomerText('email'),
+        type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
+        company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
+        vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+      },
+      address: {
+        street: address ? ReceiverV2.getElementText(address, 'street') : null,
+        number: address ? ReceiverV2.getElementText(address, 'number') : null,
+        postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
+        city: address ? ReceiverV2.getElementText(address, 'city') : null,
+        country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() : null,
+      },
+      registration_fee: {
+        amount: registrationAmount ? parseFloat(registrationAmount) : 0,
+        status: paymentStatus, // 'paid' of 'pending'
+        trigger_invoice: true  // Cruciaal voor hun registratiekost-eis
+      }
+    };
+
+    await this.sender.sendNewRegistrationToFossBilling(fossPayload);
+    console.log(`[receiver] Forwarded new_registration to FossBilling for Master UUID=${masterUuid}`);
+
   } catch (err) {
     console.log(`[receiver] Error in handleNewRegistration: ${err}`);
     throw err;
+  }
+}
+
+/**
+ * Verwerkt send_invoice bericht van FossBilling (inclusief PDF-link)
+ */
+async handleSendInvoice(header, body) {
+  try {
+    const masterUuid = header.master_uuid;
+    const invoiceUrl = ReceiverV2.getElementText(body, 'pdf_url'); // Bevat de link naar de PDF
+    const dueDate = ReceiverV2.getElementText(body, 'due_date');
+    const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+
+    console.log(`[receiver] Processing send_invoice for ${masterUuid}, invoice: ${invoiceNumber}`);
+
+    // 1. Update Salesforce (Member__c) met de PDF-link en vervaldatum
+    if (this.sf.isConnected) {
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').upsert({
+          Master_UUID__c: masterUuid,
+          Last_Invoice_URL__c: invoiceUrl,
+          Last_Invoice_Due_Date__c: dueDate,
+          Last_Invoice_Number__c: invoiceNumber
+        }, 'Master_UUID__c')
+      );
+    }
+
+    // 2. Update lokale DB voor snelle weergave in portaal
+    await this.db.query(
+      'UPDATE crm_user_sync SET last_invoice_url = ?, last_invoice_number = ? WHERE master_uuid = ?',
+      [invoiceUrl, invoiceNumber, masterUuid]
+    );
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleSendInvoice: ${err}`);
+  }
+}
+
+/**
+ * Verwerkt invoice_cancelled bericht van FossBilling
+ */
+async handleInvoiceCancelled(header, body) {
+  try {
+    const masterUuid = header.master_uuid;
+    const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+
+    console.log(`[receiver] Processing invoice_cancelled for ${masterUuid}, invoice: ${invoiceNumber}`);
+
+    // Update Salesforce status naar 'Cancelled'
+    if (this.sf.isConnected) {
+      // We zoeken de consumptie op basis van het factuurnummer en de UUID
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Consumption__c').find({ 
+          Invoice_Number__c: invoiceNumber,
+          Master_UUID__c: masterUuid 
+        }).update({ Status__c: 'Cancelled' })
+      );
+    }
+  } catch (err) {
+    console.error(`[receiver] Error in handleInvoiceCancelled: ${err}`);
   }
 }
 

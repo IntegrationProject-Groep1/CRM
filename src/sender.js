@@ -32,10 +32,13 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
+    header.ele('master_uuid').txt(data.header?.master_uuid || ''); // NIEUW
     header.ele('version').txt('2.0');
     header.ele('type').txt('invoice_request');
     header.ele('timestamp').txt(timestamp);
     header.ele('source').txt('crm');
+    
+    // Hersteld: correlation_id
     if (data.correlation_id) {
       header.ele('correlation_id').txt(data.correlation_id);
     }
@@ -49,11 +52,20 @@ class CRMSender {
     if (data.customer.phone) {
       customer.ele('phone').txt(data.customer.phone);
     }
+    
+    // Nieuw: Adresgegevens voor FossBilling
+    const address = customer.ele('address');
+    address.ele('street').txt(data.address?.street || '');
+    address.ele('number').txt(data.address?.number || '');
+    address.ele('postal_code').txt(data.address?.postal_code || '');
+    address.ele('city').txt(data.address?.city || '');
 
     const invoice = body.ele('invoice');
     invoice.ele('description').txt(data.invoice.description);
     invoice.ele('amount').att('currency', data.invoice.currency || 'eur').txt(String(data.invoice.amount));
     invoice.ele('due_date').txt(data.invoice.due_date);
+    
+    // Hersteld: invoice_number
     if (data.invoice.invoice_number) {
       invoice.ele('invoice_number').txt(data.invoice.invoice_number);
     }
@@ -217,6 +229,24 @@ class CRMSender {
     }
   }
 
+  async sendNewRegistrationToFacturatie(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized.');
+    try {
+      const xmlPayload = this.buildNewRegistrationForFacturatieXml(data);
+      const queue = 'crm.to.facturatie'; // De queue waar FossBilling op luistert
+      await this.channel.assertQueue(queue, { durable: true });
+      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      console.log(`New registration sent to Facturatie queue "${queue}"`);
+      return { success: true, xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send registration to Facturatie: ${error}`);
+      throw error;
+    }
+  }
+
   buildProfileUpdateXml(data) {
     const messageId = `prof-crm-${uuidv4()}`;
     const timestamp = new Date().toISOString();
@@ -291,6 +321,44 @@ class CRMSender {
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }
 
+  buildNewRegistrationForFacturatieXml(data) {
+    const messageId = `reg-foss-${uuidv4()}`;
+    const timestamp = new Date().toISOString();
+
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(messageId);
+    header.ele('master_uuid').txt(data.master_uuid); // De nieuwe standaard
+    header.ele('type').txt('new_registration');
+    header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
+
+    const body = root.ele('body');
+    const customer = body.ele('customer');
+    customer.ele('first_name').txt(data.customer.first_name);
+    customer.ele('last_name').txt(data.customer.last_name);
+    customer.ele('email').txt(data.customer.email);
+    customer.ele('type').txt(data.customer.type);
+    if (data.customer.company_name) customer.ele('company_name').txt(data.customer.company_name);
+    if (data.customer.vat_number) customer.ele('vat_number').txt(data.customer.vat_number);
+
+    const address = body.ele('address');
+    address.ele('street').txt(data.address.street || '');
+    address.ele('number').txt(data.address.number || '');
+    address.ele('postal_code').txt(data.address.postal_code || '');
+    address.ele('city').txt(data.address.city || '');
+    address.ele('country').txt(data.address.country || 'BE');
+
+    const fee = body.ele('registration_fee');
+    fee.ele('amount').txt(String(data.registration_fee.amount));
+    fee.ele('status').txt(data.registration_fee.status);
+    fee.ele('trigger_invoice').txt(String(data.registration_fee.trigger_invoice));
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
   async sendCancelRegistrationToKassa(data) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
@@ -309,6 +377,8 @@ class CRMSender {
       throw error;
     }
   }
+
+  
 
   // ────────────────────────────────────────────────────────────────────────────
 
