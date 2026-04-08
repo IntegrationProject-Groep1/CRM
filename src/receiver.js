@@ -3,6 +3,8 @@
 require('dotenv').config();
 const http = require('http');
 const amqp = require('amqplib');
+const { v4: uuidv4 } = require('uuid');
+const { parseStringPromise } = require('xml2js');
 const { XMLParser } = require('fast-xml-parser');
 const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
@@ -142,6 +144,46 @@ class ReceiverV2 {
     return [true, null];
   }
 
+  async getOrCreateMasterUuid(email, sourceSystem = 'crm') {
+    if (!this.channel) throw new Error('RabbitMQ channel not initialized');
+
+    return new Promise(async (resolve, reject) => {
+      try {
+        const correlationId = uuidv4();
+        const q = await this.channel.assertQueue('', { exclusive: true });
+
+        const requestXml = `
+          <identity_request>
+            <email>${email}</email>
+            <source_system>${sourceSystem}</source_system>
+          </identity_request>`;
+
+        this.channel.consume(q.queue, async (msg) => {
+          if (msg.properties.correlationId === correlationId) {
+            const responseXml = msg.content.toString();
+            const parsed = await parseStringPromise(responseXml, { explicitArray: false });
+            
+            if (parsed.identity_response && parsed.identity_response.status === 'ok') {
+              resolve(parsed.identity_response.user.master_uuid);
+            } else {
+              reject(new Error('Identity service returned error status'));
+            }
+
+            setTimeout(() => this.channel.deleteQueue(q.queue), 500);
+          }
+        }, { noAck: true });
+
+        this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
+          correlationId: correlationId,
+          replyTo: q.queue,
+          contentType: 'application/xml'
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
   async handleMessage(msg) {
     try {
       const xmlContent = msg.content.toString('utf8');
@@ -213,7 +255,6 @@ class ReceiverV2 {
 
   async handleNewRegistration(header, body) {
   try {
-    const masterUuid = header.master_uuid;
     const customer = body ? body.customer : null;
 
     if (!customer) {
@@ -221,6 +262,20 @@ class ReceiverV2 {
       return;
     }
 
+    // --- STAP 1: IDENTITY SERVICE CHECK (NIEUW) ---
+    // We pakken het emailadres, maken het schoon, en vragen de officiële UUID op
+    const emailForIdentity = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
+    console.log(`[receiver] Requesting Master UUID from Identity Service for: ${emailForIdentity}`);
+    
+    // Roep de nieuwe RPC-functie aan
+    const masterUuid = await this.getOrCreateMasterUuid(emailForIdentity, 'crm');
+    if (!masterUuid) {
+      throw new Error(`Could not retrieve Master UUID from Identity Service for ${emailForIdentity}`);
+    }
+    console.log(`[receiver] Official Master UUID obtained: ${masterUuid}`);
+
+
+    // --- STAP 2: JOUW ORIGINELE DATA EXTRACTIE ---
     const contact = customer.contact || null;
     const getCustomerText = (key) =>
       ReceiverV2.getElementText(customer, key) ||
@@ -244,12 +299,13 @@ class ReceiverV2 {
       ? amountVal['#text'] 
       : (amountVal || null);
 
+    // Jouw volledige rawUserData (aangepast om de officiële masterUuid te gebruiken)
     const rawUserData = {
-      Master_UUID__c: masterUuid,
+      Master_UUID__c: masterUuid, // Officiële UUID
       User_ID__c: externalUserId,
       First_Name__c: getCustomerText('first_name'),
       Last_Name__c: getCustomerText('last_name'),
-      Email__c: getCustomerText('email'),
+      Email__c: emailForIdentity, // Gebruik de genormaliseerde email
       Birthdate__c: getCustomerText('date_of_birth'),
       User_Type__c: userType,
       Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
@@ -266,6 +322,8 @@ class ReceiverV2 {
       Object.entries(rawUserData).filter(([, value]) => value !== null && value !== undefined && value !== '')
     );
 
+
+    // --- STAP 3: JOUW ORIGINELE ACCOUNT & COMPANY LOGICA ---
     let companyId = null;
     const companyData = body ? body.company : null;
     if ((isCompanyLinked || rawType === 'company') && companyData) {
@@ -279,10 +337,13 @@ class ReceiverV2 {
         } else {
           const result = await this.sf.apiCall((conn) =>
             conn.sobject('Account').upsert({
-              Master_UUID__c: masterUuid,
+              Master_UUID__c: masterUuid, // Officiële UUID
               Company_Name__c: companyName,
               VAT_Number__c: companyVat,
               Email__c: companyEmail || null,
+              // Optioneel: voeg hier het billing address toe als Facturatie dat op het Account wil
+              Billing_Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+              Billing_City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
             }, 'VAT_Number__c')
           );
           companyId = result.id || null;
@@ -290,7 +351,7 @@ class ReceiverV2 {
         }
 
         const dbCompanyId = await this.db.upsertCompany({
-          master_uuid: masterUuid,
+          master_uuid: masterUuid, // Officiële UUID
           company_name: companyName,
           vat_number: companyVat,
           email: companyEmail,
@@ -302,11 +363,13 @@ class ReceiverV2 {
       }
     }
 
+    // KOPPELING MAKEN TUSSEN PERSOON EN BEDRIJF
     if (companyId) {
       userData.Account__c = companyId;
     }
 
-    // 4. SALESFORCE UPSERT
+
+    // --- STAP 4: JOUW ORIGINELE SALESFORCE MEMBER UPSERT ---
     if (!this.sf.isConnected) {
       console.log(`[receiver] DRY RUN: Would upsert Member__c: ${JSON.stringify(userData)}`);
     } else {
@@ -316,13 +379,14 @@ class ReceiverV2 {
       console.log(`[receiver] Upserted Member__c via Master UUID: ${result.id}`);
     }
 
-    // 5. MYSQL PERSON UPSERT
+
+    // --- STAP 5: JOUW ORIGINELE MYSQL PERSON UPSERT ---
     const dbPersonId = await this.db.upsertPerson({
-      master_uuid: masterUuid,
+      master_uuid: masterUuid, // Officiële UUID
       external_user_id: externalUserId,
       first_name: getCustomerText('first_name'),
       last_name: getCustomerText('last_name'),
-      email: getCustomerText('email'),
+      email: emailForIdentity,
       date_of_birth: getCustomerText('date_of_birth') || null,
       person_type: userType,
       badge_id: getCustomerText('badge_id') || null,
@@ -343,11 +407,12 @@ class ReceiverV2 {
       console.log(`[mysql] Upserted person: ${dbPersonId}`);
     }
 
-    // 6. KASSA PAYLOAD
+
+    // --- STAP 6: JOUW ORIGINELE KASSA PAYLOAD ---
     const kassaPayload = {
-      header: { master_uuid: masterUuid },
+      header: { master_uuid: masterUuid }, // Officiële UUID
       customer: {
-        email: getCustomerText('email'),
+        email: emailForIdentity,
         first_name: getCustomerText('first_name'),
         last_name: getCustomerText('last_name'),
         user_id: externalUserId,
@@ -366,13 +431,13 @@ class ReceiverV2 {
     console.log(`[receiver] Forwarded new_registration to Kassa for Master UUID=${masterUuid}`);
 
     
-    // --- STAP 7: FOSSBILLING REGISTRATION (Nieuw voor Facturatie) ---
+    // --- STAP 7: JOUW ORIGINELE FOSSBILLING PAYLOAD ---
     const fossPayload = {
-      master_uuid: masterUuid,
+      master_uuid: masterUuid, // Officiële UUID
       customer: {
         first_name: getCustomerText('first_name'),
         last_name: getCustomerText('last_name'),
-        email: getCustomerText('email'),
+        email: emailForIdentity,
         type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
         vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
@@ -386,8 +451,8 @@ class ReceiverV2 {
       },
       registration_fee: {
         amount: registrationAmount ? parseFloat(registrationAmount) : 0,
-        status: paymentStatus, // 'paid' of 'pending'
-        trigger_invoice: true  // Cruciaal voor hun registratiekost-eis
+        status: paymentStatus,
+        trigger_invoice: true  
       }
     };
 
@@ -812,25 +877,35 @@ async handleInvoiceCancelled(header, body) {
   async handleDeleteUser(header, body) {
     try {
       const userId = ReceiverV2.getElementText(body, 'user_id');
-      if (!userId) {
-        console.log('[receiver] handleDeleteUser: missing user_id');
+      const masterUuid = header.master_uuid; // Gebruik de UUID uit de header
+
+      if (!userId && !masterUuid) {
+        console.log('[receiver] handleDeleteUser: missing user_id or master_uuid');
         return;
       }
 
-      // Soft delete user and their consumptions in MySQL
-      const deleted = await this.db.softDeletePerson(userId);
-      if (deleted) {
-        console.log(`[receiver] Soft-deleted user in MySQL: ${userId}`);
-      } else {
-        console.log(`[receiver] User not found or already deleted in MySQL: ${userId}`);
+      console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid || userId}`);
+
+      // 1. MySQL Soft Delete
+      await this.db.query(
+        'UPDATE crm_user_sync SET is_deleted = true WHERE master_uuid = ? OR external_user_id = ?',
+        [masterUuid, userId]
+      );
+
+      // 2. Salesforce Update (indien verbonden)
+      if (this.sf.isConnected) {
+        // We zoeken de member en zetten een 'Deleted' vlag of verwijderen het record
+        // Meestal is een 'Is_Deleted__c' vlag veiliger in Salesforce
+        const searchCriteria = masterUuid ? { Master_UUID__c: masterUuid } : { User_ID__c: userId };
+        
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').find(searchCriteria).update({ Is_Deleted__c: true })
+        );
       }
 
-      await this.db.softDeleteConsumptionsByUserId(userId);
-      console.log(`[receiver] Soft-deleted consumptions for user: ${userId}`);
-
-      // Salesforce record is intentionally left intact — soft delete only for now
+      console.log(`[receiver] User ${masterUuid || userId} marked as deleted.`);
     } catch (err) {
-      console.log(`[receiver] Error in handleDeleteUser: ${err}`);
+      console.error(`[receiver] Error in handleDeleteUser: ${err}`);
       throw err;
     }
   }

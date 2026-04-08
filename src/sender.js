@@ -172,17 +172,23 @@ class CRMSender {
   // ── Kassa outbound flows ────────────────────────────────────────────────────
 
   buildNewRegistrationForKassaXml(data) {
-    const messageId = `reg-crm-${uuidv4()}`;
-    const timestamp = new Date().toISOString();
+     const messageId = `reg-crm-${uuidv4()}`;
+     const timestamp = new Date().toISOString();
 
-    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
-    const header = root.ele('header');
-    header.ele('message_id').txt(messageId);
-    header.ele('type').txt('new_registration');
-    header.ele('source').txt('crm');
-    header.ele('timestamp').txt(timestamp);
-    header.ele('version').txt('2.0');
+     const header = root.ele('header');
+      header.ele('message_id').txt(messageId);
+      header.ele('type').txt('new_registration');
+      header.ele('source').txt('crm');
+      header.ele('timestamp').txt(timestamp);
+      header.ele('version').txt('2.0');
+    
+    // --> DIT MOET ERBIJ <--
+    if (data.header && data.header.master_uuid) {
+      header.ele('master_uuid').txt(data.header.master_uuid);
+    }
+    // ----------------------
 
     const body = root.ele('body');
     const customer = body.ele('customer');
@@ -247,23 +253,27 @@ class CRMSender {
     }
   }
 
-  buildProfileUpdateXml(data) {
-    const messageId = `prof-crm-${uuidv4()}`;
+  buildNewRegistrationForKassaXml(data) {
+    const messageId = `reg-crm-${uuidv4()}`;
     const timestamp = new Date().toISOString();
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('type').txt('profile_update');
+    header.ele('type').txt('new_registration');
     header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
     header.ele('version').txt('2.0');
-    if (data.correlation_id) {
-      header.ele('correlation_id').txt(data.correlation_id);
+    
+    // --> DIT MOET ERBIJ <--
+    if (data.header && data.header.master_uuid) {
+      header.ele('master_uuid').txt(data.header.master_uuid);
     }
+    // ----------------------
 
-    const body = root.ele('body');
+     const body = root.ele('body');
+    // ... rest van je code blijft exact hetzelfde
     body.ele('user_id').txt(data.user_id);
     body.ele('email').txt(data.email);
 
@@ -298,23 +308,27 @@ class CRMSender {
     }
   }
 
-  buildCancelRegistrationXml(data) {
-    const messageId = `cancel-crm-${uuidv4()}`;
+  buildNewRegistrationForKassaXml(data) {
+    const messageId = `reg-crm-${uuidv4()}`;
     const timestamp = new Date().toISOString();
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('type').txt('cancel_registration');
+    header.ele('type').txt('new_registration');
     header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
     header.ele('version').txt('2.0');
-    if (data.correlation_id) {
-      header.ele('correlation_id').txt(data.correlation_id);
+    
+    // --> DIT MOET ERBIJ <--
+    if (data.header && data.header.master_uuid) {
+      header.ele('master_uuid').txt(data.header.master_uuid);
     }
+    // ----------------------
 
-    const body = root.ele('body');
+   const body = root.ele('body');
+    // ... rest van je code blijft exact hetzelfde
     body.ele('user_id').txt(data.user_id);
     body.ele('session_id').txt(data.session_id);
 
