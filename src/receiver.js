@@ -525,13 +525,15 @@ async handleSendInvoice(header, body) {
     }
 
     // 2. Update lokale DB voor snelle weergave in portaal
-    await this.db.query(
+    const [, dbError] = await this.db.query(
       'UPDATE crm_user_sync SET last_invoice_url = ?, last_invoice_number = ? WHERE master_uuid = ?',
       [invoiceUrl, invoiceNumber, masterUuid]
     );
+    if (dbError) console.error(`[receiver] DB error in handleSendInvoice: ${dbError.message}`);
 
   } catch (err) {
     console.error(`[receiver] Error in handleSendInvoice: ${err}`);
+    throw err;
   }
 }
 
@@ -918,11 +920,10 @@ async handleInvoiceCancelled(header, body) {
 
       console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid || userId}`);
 
-      // 1. MySQL Soft Delete
-      await this.db.query(
-        'UPDATE crm_user_sync SET is_deleted = true WHERE master_uuid = ? OR external_user_id = ?',
-        [masterUuid, userId]
-      );
+      // 1. MySQL Soft Delete — use dedicated methods that match the actual schema
+      const externalId = userId || masterUuid;
+      await this.db.softDeleteConsumptionsByUserId(externalId);
+      await this.db.softDeletePerson(externalId);
 
       // 2. Salesforce Update (indien verbonden)
       if (this.sf.isConnected) {
@@ -962,13 +963,15 @@ async handleInvoiceCancelled(header, body) {
       });
 
       // Optioneel: Update ook je eigen DB of Salesforce status
-      await this.db.query(
+      const [, dbError] = await this.db.query(
         'UPDATE crm_user_sync SET last_payment_status = "cancelled" WHERE master_uuid = ?',
         [masterUuid]
       );
+      if (dbError) console.error(`[receiver] DB error in handleInvoiceCancellationRequest: ${dbError.message}`);
 
     } catch (err) {
       console.error(`[receiver] Error in handleInvoiceCancellationRequest: ${err}`);
+      throw err;
     }
   }
 
