@@ -75,6 +75,7 @@ class MySQLService {
 
     const payload = {
       User_ID__c: data.external_user_id,
+      Master_UUID__c: data.master_uuid || null, // Nieuw veld
       User_Type__c: data.person_type || 'Particulier',
       Company_Name__c: data.company_name || null,
       BTW_Number__c: data.vat_number || null,
@@ -100,6 +101,7 @@ class MySQLService {
     const sql = `
       INSERT INTO crm_user_sync (
         User_ID__c,
+        Master_UUID__c,
         User_Type__c,
         Company_Name__c,
         BTW_Number__c,
@@ -120,8 +122,9 @@ class MySQLService {
         sync_status,
         sync_log,
         auth_user_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
+        Master_UUID__c = VALUES(Master_UUID__c),
         User_Type__c = VALUES(User_Type__c),
         Company_Name__c = VALUES(Company_Name__c),
         BTW_Number__c = VALUES(BTW_Number__c),
@@ -146,6 +149,7 @@ class MySQLService {
 
     const params = [
       payload.User_ID__c,
+      payload.Master_UUID__c, // PLEK 1 (Insert)
       payload.User_Type__c,
       payload.Company_Name__c,
       payload.BTW_Number__c,
@@ -165,7 +169,7 @@ class MySQLService {
       payload.Badge_ID__c,
       payload.sync_status,
       payload.sync_log,
-      payload.auth_user_id,
+      payload.auth_user_id
     ];
 
     const [, error] = await this.query(sql, params);
@@ -400,6 +404,24 @@ class MySQLService {
     }
 
     return result.affectedRows > 0;
+  }
+
+  async updateInvoiceStatus(masterUuid, status, invoiceNumber) {
+    if (!this.isConnected) return false;
+
+    const sql = `
+      UPDATE ${this.userTable} 
+      SET Payment_Status__c = ?, 
+          last_invoice_number = ? 
+      WHERE Master_UUID__c = ?
+    `;
+    
+    const [, error] = await this.query(sql, [status, invoiceNumber, masterUuid]);
+    if (error) {
+      console.log(`[mysql] Error updating invoice status: ${error.message}`);
+      return false;
+    }
+    return true;
   }
 
   async insertConsumption(data) {

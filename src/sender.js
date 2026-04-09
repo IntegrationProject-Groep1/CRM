@@ -134,6 +134,7 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
+    header.ele('master_uuid').txt(data.master_uuid);
     header.ele('version').txt('2.0');
     header.ele('type').txt('mailing_status');
     header.ele('timestamp').txt(timestamp);
@@ -220,6 +221,7 @@ class CRMSender {
 
      const header = root.ele('header');
       header.ele('message_id').txt(messageId);
+      header.ele('master_uuid').txt(data.master_uuid);
       header.ele('type').txt('new_registration');
       header.ele('source').txt('crm');
       header.ele('timestamp').txt(timestamp);
@@ -302,6 +304,7 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
+    header.ele('master_uuid').txt(data.master_uuid);
     header.ele('type').txt('profile_update');
     header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
@@ -389,6 +392,7 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
+    header.ele('master_uuid').txt(data.master_uuid);
     header.ele('type').txt('cancel_registration');
     header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);

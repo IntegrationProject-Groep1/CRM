@@ -3,6 +3,7 @@ USE crm_demo;
 
 CREATE TABLE IF NOT EXISTS crm_user_sync (
   User_ID__c VARCHAR(255) NOT NULL,
+  Master_UUID__c VARCHAR(36) DEFAULT NULL,
   User_Type__c VARCHAR(100) DEFAULT NULL,
   Company_Name__c VARCHAR(255) DEFAULT NULL,
   BTW_Number__c VARCHAR(100) DEFAULT NULL,
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS crm_user_sync (
   City__c VARCHAR(255) DEFAULT NULL,
   Country_Code__c VARCHAR(10) DEFAULT NULL,
   Payment_Status__c VARCHAR(50) DEFAULT NULL,
+  last_invoice_number VARCHAR(100) DEFAULT NULL,
   Badge_ID__c VARCHAR(100) DEFAULT NULL,
   sync_status VARCHAR(50) DEFAULT NULL,
   sync_log TEXT,
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS crm_user_sync (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (User_ID__c),
   UNIQUE KEY uq_crm_user_sync_email (Email__c),
+  UNIQUE KEY uq_crm_user_sync_master (Master_UUID__c),
   KEY idx_crm_user_sync_badge (Badge_ID__c),
   KEY idx_crm_user_sync_btw (BTW_Number__c)
 );

@@ -10,7 +10,8 @@ const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
 const MySQLService = require('./mysqlClient');
-
+ // Zorg dat deze bovenaan je receiver.js staat:
+const { create } = require('xmlbuilder2'); 
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
@@ -145,44 +146,72 @@ class ReceiverV2 {
     return [true, null];
   }
 
-  async getOrCreateMasterUuid(email, sourceSystem = 'crm') {
-    if (!this.channel) throw new Error('RabbitMQ channel not initialized');
+async getOrCreateMasterUuid(email, sourceSystem = 'crm') {
+  if (!this.channel) throw new Error('RabbitMQ channel not initialized');
 
-    const correlationId = uuidv4();
-    const q = await this.channel.assertQueue('', { exclusive: true });
+  const correlationId = uuidv4();
+  const replyQueue = await this.channel.assertQueue('', { exclusive: true });
+  let consumerTag = null; // Correct geplaatst
 
-    const requestXml = `
-      <identity_request>
-        <email>${email}</email>
-        <source_system>${sourceSystem}</source_system>
-      </identity_request>`;
+  return new Promise(async (resolve, reject) => {
+    // FIX 1: Timeout (15s)
+    const timeout = setTimeout(async () => {
+      if (consumerTag) await this.channel.cancel(consumerTag);
+      await this.channel.deleteQueue(replyQueue.queue);
+      reject(new Error(`Identity Service timeout voor ${email}`));
+    }, 15000);
 
-    return new Promise((resolve, reject) => {
-      this.channel.consume(q.queue, async (msg) => {
+    try {
+      const consumeObj = await this.channel.consume(replyQueue.queue, async (msg) => {
+        // Punt 8: Null guard
+        if (!msg) return; 
+
         if (msg.properties.correlationId === correlationId) {
+          clearTimeout(timeout);
+          
           try {
             const responseXml = msg.content.toString();
             const parsed = await parseStringPromise(responseXml, { explicitArray: false });
-
-            if (parsed.identity_response && parsed.identity_response.status === 'ok') {
+            
+            if (parsed.identity_response?.status === 'ok') {
               resolve(parsed.identity_response.user.master_uuid);
             } else {
-              reject(new Error('Identity service returned error status'));
+              // ⚠️ Voeg een reject toe die we hieronder afhandelen
+              throw new Error('Identity Service gaf een foutmelding terug');
             }
           } catch (err) {
-            reject(err);
+            reject(err); // ⚠️ Geef de error door naar de Promise
+          } finally {
+            // Punt 2: Cleanup
+            if (consumerTag) {
+              await this.channel.cancel(consumerTag);
+            }
+            await this.channel.deleteQueue(replyQueue.queue);
           }
-          setTimeout(() => this.channel.deleteQueue(q.queue), 500);
         }
       }, { noAck: true });
 
+      consumerTag = consumeObj.consumerTag;
+
+      // FIX 3: Veilig XML bouwen
+      const requestXml = create({ version: '1.0' })
+        .ele('identity_request')
+          .ele('email').txt(email).up()
+          .ele('source_system').txt(sourceSystem).up()
+        .end();
+
       this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
         correlationId: correlationId,
-        replyTo: q.queue,
-        contentType: 'application/xml',
+        replyTo: replyQueue.queue,
+        contentType: 'application/xml'
       });
-    });
-  }
+
+    } catch (err) {
+      clearTimeout(timeout);
+      reject(err);
+    }
+  });
+}
 
   async handleMessage(msg) {
     try {
@@ -455,11 +484,11 @@ class ReceiverV2 {
       }
     };
 
-    await this.sender.sendNewRegistrationToFossBilling(fossPayload);
-    console.log(`[receiver] Forwarded new_registration to FossBilling for Master UUID=${masterUuid}`);
+    await this.sender.sendNewRegistrationToFacturatie(fossPayload);
+console.log(`[receiver] Forwarded to Facturatie voor Master UUID=${masterUuid}`);
 
   } catch (err) {
-    console.log(`[receiver] Error in handleNewRegistration: ${err}`);
+    console.log(`[receiver] Error in handleNewRegistration: ${err.message}`);
     throw err;
   }
 }
@@ -932,7 +961,8 @@ async handleInvoiceCancelled(header, body) {
       );
 
     } catch (err) {
-      console.error(`[receiver] Error in handleInvoiceCancellationRequest: ${err}`);
+      console.error(`[receiver] Error in handleInvoiceCancellationRequest: ${err.message}`);
+      throw err;
     }
   }
 
