@@ -167,9 +167,9 @@ class ReceiverV2 {
 
       const cleanup = () => {
         if (consumerTag) {
-          this.channel.cancel(consumerTag).catch(() => {});
+          this.channel.cancel(consumerTag).catch((err) => console.error(`[receiver] Error cancelling consumer ${consumerTag}:`, err));
         }
-        this.channel.deleteQueue(q.queue).catch(() => {});
+        this.channel.deleteQueue(q.queue).catch((err) => console.error(`[receiver] Error deleting queue ${q.queue}:`, err));
       };
 
       // Timeout: reject and clean up if identity service does not respond in time
@@ -492,7 +492,7 @@ class ReceiverV2 {
     };
 
     await this.sender.sendNewRegistrationToFacturatie(fossPayload);
-    console.log(`[receiver] Forwarded new_registration to FossBilling for Master UUID=${masterUuid}`);
+    console.log(`[receiver] Forwarded new_registration to Facturatie for Master UUID=${masterUuid}`);
 
   } catch (err) {
     console.log(`[receiver] Error in handleNewRegistration: ${err}`);
