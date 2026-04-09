@@ -209,7 +209,7 @@ class ReceiverV2 {
         consumerTag = result.consumerTag;
         // Race condition guard: if the operation already settled before consume() resolved,
         // cancel the consumer now since cleanup() ran before consumerTag was available
-        if (settled) this.channel.cancel(consumerTag).catch(() => {});
+        if (settled) this.channel.cancel(consumerTag).catch((err) => console.error(`[receiver] Error cancelling consumer ${consumerTag} in race guard:`, err));
       }).catch((err) => {
         if (settled) return;
         settled = true;
