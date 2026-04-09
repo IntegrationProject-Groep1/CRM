@@ -148,40 +148,39 @@ class ReceiverV2 {
   async getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     if (!this.channel) throw new Error('RabbitMQ channel not initialized');
 
-    return new Promise(async (resolve, reject) => {
-      try {
-        const correlationId = uuidv4();
-        const q = await this.channel.assertQueue('', { exclusive: true });
+    const correlationId = uuidv4();
+    const q = await this.channel.assertQueue('', { exclusive: true });
 
-        const requestXml = `
-          <identity_request>
-            <email>${email}</email>
-            <source_system>${sourceSystem}</source_system>
-          </identity_request>`;
+    const requestXml = `
+      <identity_request>
+        <email>${email}</email>
+        <source_system>${sourceSystem}</source_system>
+      </identity_request>`;
 
-        this.channel.consume(q.queue, async (msg) => {
-          if (msg.properties.correlationId === correlationId) {
+    return new Promise((resolve, reject) => {
+      this.channel.consume(q.queue, async (msg) => {
+        if (msg.properties.correlationId === correlationId) {
+          try {
             const responseXml = msg.content.toString();
             const parsed = await parseStringPromise(responseXml, { explicitArray: false });
-            
+
             if (parsed.identity_response && parsed.identity_response.status === 'ok') {
               resolve(parsed.identity_response.user.master_uuid);
             } else {
               reject(new Error('Identity service returned error status'));
             }
-
-            setTimeout(() => this.channel.deleteQueue(q.queue), 500);
+          } catch (err) {
+            reject(err);
           }
-        }, { noAck: true });
+          setTimeout(() => this.channel.deleteQueue(q.queue), 500);
+        }
+      }, { noAck: true });
 
-        this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
-          correlationId: correlationId,
-          replyTo: q.queue,
-          contentType: 'application/xml'
-        });
-      } catch (err) {
-        reject(err);
-      }
+      this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
+        correlationId: correlationId,
+        replyTo: q.queue,
+        contentType: 'application/xml',
+      });
     });
   }
 
@@ -285,8 +284,6 @@ class ReceiverV2 {
 
     const address = customer.address || null;
     const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
-    const sessionId = ReceiverV2.getElementText(body, 'session_id');
-
     const externalUserId = getCustomerText('user_id');
     const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
     const rawType = getCustomerText('type');
@@ -791,54 +788,51 @@ async handleInvoiceCancelled(header, body) {
         ? (Array.isArray(items.item) ? items.item : [items.item]).filter(Boolean)
         : [];
 
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would upsert ${itemList.length} Consumption__c record(s)`);
-        return;
-      }
-
-      let memberId = null;
-      if (!isAnonymous && customer) {
-        const email = ReceiverV2.getElementText(customer, 'email');
-        const userId = ReceiverV2.getElementText(customer, 'user_id');
-        memberId = email
-          ? await this._findUserByEmail(email)
-          : (userId ? await this._findUserById(userId) : null);
-      }
-
-      for (let i = 0; i < itemList.length; i++) {
-        const item = itemList[i];
-        const lineId = item.id;
-        
-        // Haal waarden op
-        const unitPriceVal = item.unit_price;
-        const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
-        const qty = parseInt(item.quantity, 10) || 1;
-        
-        // Nieuwe Kassa velden ophalen
-        const sku = item.sku || null;
-        const vatRate = item.vat_rate ? parseFloat(item.vat_rate) : null;
-        const totalAmountVal = item.total_amount;
-        const providedTotal = parseFloat(typeof totalAmountVal === 'object' ? totalAmountVal['#text'] : totalAmountVal);
-        const finalTotalAmount = isNaN(providedTotal) ? (unitPrice * qty) : providedTotal; // Gebruik Kassa totaal, anders bereken zelf
-
-        const consumptionData = {
-          Consumption_ID__c: lineId || `${header.message_id}-${i}`,
-          Product_Name__c: String(item.description),
-          Quantity__c: qty,
-          Total_Amount__c: finalTotalAmount, // <-- AANGEPAST
-          Price_Per_Unit__c: unitPrice,
-          SKU__c: sku,                       // <-- NIEUW (Zorg dat dit veld bestaat in Salesforce!)
-          VAT_Rate__c: vatRate               // <-- NIEUW (Zorg dat dit veld bestaat in Salesforce!)
-        };
-
-        if (memberId) {
-          consumptionData.Member__c = memberId;
+      if (this.sf.isConnected) {
+        let memberId = null;
+        if (!isAnonymous && customer) {
+          const email = ReceiverV2.getElementText(customer, 'email');
+          const userId = ReceiverV2.getElementText(customer, 'user_id');
+          memberId = email
+            ? await this._findUserByEmail(email)
+            : (userId ? await this._findUserById(userId) : null);
         }
 
-        await this.sf.apiCall((conn) =>
-          conn.sobject('Consumption__c').upsert(consumptionData, 'Consumption_ID__c')
-        );
-        console.log(`[receiver] Upserted Consumption__c: ${consumptionData.Consumption_ID__c}`);
+        for (let i = 0; i < itemList.length; i++) {
+          const item = itemList[i];
+          const lineId = item.id;
+
+          const unitPriceVal = item.unit_price;
+          const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
+          const qty = parseInt(item.quantity, 10) || 1;
+
+          const sku = item.sku || null;
+          const vatRate = item.vat_rate ? parseFloat(item.vat_rate) : null;
+          const totalAmountVal = item.total_amount;
+          const providedTotal = parseFloat(typeof totalAmountVal === 'object' ? totalAmountVal['#text'] : totalAmountVal);
+          const finalTotalAmount = isNaN(providedTotal) ? (unitPrice * qty) : providedTotal;
+
+          const consumptionData = {
+            Consumption_ID__c: lineId || `${header.message_id}-${i}`,
+            Product_Name__c: String(item.description),
+            Quantity__c: qty,
+            Total_Amount__c: finalTotalAmount,
+            Price_Per_Unit__c: unitPrice,
+            SKU__c: sku,
+            VAT_Rate__c: vatRate,
+          };
+
+          if (memberId) {
+            consumptionData.Member__c = memberId;
+          }
+
+          await this.sf.apiCall((conn) =>
+            conn.sobject('Consumption__c').upsert(consumptionData, 'Consumption_ID__c')
+          );
+          console.log(`[receiver] Upserted Consumption__c: ${consumptionData.Consumption_ID__c}`);
+        }
+      } else {
+        console.log(`[receiver] DRY RUN: Would upsert ${itemList.length} Consumption__c record(s)`);
       }
 
       // Insert each item into MySQL

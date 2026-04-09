@@ -294,37 +294,31 @@ class CRMSender {
     }
   }
 
-  buildNewRegistrationForKassaXml(data) {
-    const messageId = `reg-crm-${uuidv4()}`;
+  buildProfileUpdateXml(data) {
+    const messageId = `prof-crm-${uuidv4()}`;
     const timestamp = new Date().toISOString();
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('type').txt('new_registration');
+    header.ele('type').txt('profile_update');
     header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
     header.ele('version').txt('2.0');
-    
-    // --> DIT MOET ERBIJ <--
-    if (data.header && data.header.master_uuid) {
-      header.ele('master_uuid').txt(data.header.master_uuid);
-    }
-    // ----------------------
+    if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
 
-     const body = root.ele('body');
-    // ... rest van je code blijft exact hetzelfde
+    const body = root.ele('body');
     body.ele('user_id').txt(data.user_id);
     body.ele('email').txt(data.email);
-
-    const contact = body.ele('contact');
-    contact.ele('first_name').txt(data.first_name);
-    contact.ele('last_name').txt(data.last_name);
-
-    if (data.company_name) body.ele('company_name').txt(data.company_name);
     body.ele('age').txt(String(data.age));
     body.ele('type').txt(data.type || 'private');
+
+    const contact = body.ele('contact');
+    contact.ele('first_name').txt(data.first_name || '');
+    contact.ele('last_name').txt(data.last_name || '');
+
+    if (data.company_name) body.ele('company_name').txt(data.company_name);
     if (data.vat_number) body.ele('vat_number').txt(data.vat_number);
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
@@ -347,33 +341,6 @@ class CRMSender {
       console.log(`Failed to send profile update to Kassa: ${error}`);
       throw error;
     }
-  }
-
-  buildNewRegistrationForKassaXml(data) {
-    const messageId = `reg-crm-${uuidv4()}`;
-    const timestamp = new Date().toISOString();
-
-    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
-
-    const header = root.ele('header');
-    header.ele('message_id').txt(messageId);
-    header.ele('type').txt('new_registration');
-    header.ele('source').txt('crm');
-    header.ele('timestamp').txt(timestamp);
-    header.ele('version').txt('2.0');
-    
-    // --> DIT MOET ERBIJ <--
-    if (data.header && data.header.master_uuid) {
-      header.ele('master_uuid').txt(data.header.master_uuid);
-    }
-    // ----------------------
-
-   const body = root.ele('body');
-    // ... rest van je code blijft exact hetzelfde
-    body.ele('user_id').txt(data.user_id);
-    body.ele('session_id').txt(data.session_id);
-
-    return root.doc().end({ prettyPrint: true, indent: '  ' });
   }
 
   buildNewRegistrationForFacturatieXml(data) {
@@ -410,6 +377,27 @@ class CRMSender {
     fee.ele('amount').txt(String(data.registration_fee.amount));
     fee.ele('status').txt(data.registration_fee.status);
     fee.ele('trigger_invoice').txt(String(data.registration_fee.trigger_invoice));
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  buildCancelRegistrationXml(data) {
+    const messageId = `cancel-crm-${uuidv4()}`;
+    const timestamp = new Date().toISOString();
+
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(messageId);
+    header.ele('type').txt('cancel_registration');
+    header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
+    if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+
+    const body = root.ele('body');
+    body.ele('user_id').txt(data.user_id);
+    body.ele('session_id').txt(data.session_id || '');
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }

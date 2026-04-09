@@ -86,6 +86,7 @@ function buildXml(type, bodyXml = '', extra = {}) {
     <type>${type}</type>
     <timestamp>${new Date().toISOString()}</timestamp>
     <source>test</source>
+    <master_uuid>test-master-uuid-1234</master_uuid>
     ${correlationId}
   </header>
   <body>${bodyXml}</body>
@@ -107,7 +108,12 @@ function makeReceiver() {
     ack: jest.fn(),
     nack: jest.fn(),
     sendToQueue: jest.fn().mockReturnValue(true),
+    assertQueue: jest.fn().mockResolvedValue({ queue: 'test-reply-queue' }),
+    consume: jest.fn(),
+    deleteQueue: jest.fn(),
   };
+  // Mock identity service RPC — returns a fixed master UUID without hitting RabbitMQ
+  receiver.getOrCreateMasterUuid = jest.fn().mockResolvedValue('test-master-uuid-1234');
   return receiver;
 }
 
@@ -162,6 +168,7 @@ describe('validateXmlMessage', () => {
         type: 'new_registration',
         timestamp: new Date().toISOString(),
         source: 'test',
+        master_uuid: 'test-master-uuid-1234',
         ...overrides,
       },
     },
@@ -570,7 +577,7 @@ describe('handleBadgeScanned', () => {
     // Override: lege body is geen null, verwijder body volledig
     const rawXml = `<?xml version="1.0"?><message>
       <header><message_id>x</message_id><version>2.0</version><type>badge_scanned</type>
-      <timestamp>${new Date().toISOString()}</timestamp><source>test</source></header>
+      <timestamp>${new Date().toISOString()}</timestamp><source>test</source><master_uuid>test-master-uuid-1234</master_uuid></header>
     </message>`;
     await receiver.handleMessage(buildMsg(rawXml));
     expect(receiver.channel.ack).toHaveBeenCalled();
