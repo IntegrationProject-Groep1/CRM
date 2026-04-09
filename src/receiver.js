@@ -210,7 +210,13 @@ class ReceiverV2 {
         // Race condition guard: if the operation already settled before consume() resolved,
         // cancel the consumer now since cleanup() ran before consumerTag was available
         if (settled) this.channel.cancel(consumerTag).catch(() => {});
-      }).catch(reject);
+      }).catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cleanup();
+        reject(err);
+      });
 
       this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
         correlationId: correlationId,
@@ -920,10 +926,16 @@ async handleInvoiceCancelled(header, body) {
 
       console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid || userId}`);
 
-      // 1. MySQL Soft Delete — use dedicated methods that match the actual schema
-      const externalId = userId || masterUuid;
-      await this.db.softDeleteConsumptionsByUserId(externalId);
-      await this.db.softDeletePerson(externalId);
+      // 1. MySQL Soft Delete — try both userId and masterUuid since softDeletePerson
+      // only searches User_ID__c and a message may carry one or both identifiers
+      if (userId) {
+        await this.db.softDeleteConsumptionsByUserId(userId);
+        await this.db.softDeletePerson(userId);
+      }
+      if (masterUuid && masterUuid !== userId) {
+        await this.db.softDeleteConsumptionsByUserId(masterUuid);
+        await this.db.softDeletePerson(masterUuid);
+      }
 
       // 2. Salesforce Update (indien verbonden)
       if (this.sf.isConnected) {
