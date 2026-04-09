@@ -146,70 +146,81 @@ class ReceiverV2 {
     return [true, null];
   }
 
-async getOrCreateMasterUuid(email, sourceSystem = 'crm') {
+getOrCreateMasterUuid(email, sourceSystem = 'crm') {
   if (!this.channel) throw new Error('RabbitMQ channel not initialized');
 
   const correlationId = uuidv4();
-  const replyQueue = await this.channel.assertQueue('', { exclusive: true });
-  let consumerTag = null; // Correct geplaatst
+  let consumerTag = null;
+  let replyQueueName = null;
 
-  return new Promise(async (resolve, reject) => {
-    // FIX 1: Timeout (15s)
+  // We verwijderen 'async' voor (resolve, reject) om de linter blij te maken
+  return new Promise((resolve, reject) => {
+    // 1. Setup Timeout
     const timeout = setTimeout(async () => {
-      if (consumerTag) await this.channel.cancel(consumerTag);
-      await this.channel.deleteQueue(replyQueue.queue);
+      try {
+        if (consumerTag) await this.channel.cancel(consumerTag);
+        if (replyQueueName) await this.channel.deleteQueue(replyQueueName);
+      } catch (err) {
+        console.error("[identity] Cleanup error during timeout:", err);
+      }
       reject(new Error(`Identity Service timeout voor ${email}`));
     }, 15000);
 
-    try {
-      const consumeObj = await this.channel.consume(replyQueue.queue, async (msg) => {
-        // Punt 8: Null guard
-        if (!msg) return; 
+    // 2. Start de flow (we gebruiken .then om de async setup te doen)
+    this.channel.assertQueue('', { exclusive: true })
+      .then((replyQueue) => {
+        replyQueueName = replyQueue.queue;
 
-        if (msg.properties.correlationId === correlationId) {
-          clearTimeout(timeout);
-          
-          try {
-            const responseXml = msg.content.toString();
-            const parsed = await parseStringPromise(responseXml, { explicitArray: false });
-            
-            if (parsed.identity_response?.status === 'ok') {
-              resolve(parsed.identity_response.user.master_uuid);
-            } else {
-              // ⚠️ Voeg een reject toe die we hieronder afhandelen
-              throw new Error('Identity Service gaf een foutmelding terug');
+        return this.channel.consume(replyQueueName, async (msg) => {
+          // De callback zelf MAG wel async zijn
+          if (!msg) return;
+
+          if (msg.properties.correlationId === correlationId) {
+            clearTimeout(timeout);
+
+            try {
+              const responseXml = msg.content.toString();
+              const parsed = await parseStringPromise(responseXml, { explicitArray: false });
+
+              if (parsed.identity_response?.status === 'ok') {
+                resolve(parsed.identity_response.user.master_uuid);
+              } else {
+                reject(new Error('Identity Service gaf een foutmelding terug'));
+              }
+            } catch (err) {
+              reject(new Error(`Fout bij verwerken Identity antwoord: ${err.message}`));
+            } finally {
+              // Cleanup na verwerking
+              try {
+                if (consumerTag) await this.channel.cancel(consumerTag);
+                await this.channel.deleteQueue(replyQueueName);
+              } catch (cleanupErr) {
+                console.error("[identity] Final cleanup error:", cleanupErr);
+              }
             }
-          } catch (err) {
-            reject(err); // ⚠️ Geef de error door naar de Promise
-          } finally {
-            // Punt 2: Cleanup
-            if (consumerTag) {
-              await this.channel.cancel(consumerTag);
-            }
-            await this.channel.deleteQueue(replyQueue.queue);
           }
-        }
-      }, { noAck: true });
+        }, { noAck: true });
+      })
+      .then((consumeObj) => {
+        consumerTag = consumeObj.consumerTag;
 
-      consumerTag = consumeObj.consumerTag;
+        // 3. Veilig XML bouwen en versturen
+        const requestXml = create({ version: '1.0' })
+          .ele('identity_request')
+            .ele('email').txt(email).up()
+            .ele('source_system').txt(sourceSystem).up()
+          .end();
 
-      // FIX 3: Veilig XML bouwen
-      const requestXml = create({ version: '1.0' })
-        .ele('identity_request')
-          .ele('email').txt(email).up()
-          .ele('source_system').txt(sourceSystem).up()
-        .end();
-
-      this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
-        correlationId: correlationId,
-        replyTo: replyQueue.queue,
-        contentType: 'application/xml'
+        this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
+          correlationId: correlationId,
+          replyTo: replyQueueName,
+          contentType: 'application/xml'
+        });
+      })
+      .catch((err) => {
+        clearTimeout(timeout);
+        reject(err);
       });
-
-    } catch (err) {
-      clearTimeout(timeout);
-      reject(err);
-    }
   });
 }
 
