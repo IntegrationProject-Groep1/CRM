@@ -6,6 +6,7 @@ const amqp = require('amqplib');
 const { v4: uuidv4 } = require('uuid');
 const { parseStringPromise } = require('xml2js');
 const { XMLParser } = require('fast-xml-parser');
+const { create: xmlCreate } = require('xmlbuilder2');
 const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
@@ -152,7 +153,6 @@ class ReceiverV2 {
     const q = await this.channel.assertQueue('', { exclusive: true });
 
     // Build XML safely using xmlbuilder2 to prevent XML injection
-    const { create: xmlCreate } = require('xmlbuilder2');
     const requestXml = xmlCreate({ version: '1.0', encoding: 'UTF-8' })
       .ele('identity_request')
         .ele('email').txt(email).up()
@@ -205,7 +205,12 @@ class ReceiverV2 {
         } catch (err) {
           reject(err);
         }
-      }, { noAck: true }).then((result) => { consumerTag = result.consumerTag; });
+      }, { noAck: true }).then((result) => {
+        consumerTag = result.consumerTag;
+        // Race condition guard: if the operation already settled before consume() resolved,
+        // cancel the consumer now since cleanup() ran before consumerTag was available
+        if (settled) this.channel.cancel(consumerTag).catch(() => {});
+      }).catch(reject);
 
       this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
         correlationId: correlationId,
