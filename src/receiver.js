@@ -151,30 +151,61 @@ class ReceiverV2 {
     const correlationId = uuidv4();
     const q = await this.channel.assertQueue('', { exclusive: true });
 
-    const requestXml = `
-      <identity_request>
-        <email>${email}</email>
-        <source_system>${sourceSystem}</source_system>
-      </identity_request>`;
+    // Build XML safely using xmlbuilder2 to prevent XML injection
+    const { create: xmlCreate } = require('xmlbuilder2');
+    const requestXml = xmlCreate({ version: '1.0', encoding: 'UTF-8' })
+      .ele('identity_request')
+        .ele('email').txt(email).up()
+        .ele('source_system').txt(sourceSystem).up()
+      .end({ prettyPrint: false });
+
+    const IDENTITY_TIMEOUT_MS = 15000;
 
     return new Promise((resolve, reject) => {
-      this.channel.consume(q.queue, async (msg) => {
-        if (msg.properties.correlationId === correlationId) {
-          try {
-            const responseXml = msg.content.toString();
-            const parsed = await parseStringPromise(responseXml, { explicitArray: false });
+      let settled = false;
+      let consumerTag = null;
 
-            if (parsed.identity_response && parsed.identity_response.status === 'ok') {
-              resolve(parsed.identity_response.user.master_uuid);
-            } else {
-              reject(new Error('Identity service returned error status'));
-            }
-          } catch (err) {
-            reject(err);
-          }
-          setTimeout(() => this.channel.deleteQueue(q.queue), 500);
+      const cleanup = () => {
+        if (consumerTag) {
+          this.channel.cancel(consumerTag).catch(() => {});
         }
-      }, { noAck: true });
+        this.channel.deleteQueue(q.queue).catch(() => {});
+      };
+
+      // Timeout: reject and clean up if identity service does not respond in time
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error(`Identity service timeout after ${IDENTITY_TIMEOUT_MS}ms for ${email}`));
+      }, IDENTITY_TIMEOUT_MS);
+
+      this.channel.consume(q.queue, async (msg) => {
+        // RabbitMQ sends null when the consumer is cancelled
+        if (!msg) return;
+
+        if (msg.properties.correlationId !== correlationId) {
+          console.log(`[receiver] getOrCreateMasterUuid: unexpected correlationId, ignoring message`);
+          return;
+        }
+
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cleanup();
+
+        try {
+          const parsed = await parseStringPromise(msg.content.toString(), { explicitArray: false });
+
+          if (parsed.identity_response && parsed.identity_response.status === 'ok') {
+            resolve(parsed.identity_response.user.master_uuid);
+          } else {
+            reject(new Error('Identity service returned error status'));
+          }
+        } catch (err) {
+          reject(err);
+        }
+      }, { noAck: true }).then((result) => { consumerTag = result.consumerTag; });
 
       this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
         correlationId: correlationId,
@@ -455,7 +486,7 @@ class ReceiverV2 {
       }
     };
 
-    await this.sender.sendNewRegistrationToFossBilling(fossPayload);
+    await this.sender.sendNewRegistrationToFacturatie(fossPayload);
     console.log(`[receiver] Forwarded new_registration to FossBilling for Master UUID=${masterUuid}`);
 
   } catch (err) {
