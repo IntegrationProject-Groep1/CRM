@@ -49,6 +49,7 @@ jest.mock('../src/mysqlClient', () => {
     updateEventAttendeeCheckIn: jest.fn().mockResolvedValue(undefined),
     softDeletePerson: jest.fn().mockResolvedValue(true),
     softDeleteConsumptionsByUserId: jest.fn().mockResolvedValue(true),
+    query: jest.fn().mockResolvedValue([[], null]),
   }));
 });
 

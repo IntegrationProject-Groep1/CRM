@@ -6,6 +6,7 @@ const amqp = require('amqplib');
 const { v4: uuidv4 } = require('uuid');
 const { parseStringPromise } = require('xml2js');
 const { XMLParser } = require('fast-xml-parser');
+const { create: xmlCreate } = require('xmlbuilder2');
 const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
@@ -151,30 +152,71 @@ class ReceiverV2 {
     const correlationId = uuidv4();
     const q = await this.channel.assertQueue('', { exclusive: true });
 
-    const requestXml = `
-      <identity_request>
-        <email>${email}</email>
-        <source_system>${sourceSystem}</source_system>
-      </identity_request>`;
+    // Build XML safely using xmlbuilder2 to prevent XML injection
+    const requestXml = xmlCreate({ version: '1.0', encoding: 'UTF-8' })
+      .ele('identity_request')
+        .ele('email').txt(email).up()
+        .ele('source_system').txt(sourceSystem).up()
+      .end({ prettyPrint: false });
+
+    const IDENTITY_TIMEOUT_MS = 15000;
 
     return new Promise((resolve, reject) => {
-      this.channel.consume(q.queue, async (msg) => {
-        if (msg.properties.correlationId === correlationId) {
-          try {
-            const responseXml = msg.content.toString();
-            const parsed = await parseStringPromise(responseXml, { explicitArray: false });
+      let settled = false;
+      let consumerTag = null;
 
-            if (parsed.identity_response && parsed.identity_response.status === 'ok') {
-              resolve(parsed.identity_response.user.master_uuid);
-            } else {
-              reject(new Error('Identity service returned error status'));
-            }
-          } catch (err) {
-            reject(err);
-          }
-          setTimeout(() => this.channel.deleteQueue(q.queue), 500);
+      const cleanup = () => {
+        if (consumerTag) {
+          this.channel.cancel(consumerTag).catch((err) => console.error(`[receiver] Error cancelling consumer ${consumerTag}:`, err));
         }
-      }, { noAck: true });
+        this.channel.deleteQueue(q.queue).catch((err) => console.error(`[receiver] Error deleting queue ${q.queue}:`, err));
+      };
+
+      // Timeout: reject and clean up if identity service does not respond in time
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error(`Identity service timeout after ${IDENTITY_TIMEOUT_MS}ms for ${email}`));
+      }, IDENTITY_TIMEOUT_MS);
+
+      this.channel.consume(q.queue, async (msg) => {
+        // RabbitMQ sends null when the consumer is cancelled
+        if (!msg) return;
+
+        if (msg.properties.correlationId !== correlationId) {
+          console.log(`[receiver] getOrCreateMasterUuid: unexpected correlationId, ignoring message`);
+          return;
+        }
+
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cleanup();
+
+        try {
+          const parsed = await parseStringPromise(msg.content.toString(), { explicitArray: false });
+
+          if (parsed.identity_response && parsed.identity_response.status === 'ok') {
+            resolve(parsed.identity_response.user.master_uuid);
+          } else {
+            reject(new Error('Identity service returned error status'));
+          }
+        } catch (err) {
+          reject(err);
+        }
+      }, { noAck: true }).then((result) => {
+        consumerTag = result.consumerTag;
+        // Race condition guard: if the operation already settled before consume() resolved,
+        // cancel the consumer now since cleanup() ran before consumerTag was available
+        if (settled) this.channel.cancel(consumerTag).catch((err) => console.error(`[receiver] Error cancelling consumer ${consumerTag} in race guard:`, err));
+      }).catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cleanup();
+        reject(err);
+      });
 
       this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
         correlationId: correlationId,
@@ -455,8 +497,8 @@ class ReceiverV2 {
       }
     };
 
-    await this.sender.sendNewRegistrationToFossBilling(fossPayload);
-    console.log(`[receiver] Forwarded new_registration to FossBilling for Master UUID=${masterUuid}`);
+    await this.sender.sendNewRegistrationToFacturatie(fossPayload);
+    console.log(`[receiver] Forwarded new_registration to Facturatie for Master UUID=${masterUuid}`);
 
   } catch (err) {
     console.log(`[receiver] Error in handleNewRegistration: ${err}`);
@@ -489,13 +531,15 @@ async handleSendInvoice(header, body) {
     }
 
     // 2. Update lokale DB voor snelle weergave in portaal
-    await this.db.query(
+    const [, dbError] = await this.db.query(
       'UPDATE crm_user_sync SET last_invoice_url = ?, last_invoice_number = ? WHERE master_uuid = ?',
       [invoiceUrl, invoiceNumber, masterUuid]
     );
+    if (dbError) console.error(`[receiver] DB error in handleSendInvoice: ${dbError.message}`);
 
   } catch (err) {
     console.error(`[receiver] Error in handleSendInvoice: ${err}`);
+    throw err;
   }
 }
 
@@ -882,11 +926,16 @@ async handleInvoiceCancelled(header, body) {
 
       console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid || userId}`);
 
-      // 1. MySQL Soft Delete
-      await this.db.query(
-        'UPDATE crm_user_sync SET is_deleted = true WHERE master_uuid = ? OR external_user_id = ?',
-        [masterUuid, userId]
-      );
+      // 1. MySQL Soft Delete — try both userId and masterUuid since softDeletePerson
+      // only searches User_ID__c and a message may carry one or both identifiers
+      if (userId) {
+        await this.db.softDeleteConsumptionsByUserId(userId);
+        await this.db.softDeletePerson(userId);
+      }
+      if (masterUuid && masterUuid !== userId) {
+        await this.db.softDeleteConsumptionsByUserId(masterUuid);
+        await this.db.softDeletePerson(masterUuid);
+      }
 
       // 2. Salesforce Update (indien verbonden)
       if (this.sf.isConnected) {
@@ -926,13 +975,15 @@ async handleInvoiceCancelled(header, body) {
       });
 
       // Optioneel: Update ook je eigen DB of Salesforce status
-      await this.db.query(
+      const [, dbError] = await this.db.query(
         'UPDATE crm_user_sync SET last_payment_status = "cancelled" WHERE master_uuid = ?',
         [masterUuid]
       );
+      if (dbError) console.error(`[receiver] DB error in handleInvoiceCancellationRequest: ${dbError.message}`);
 
     } catch (err) {
       console.error(`[receiver] Error in handleInvoiceCancellationRequest: ${err}`);
+      throw err;
     }
   }
 
