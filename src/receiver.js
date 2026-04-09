@@ -27,6 +27,7 @@ const MESSAGE_TYPES = {
   BADGE_ASSIGNED: 'badge_assigned',
   REFUND_PROCESSED: 'refund_processed',
   INVOICE_REQUEST: 'invoice_request',
+  INVOICE_CANCELLED: 'invoice_cancelled',
   DELETE_USER: 'delete_user',
 };
 
@@ -236,6 +237,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.BADGE_ASSIGNED]: () => this.handleBadgeAssigned(header, body),
       [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body),
       [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
+      [MESSAGE_TYPES.INVOICE_CANCELLED]: () => this.handleInvoiceCancellationRequest(header, body),
       [MESSAGE_TYPES.DELETE_USER]: () => this.handleDeleteUser(header, body),
     };
     const handler = handlers[msgType];
@@ -907,6 +909,36 @@ async handleInvoiceCancelled(header, body) {
     } catch (err) {
       console.error(`[receiver] Error in handleDeleteUser: ${err}`);
       throw err;
+    }
+  }
+
+  async handleInvoiceCancellationRequest(header, body) {
+    try {
+      const masterUuid = header.master_uuid;
+      const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+
+      if (!invoiceNumber || !masterUuid) {
+        console.log('[receiver] Missing data for invoice cancellation');
+        return;
+      }
+
+      console.log(`[receiver] Forwarding invoice_cancelled to Facturatie for UUID: ${masterUuid}`);
+
+      // Stuur door naar Facturatie via de Sender
+      await this.sender.sendInvoiceCancelledToFacturatie({
+        master_uuid: masterUuid,
+        invoice_number: invoiceNumber,
+        reason: ReceiverV2.getElementText(body, 'reason') || 'Cancelled by user via frontend'
+      });
+
+      // Optioneel: Update ook je eigen DB of Salesforce status
+      await this.db.query(
+        'UPDATE crm_user_sync SET last_payment_status = "cancelled" WHERE master_uuid = ?',
+        [masterUuid]
+      );
+
+    } catch (err) {
+      console.error(`[receiver] Error in handleInvoiceCancellationRequest: ${err}`);
     }
   }
 

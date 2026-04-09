@@ -24,6 +24,47 @@ class CRMSender {
     }
   }
 
+  buildInvoiceCancelledXml(data) {
+    const messageId = `cnl-inv-${uuidv4()}`;
+    const timestamp = new Date().toISOString();
+
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(messageId);
+    header.ele('master_uuid').txt(data.master_uuid);
+    header.ele('type').txt('invoice_cancelled');
+    header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
+
+    const body = root.ele('body');
+    body.ele('invoice_number').txt(data.invoice_number);
+    if (data.reason) {
+      body.ele('reason').txt(data.reason);
+    }
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendInvoiceCancelledToFacturatie(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized');
+    try {
+      const xmlPayload = this.buildInvoiceCancelledXml(data);
+      const queue = 'crm.to.facturatie'; // De queue van FossBilling
+      await this.channel.assertQueue(queue, { durable: true });
+      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      console.log(`Invoice cancellation sent to Facturatie for invoice: ${data.invoice_number}`);
+      return { success: true, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send invoice cancellation: ${error}`);
+      throw error;
+    }
+  }
+
   buildInvoiceRequestXml(data) {
     const messageId = `inv-crm-${uuidv4()}`;
     const timestamp = new Date().toISOString();
