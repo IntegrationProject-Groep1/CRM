@@ -552,24 +552,7 @@ async handleInvoiceCancelled(header, body) {
         ActivityDate: new Date().toISOString().split('T')[0],
       };
 
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
-        return;
-      }
-
-      const email = ReceiverV2.getElementText(body, 'email');
-      if (email) {
-        const contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
-      } else if (userId) {
-        const contactId = await this._findUserById(userId);
-        if (contactId) taskData.WhoId = contactId;
-      }
-
-      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-      console.log(`[receiver] Created Task for payment [${paymentContext}]: ${result?.id}`);
-
-      // Insert payment into MySQL
+      // Insert payment into MySQL (always, regardless of SF connection)
       let eventAttendeeId = null;
       if (userId) {
         const personId = await this.db.findPersonByExternalId(userId);
@@ -588,6 +571,23 @@ async handleInvoiceCancelled(header, body) {
 
       const dbPaymentId = await this.db.insertPayment(paymentPayload);
       if (dbPaymentId) console.log(`[mysql] Inserted payment: ${dbPaymentId}`);
+
+      if (!this.sf.isConnected) {
+        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        return;
+      }
+
+      const email = ReceiverV2.getElementText(body, 'email');
+      if (email) {
+        const contactId = await this._findUserByEmail(email);
+        if (contactId) taskData.WhoId = contactId;
+      } else if (userId) {
+        const contactId = await this._findUserById(userId);
+        if (contactId) taskData.WhoId = contactId;
+      }
+
+      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+      console.log(`[receiver] Created Task for payment [${paymentContext}]: ${result?.id}`);
     } catch (err) {
       console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
       throw err;
@@ -791,6 +791,11 @@ async handleInvoiceCancelled(header, body) {
         ? (Array.isArray(items.item) ? items.item : [items.item]).filter(Boolean)
         : [];
 
+      if (!this.sf.isConnected) {
+        console.log(`[receiver] DRY RUN: Would upsert ${itemList.length} Consumption__c record(s)`);
+        return;
+      }
+
       let memberId = null;
       if (!isAnonymous && customer) {
         const email = ReceiverV2.getElementText(customer, 'email');
@@ -798,11 +803,6 @@ async handleInvoiceCancelled(header, body) {
         memberId = email
           ? await this._findUserByEmail(email)
           : (userId ? await this._findUserById(userId) : null);
-      }
-
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would upsert ${itemList.length} Consumption__c record(s)`);
-        return;
       }
 
       for (let i = 0; i < itemList.length; i++) {
@@ -1039,26 +1039,25 @@ async handleInvoiceCancelled(header, body) {
         ActivityDate: new Date().toISOString().split('T')[0],
       };
 
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
-        return;
-      }
-
       const email = ReceiverV2.getElementText(body, 'email');
-      if (email) {
-        const contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
-      } else if (userId) {
-        const contactId = await this._findUserById(userId);
-        if (contactId) taskData.WhoId = contactId;
-      }
-
-      const sfResult = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-      console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
-
       const amountPaidVal = invoice ? invoice.amount_paid : null;
       const amountPaid = amountPaidVal !== null && typeof amountPaidVal === 'object' ? amountPaidVal['#text'] : amountPaidVal;
       const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';
+
+      if (!this.sf.isConnected) {
+        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+      } else {
+        if (email) {
+          const contactId = await this._findUserByEmail(email);
+          if (contactId) taskData.WhoId = contactId;
+        } else if (userId) {
+          const contactId = await this._findUserById(userId);
+          if (contactId) taskData.WhoId = contactId;
+        }
+
+        const sfResult = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+        console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
+      }
 
       await this.sender.sendInvoiceRequest({
         correlation_id: header.message_id,
@@ -1123,4 +1122,8 @@ async function main() {
   }
 }
 
-main();
+module.exports = ReceiverV2;
+
+if (require.main === module) {
+  main();
+}
