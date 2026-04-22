@@ -249,7 +249,7 @@ class CRMSender {
       customer.ele('vat_number').txt(data.customer.vat_number);
     }
     customer.ele('user_id').txt(data.customer.user_id);
-    customer.ele('age').txt(String(data.customer.age));
+    customer.ele('date_of_birth').txt(data.customer.date_of_birth);
 
     const paymentDue = body.ele('payment_due');
     paymentDue.ele('amount').txt(String(data.payment_due.amount));
@@ -314,7 +314,7 @@ class CRMSender {
     const body = root.ele('body');
     body.ele('user_id').txt(data.user_id);
     body.ele('email').txt(data.email);
-    body.ele('age').txt(String(data.age));
+    body.ele('date_of_birth').txt(data.date_of_birth);
     body.ele('type').txt(data.type || 'private');
 
     const contact = body.ele('contact');
