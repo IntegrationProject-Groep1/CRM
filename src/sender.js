@@ -248,7 +248,7 @@ class CRMSender {
     if (data.customer.vat_number) {
       customer.ele('vat_number').txt(data.customer.vat_number);
     }
-    customer.ele('user_id').txt(data.customer.user_id);
+    customer.ele('master_uuid').txt(data.customer.master_uuid);
     customer.ele('date_of_birth').txt(data.customer.date_of_birth);
 
     const paymentDue = body.ele('payment_due');
@@ -312,7 +312,7 @@ class CRMSender {
     if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
 
     const body = root.ele('body');
-    body.ele('user_id').txt(data.user_id);
+    body.ele('master_uuid').txt(data.master_uuid);
     body.ele('email').txt(data.email);
     body.ele('date_of_birth').txt(data.date_of_birth);
     body.ele('type').txt(data.type || 'private');
@@ -400,7 +400,7 @@ class CRMSender {
     if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
 
     const body = root.ele('body');
-    body.ele('user_id').txt(data.user_id);
+    body.ele('master_uuid').txt(data.master_uuid);
     body.ele('session_id').txt(data.session_id || '');
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
