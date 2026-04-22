@@ -18,6 +18,7 @@ const DEAD_LETTER_QUEUE = 'crm.dead-letter';
 
 const MESSAGE_TYPES = {
   NEW_REGISTRATION: 'new_registration',
+  USER_UNREGISTERED: 'user.unregistered',
   PAYMENT_REGISTERED: 'payment_registered',
   BADGE_SCANNED: 'badge_scanned',
   SESSION_UPDATE: 'session_update',
@@ -128,13 +129,21 @@ class ReceiverV2 {
       return [false, 'Missing header element'];
     }
 
-    const requiredFields = ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
+    const messageType = header.type;
+    const isFrontendUnregistered = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
+    const requiredFields = isFrontendUnregistered
+      ? ['message_id', 'version', 'type', 'timestamp', 'source', 'receiver']
+      : ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
     const missingFields = requiredFields.filter((f) => header[f] === undefined || header[f] === null);
     if (missingFields.length > 0) {
       return [false, `Missing required header fields: ${missingFields.join(', ')}`];
     }
 
-    if (String(header.version) !== '2.0') {
+    if (isFrontendUnregistered) {
+      if (String(header.version) !== '1.0') {
+        return [false, `Invalid version: expected 1.0, got ${header.version}`];
+      }
+    } else if (String(header.version) !== '2.0') {
       return [false, `Invalid version: expected 2.0, got ${header.version}`];
     }
 
@@ -267,6 +276,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     const msgType = header.type;
     const handlers = {
       [MESSAGE_TYPES.NEW_REGISTRATION]: () => this.handleNewRegistration(header, body),
+      [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body),
       [MESSAGE_TYPES.BADGE_SCANNED]: () => this.handleBadgeScanned(header, body),
       [MESSAGE_TYPES.SESSION_UPDATE]: () => this.handleSessionUpdate(header, body),
@@ -292,6 +302,36 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       (conn) => conn.sobject('Member__c').find({ Email__c: email }, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
+  }
+
+  async handleUserUnregistered(header, body) {
+    try {
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const sessionId = ReceiverV2.getElementText(body, 'session_id');
+      const bodyTimestamp = ReceiverV2.getElementText(body, 'timestamp');
+
+      if (!userId || !sessionId) {
+        console.log('[receiver] Missing user_id or session_id in user.unregistered body');
+        return;
+      }
+
+      await this.sender.sendUserUnregisteredFanout({
+        message_id: header.message_id,
+        timestamp: header.timestamp,
+        source: header.source,
+        receiver: header.receiver,
+        correlation_id: ReceiverV2.getElementText(header, 'correlation_id') || '',
+        user_id: userId,
+        session_id: sessionId,
+        body_timestamp: bodyTimestamp || header.timestamp,
+      });
+
+      console.log(`[receiver] Forwarded user.unregistered for user_id=${userId}, session_id=${sessionId}`);
+      console.log('[receiver] user.unregistered triggers downstream CRM cancellation flow, including invoice_cancelled to Facturatie.');
+    } catch (err) {
+      console.log(`[receiver] Error in handleUserUnregistered: ${err}`);
+      throw err;
+    }
   }
 
   async handleNewRegistration(header, body) {

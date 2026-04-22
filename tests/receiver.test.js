@@ -58,6 +58,7 @@ jest.mock('../src/sender', () => {
     close: jest.fn().mockResolvedValue(undefined),
     sendNewRegistrationToKassa: jest.fn().mockResolvedValue({ success: true }),
     sendInvoiceRequest: jest.fn().mockResolvedValue({ success: true }),
+    sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
   }));
 });
 
@@ -99,6 +100,29 @@ function buildMsg(xmlString) {
     content: Buffer.from(xmlString, 'utf8'),
     fields: { deliveryTag: 1 },
   };
+}
+
+function buildFrontendUserUnregisteredXml(overrides = {}) {
+  const headerTimestamp = overrides.headerTimestamp || new Date().toISOString();
+  const bodyTimestamp = overrides.bodyTimestamp || headerTimestamp;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<message xmlns="urn:integration:planning:v1">
+  <header>
+    <message_id>${overrides.messageId || `msg-${Math.random().toString(36).slice(2)}`}</message_id>
+    <timestamp>${headerTimestamp}</timestamp>
+    <source>${overrides.source || 'frontend.drupal'}</source>
+    <receiver>${overrides.receiver || 'crm.salesforce planning.outlook mailing.sendgrid'}</receiver>
+    <type>user.unregistered</type>
+    <version>${overrides.version || '1.0'}</version>
+    <correlation_id>${overrides.correlationId || ''}</correlation_id>
+  </header>
+  <body>
+    <user_id>${overrides.userId || 'user-001'}</user_id>
+    <session_id>${overrides.sessionId || 'sess-42'}</session_id>
+    <timestamp>${bodyTimestamp}</timestamp>
+  </body>
+</message>`;
 }
 
 /** Create a fresh ReceiverV2 instance with a mocked channel. */
@@ -222,6 +246,25 @@ describe('validateXmlMessage', () => {
       const [valid] = receiver.validateXmlMessage(validParsed({ type }));
       expect(valid).toBe(true);
     }
+  });
+
+  test('frontend user.unregistered met version 1.0 en zonder master_uuid is geldig', () => {
+    const parsed = {
+      message: {
+        header: {
+          message_id: 'id-frontend-1',
+          version: '1.0',
+          type: 'user.unregistered',
+          timestamp: new Date().toISOString(),
+          source: 'frontend.drupal',
+          receiver: 'crm.salesforce planning.outlook mailing.sendgrid',
+        },
+      },
+    };
+
+    const [valid, err] = receiver.validateXmlMessage(parsed);
+    expect(valid).toBe(true);
+    expect(err).toBeNull();
   });
 });
 
@@ -798,5 +841,32 @@ describe('handleInvoiceRequestFromKassa', () => {
         invoice: expect.objectContaining({ amount: 150 }),
       }),
     );
+  });
+});
+
+describe('handleUserUnregistered', () => {
+  let receiver;
+
+  beforeEach(() => { receiver = makeReceiver(); });
+
+  test('frontend user.unregistered wordt via sender naar fanout gestuurd', async () => {
+    await receiver.handleMessage(buildMsg(buildFrontendUserUnregisteredXml()));
+
+    expect(receiver.sender.sendUserUnregisteredFanout).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message_id: expect.any(String),
+        source: 'frontend.drupal',
+        receiver: 'crm.salesforce planning.outlook mailing.sendgrid',
+        user_id: 'user-001',
+        session_id: 'sess-42',
+      }),
+    );
+  });
+
+  test('user.unregistered zonder master_uuid wordt geaccepteerd met version 1.0', async () => {
+    await receiver.handleMessage(buildMsg(buildFrontendUserUnregisteredXml()));
+
+    expect(receiver.channel.ack).toHaveBeenCalled();
+    expect(receiver.channel.nack).not.toHaveBeenCalled();
   });
 });
