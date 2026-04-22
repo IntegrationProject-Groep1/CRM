@@ -15,6 +15,8 @@ const KASSA_QUEUE = 'kassa.payments';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
 
 const MESSAGE_TYPES = {
+  USER_CREATED: 'user.created',
+  USER_REGISTERED: 'user.registered',
   NEW_REGISTRATION: 'new_registration',
   USER_UNREGISTERED: 'user.unregistered',
   PAYMENT_REGISTERED: 'payment_registered',
@@ -76,6 +78,8 @@ class ReceiverV2 {
 
         await this.channel.assertQueue(QUEUE_NAME, { durable: true });
         await this.channel.assertQueue(KASSA_QUEUE, { durable: true });
+        await this.channel.assertQueue(USER_REGISTERED_QUEUE, { durable: true });
+        await this.channel.assertQueue(USER_CREATED_QUEUE, { durable: true });
         await this.channel.assertQueue(DEAD_LETTER_QUEUE, {
           durable: true,
           arguments: { 'x-dead-letter-exchange': '' },
@@ -94,6 +98,8 @@ class ReceiverV2 {
 
         this.channel.consume(QUEUE_NAME, consume, { noAck: false });
         this.channel.consume(KASSA_QUEUE, consume, { noAck: false });
+        this.channel.consume(USER_CREATED_QUEUE, consume, { noAck: false });
+        this.channel.consume(USER_REGISTERED_QUEUE, consume, { noAck: false });
 
         console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}`);
 
@@ -135,15 +141,11 @@ class ReceiverV2 {
       return [false, `Missing required header fields: ${missingFields.join(', ')}`];
     }
 
-    if (isFrontendUnregistered) {
-      if (String(header.version) !== '1.0') {
-        return [false, `Invalid version: expected 1.0, got ${header.version}`];
-      }
-    } else if (String(header.version) !== '2.0') {
+    if (String(header.version) !== '1.0','2.0') {
       return [false, `Invalid version: expected 2.0, got ${header.version}`];
     }
 
-    const validTypes = Object.values(MESSAGE_TYPES);
+    const validTypes = Object.values(MESSAGE_TYPES); 
     if (!validTypes.includes(header.type)) {
       return [false, `Invalid message type: ${header.type}`];
     }
@@ -271,6 +273,8 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
   async routeMessage(header, body) {
     const msgType = header.type;
     const handlers = {
+      [MESSAGE_TYPES.USER_CREATED]: () => this.handleUserCreated(header, body),
+      [MESSAGE_TYPES.USER_REGISTERED]: () => this.handleUserRegistered(header, body),
       [MESSAGE_TYPES.NEW_REGISTRATION]: () => this.handleNewRegistration(header, body),
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body),
@@ -497,7 +501,91 @@ console.log(`[receiver] Forwarded to Facturatie voor Master UUID=${masterUuid}`)
     throw err;
   }
 }
+async handleUserCreated(header, body) {
+  try {
+    const user = body?.user;
+    if (!user) throw new Error('Body missing user element');
 
+    // 1. Data extractie & Normalisatie
+    const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
+    const firstName = ReceiverV2.getElementText(user, 'first_name');
+    const lastName = ReceiverV2.getElementText(user, 'last_name');
+    const isCompany = ReceiverV2.getElementText(user, 'is_company') === 'true';
+
+    console.log(`[receiver] Processing user.created for: ${email}`);
+
+    // 2. Identity Service (RPC) aanroepen voor de officiële Master UUID
+    // Cruciaal: dit zorgt dat de user in Salesforce hetzelfde ID krijgt als in de rest van de infra
+    const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
+    if (!masterUuid) throw new Error(`Could not get Master UUID for ${email}`);
+
+    // 3. Salesforce Upsert
+    if (this.sf.isConnected) {
+      const sfData = {
+        Master_UUID__c: masterUuid,
+        First_Name__c: firstName,
+        Last_Name__c: lastName,
+        Email__c: email,
+        User_Type__c: isCompany ? 'Bedrijf' : 'Particulier'
+      };
+
+      const result = await this.sf.apiCall((conn) => 
+        conn.sobject('Member__c').upsert(sfData, 'Master_UUID__c')
+      );
+      
+      console.log(`[salesforce] Member gesynchroniseerd via Master UUID: ${masterUuid}`);
+    } else {
+      console.log(`[receiver] DRY RUN: Salesforce niet verbonden. Data: ${email}`);
+    }
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleUserCreated: ${err.message}`);
+    // We gooien de error door zodat RabbitMQ het bericht kan nacken/retryen
+    throw err; 
+  }
+}
+// Handler voor een sessie-inschrijving
+async handleUserRegistered(header, body) {
+  try {
+    const user = body?.user;
+    const session = body?.session;
+    if (!user || !session) throw new Error('Body missing user or session');
+
+    const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
+    const sessionId = ReceiverV2.getElementText(session, 'session_id');
+    const sessionName = ReceiverV2.getElementText(session, 'session_name'); // Match met je XML
+    const paymentStatus = ReceiverV2.getElementText(body, 'payment_status');
+
+    const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
+
+    if (this.sf.isConnected) {
+      // 1. Update/Upsert Member
+      await this.sf.apiCall((conn) => 
+        conn.sobject('Member__c').upsert({
+          Master_UUID__c: masterUuid,
+          First_Name__c: ReceiverV2.getElementText(user, 'first_name'),
+          Last_Name__c: ReceiverV2.getElementText(user, 'last_name'),
+          Email__c: email
+        }, 'Master_UUID__c')
+      );
+
+      // 2. Registreer Sessie als Taak
+      await this.sf.apiCall((conn) => 
+        conn.sobject('Task').create({
+          Subject: `Sessie Inschrijving: ${sessionName}`,
+          Description: `ID: ${sessionId} | Status: ${paymentStatus}`,
+          Status: 'Completed',
+          Master_UUID__c: masterUuid,
+          ActivityDate: new Date().toISOString().split('T')[0]
+        })
+      );
+      console.log(`[receiver] Session Registered: ${sessionName} for ${masterUuid}`);
+    }
+  } catch (err) {
+    console.error(`[receiver] Error in handleUserRegistered: ${err.message}`);
+    throw err;
+  }
+}
 /**
  * Verwerkt send_invoice bericht van FossBilling (inclusief PDF-link)
  */
