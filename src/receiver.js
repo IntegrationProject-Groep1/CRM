@@ -568,7 +568,7 @@ async handleInvoiceCancelled(header, body) {
       const invoice = body ? body.invoice : null;
       const transaction = body ? body.transaction : null;
       const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
 
       const amountVal = invoice ? invoice.amount_paid : null;
       const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
@@ -581,7 +581,7 @@ async handleInvoiceCancelled(header, body) {
           `Amount Paid: ${amountPaid}`,
           `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
           `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
-          userId ? `User ID: ${userId}` : null,
+          masterUuid ? `Master UUID: ${masterUuid}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
         Type: 'Payment',
@@ -590,8 +590,8 @@ async handleInvoiceCancelled(header, body) {
 
       // Insert payment into MySQL (always, regardless of SF connection)
       let eventAttendeeId = null;
-      if (userId) {
-        const personId = await this.db.findPersonByExternalId(userId);
+      if (masterUuid) {
+        const personId = await this.db.findPersonByMasterUuid(masterUuid);
         if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
       }
 
@@ -617,8 +617,8 @@ async handleInvoiceCancelled(header, body) {
       if (email) {
         const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
-      } else if (userId) {
-        const contactId = await this._findUserById(userId);
+      } else if (masterUuid) {
+        const contactId = await this._findUserByMasterUuid(masterUuid);
         if (contactId) taskData.WhoId = contactId;
       }
 
@@ -810,7 +810,7 @@ async handleInvoiceCancelled(header, body) {
     return String(value);
   }
 
-  async _findUserById(masterUuid) {
+  async _findUserByMasterUuid(masterUuid) {
     const records = await this.sf.apiCall(
       (conn) => conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
     );
@@ -831,10 +831,11 @@ async handleInvoiceCancelled(header, body) {
         let memberId = null;
         if (!isAnonymous && customer) {
           const email = ReceiverV2.getElementText(customer, 'email');
-          const userId = ReceiverV2.getElementText(customer, 'user_id');
+          const masterUuid = ReceiverV2.getElementText(customer, 'master_uuid'); // <--- NIEUWE MANIER
+          
           memberId = email
             ? await this._findUserByEmail(email)
-            : (userId ? await this._findUserById(userId) : null);
+            : (masterUuid ? await this._findUserByMasterUuid(masterUuid) : null); // Update ook de functienaam
         }
 
         for (let i = 0; i < itemList.length; i++) {
