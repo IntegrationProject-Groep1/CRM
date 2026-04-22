@@ -812,7 +812,7 @@ async handleInvoiceCancelled(header, body) {
 
   async _findUserById(masterUuid) {
     const records = await this.sf.apiCall(
-      (conn) => conn.sobject('Member__c').find({ master_uuid: masterUuid}, ['Id']).limit(1)
+      (conn) => conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
   }
