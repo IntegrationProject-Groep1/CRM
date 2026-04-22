@@ -78,7 +78,7 @@ function buildFrontendUserUnregisteredXml(overrides = {}) {
     <correlation_id>${overrides.correlationId || ''}</correlation_id>
   </header>
   <body>
-    <user_id>${overrides.userId || 'user-001'}</user_id>
+    <master_uuid>${overrides.masterUuid || 'test-master-uuid-1234'}</master_uuid>
     <session_id>${overrides.sessionId || 'sess-42'}</session_id>
     <timestamp>${bodyTimestamp}</timestamp>
   </body>
@@ -245,7 +245,7 @@ describe('handleNewRegistration', () => {
 
     expect(receiver.sender.sendNewRegistrationToKassa).toHaveBeenCalledWith(
       expect.objectContaining({
-        customer: expect.objectContaining({ email: 'jan@example.com', user_id: 'u-1' }),
+        customer: expect.objectContaining({ email: 'jan@example.com', master_uuid: 'test-master-uuid-1234' }),
         payment_due: expect.objectContaining({ status: 'unpaid' }),
       }),
     );
@@ -269,7 +269,6 @@ describe('handleNewRegistration', () => {
           <first_name>Jan</first_name>
           <last_name>Peeters</last_name>
         </contact>
-        <user_id>u-1</user_id>
         <type>private</type>
       </customer>
       <payment_due><amount>25</amount><status>paid</status></payment_due>
@@ -288,7 +287,7 @@ describe('handlePaymentRegistered', () => {
     receiver.sf.apiCall.mockResolvedValue({ id: 'task-1' });
 
     const xml = buildXml('payment_registered', `
-      <user_id>u-10</user_id>
+      <master_uuid>test-master-uuid-1234</master_uuid>
       <email>pay@example.com</email>
       <payment_context>registration</payment_context>
       <invoice>
@@ -318,7 +317,7 @@ describe('handleConsumptionOrder', () => {
       <is_anonymous>false</is_anonymous>
       <customer>
         <email>k@example.com</email>
-        <master_uuid>${overrides.master_uuid || 'test-master-uuid-1234'}</master_uuid>
+        <master_uuid>test-master-uuid-1234</master_uuid>
       </customer>
       <items>
         <item>
@@ -361,7 +360,7 @@ describe('handleDeleteUser', () => {
     receiver.sf.isConnected = true;
     receiver.sf.apiCall.mockResolvedValue({});
 
-    const xml = buildXml('delete_user', '<user_id>u-42</user_id>');
+    const xml = buildXml('delete_user', '<master_uuid>test-master-uuid-1234</master_uuid>');
 
     await receiver.handleMessage(buildMsg(xml));
 
@@ -373,7 +372,7 @@ describe('handleInvoiceRequestFromKassa', () => {
   test('stuurt factuurverzoek door via sender', async () => {
     const receiver = makeReceiver();
     const xml = buildXml('invoice_request', `
-      <user_id>u-50</user_id>
+      <master_uuid>test-master-uuid-1234</master_uuid>
       <email>kassa@example.com</email>
       <invoice>
         <id>KINV-001</id>
@@ -407,13 +406,13 @@ describe('handleUserUnregistered', () => {
         message_id: expect.any(String),
         source: 'frontend.drupal',
         receiver: 'crm.salesforce planning.outlook mailing.sendgrid',
-        user_id: 'user-001',
+        master_uuid: 'test-master-uuid-1234',
         session_id: 'sess-42',
       }),
     );
   });
 
-  test('user.unregistered zonder master_uuid wordt geaccepteerd met version 1.0', async () => {
+  test('user.unregistered met master_uuid wordt geaccepteerd met version 1.0', async () => {
     await receiver.handleMessage(buildMsg(buildFrontendUserUnregisteredXml()));
 
     expect(receiver.channel.ack).toHaveBeenCalled();

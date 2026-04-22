@@ -302,12 +302,12 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
 
   async handleUserUnregistered(header, body) {
     try {
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
       const sessionId = ReceiverV2.getElementText(body, 'session_id');
       const bodyTimestamp = ReceiverV2.getElementText(body, 'timestamp');
 
-      if (!userId || !sessionId) {
-        console.log('[receiver] Missing user_id or session_id in user.unregistered body');
+      if (!masterUuid || !sessionId) {
+        console.log('[receiver] Missing master_uuid or session_id in user.unregistered body');
         return;
       }
 
@@ -317,12 +317,12 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
         source: header.source,
         receiver: header.receiver,
         correlation_id: ReceiverV2.getElementText(header, 'correlation_id') || '',
-        user_id: userId,
+        master_uuid: masterUuid,
         session_id: sessionId,
         body_timestamp: bodyTimestamp || header.timestamp,
       });
 
-      console.log(`[receiver] Forwarded user.unregistered for user_id=${userId}, session_id=${sessionId}`);
+      console.log(`[receiver] Forwarded user.unregistered for master_uuid=${masterUuid}, session_id=${sessionId}`);
       console.log('[receiver] user.unregistered triggers downstream CRM cancellation flow, including invoice_cancelled to Facturatie.');
     } catch (err) {
       console.log(`[receiver] Error in handleUserUnregistered: ${err}`);
@@ -926,7 +926,6 @@ async handleInvoiceCancelled(header, body) {
   async handleRefundProcessed(header, body) {
     try {
       const masterUuid = header ? header.master_uuid : null;
-      const userId = ReceiverV2.getElementText(body, 'user_id');
       const refund = body ? body.refund : null;
       const refundType = ReceiverV2.getElementText(body, 'refund_type');
       const originalTxId = ReceiverV2.getElementText(body, 'original_transaction_id');
@@ -948,7 +947,6 @@ async handleInvoiceCancelled(header, body) {
           masterUuid ? `Master UUID: ${masterUuid}` : null,
           originalTxId ? `Original Transaction ID: ${originalTxId}` : null,
           newWallet ? `New Wallet Balance: ${newWallet}` : null,
-          userId ? `User ID: ${userId}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
         Type: 'Other',
