@@ -43,12 +43,11 @@ jest.mock('../src/mysqlClient', () => {
     upsertCompany: jest.fn().mockResolvedValue(1),
     insertPayment: jest.fn().mockResolvedValue(1),
     insertConsumption: jest.fn().mockResolvedValue(1),
-    findPersonByExternalId: jest.fn().mockResolvedValue(null),
+    findPersonByMasterUuid: jest.fn().mockResolvedValue(null),
     findPersonByEmailForCheckIn: jest.fn().mockResolvedValue({ personId: null, error: null }),
     findEventAttendeeByPersonId: jest.fn().mockResolvedValue(null),
     updateEventAttendeeCheckIn: jest.fn().mockResolvedValue(undefined),
     softDeletePerson: jest.fn().mockResolvedValue(true),
-    softDeleteConsumptionsByUserId: jest.fn().mockResolvedValue(true),
   }));
 });
 
@@ -316,7 +315,6 @@ describe('handleNewRegistration', () => {
           <first_name>Jan</first_name>
           <last_name>Peeters</last_name>
         </contact>
-        <user_id>u-1</user_id>
         <type>private</type>
         <age>30</age>
       </customer>
@@ -349,7 +347,7 @@ describe('handleNewRegistration', () => {
   test('roept upsertPerson aan in MySQL', async () => {
     await receiver.handleMessage(buildMsg(registratieXml()));
     expect(receiver.db.upsertPerson).toHaveBeenCalledWith(
-      expect.objectContaining({ email: 'jan@example.com', external_user_id: 'u-1' }),
+      expect.objectContaining({ email: 'jan@example.com', master_uuid: 'test-master-uuid-1234' }),
     );
   });
 
@@ -371,7 +369,6 @@ describe('handleNewRegistration', () => {
       <customer>
         <email>co@example.com</email>
         <contact><first_name>Dirk</first_name><last_name>De Smet</last_name></contact>
-        <user_id>u-2</user_id>
         <is_company_linked>true</is_company_linked>
         <type>company</type>
         <age>40</age>
@@ -401,7 +398,7 @@ describe('handlePaymentRegistered', () => {
 
   function betalingXml(overrides = {}) {
     return buildXml('payment_registered', `
-      <user_id>${overrides.user_id || 'u-10'}</user_id>
+      <master_uuid>${overrides.master_uuid || 'test-master-uuid-1234'}</master_uuid>
       <email>${overrides.email || ''}</email>
       <payment_context>${overrides.context || 'registration'}</payment_context>
       <invoice>
@@ -443,11 +440,11 @@ describe('handlePaymentRegistered', () => {
     expect(receiver.sf.apiCall).not.toHaveBeenCalled();
   });
 
-  test('event attendee wordt opgezocht via user_id voor MySQL koppeling', async () => {
-    receiver.db.findPersonByExternalId.mockResolvedValue(5);
+  test('event attendee wordt opgezocht via master_uuid voor MySQL koppeling', async () => {
+    receiver.db.findPersonByMasterUuid.mockResolvedValue(5);
     receiver.db.findEventAttendeeByPersonId.mockResolvedValue(10);
-    await receiver.handleMessage(buildMsg(betalingXml({ user_id: 'u-10' })));
-    expect(receiver.db.findPersonByExternalId).toHaveBeenCalledWith('u-10');
+    await receiver.handleMessage(buildMsg(betalingXml({ master_uuid: 'test-master-uuid-1234' })));
+    expect(receiver.db.findPersonByMasterUuid).toHaveBeenCalledWith('test-master-uuid-1234');
     expect(receiver.db.insertPayment).toHaveBeenCalledWith(
       expect.objectContaining({ event_attendee_id: 10 }),
     );
@@ -468,7 +465,7 @@ describe('handleConsumptionOrder', () => {
       <is_anonymous>${overrides.anonymous || 'false'}</is_anonymous>
       <customer>
         <email>k@example.com</email>
-        <user_id>u-20</user_id>
+        <master_uuid>${overrides.master_uuid || 'test-master-uuid-1234'}</master_uuid>
       </customer>
       <items>
         <item>
@@ -500,7 +497,7 @@ describe('handleConsumptionOrder', () => {
   test('consumptie wordt in MySQL opgeslagen als attendee gevonden', async () => {
     receiver.sf.isConnected = true;
     receiver.sf.apiCall.mockResolvedValue({});
-    receiver.db.findPersonByExternalId.mockResolvedValue(3);
+    receiver.db.findPersonByMasterUuid.mockResolvedValue(3);
     receiver.db.findEventAttendeeByPersonId.mockResolvedValue(7);
     await receiver.handleMessage(buildMsg(consumptieXml()));
     expect(receiver.db.insertConsumption).toHaveBeenCalledWith(
@@ -518,12 +515,12 @@ describe('handleConsumptionOrder', () => {
   test('meerdere items worden allemaal verwerkt', async () => {
     receiver.sf.isConnected = true;
     receiver.sf.apiCall.mockResolvedValue({});
-    receiver.db.findPersonByExternalId.mockResolvedValue(3);
+    receiver.db.findPersonByMasterUuid.mockResolvedValue(3);
     receiver.db.findEventAttendeeByPersonId.mockResolvedValue(7);
 
     const xml = buildXml('consumption_order', `
       <is_anonymous>false</is_anonymous>
-      <customer><email>k@example.com</email><user_id>u-20</user_id></customer>
+      <customer><email>k@example.com</email><master_uuid>test-master-uuid-1234</master_uuid></customer>
       <items>
         <item><id>l-1</id><description>Koffie</description><quantity>1</quantity><unit_price>3.50</unit_price></item>
         <item><id>l-2</id><description>Water</description><quantity>2</quantity><unit_price>2.00</unit_price></item>
@@ -690,7 +687,7 @@ describe('handleBadgeAssigned', () => {
 
   const badgeAssignedXml = () => buildXml('badge_assigned', `
     <badge_id>BADGE-42</badge_id>
-    <user_id>u-30</user_id>
+    <master_uuid>test-master-uuid-1234</master_uuid>
   `);
 
   test('dry-run logt en maakt geen SF call', async () => {
@@ -703,8 +700,8 @@ describe('handleBadgeAssigned', () => {
   test('Member__c badge wordt bijgewerkt in SF als lid gevonden', async () => {
     receiver.sf.isConnected = true;
     receiver.sf.apiCall
-      .mockResolvedValueOnce([{ Id: 'sf-member-1' }]) // _findUserById
-      .mockResolvedValueOnce({});                       // update
+      .mockResolvedValueOnce([{ Id: 'sf-member-1' }]) // _findUserByMasterUuid
+      .mockResolvedValueOnce({});                      // update
     await receiver.handleMessage(buildMsg(badgeAssignedXml()));
     expect(receiver.sf.apiCall).toHaveBeenCalledTimes(2);
   });
@@ -727,7 +724,7 @@ describe('handleRefundProcessed', () => {
   beforeEach(() => { receiver = makeReceiver(); });
 
   const refundXml = () => buildXml('refund_processed', `
-    <user_id>u-40</user_id>
+    <master_uuid>test-master-uuid-1234</master_uuid>
     <email>refund@example.com</email>
     <refund_type>partial</refund_type>
     <original_transaction_id>TX-001</original_transaction_id>
@@ -764,7 +761,7 @@ describe('handleInvoiceRequestFromKassa', () => {
   beforeEach(() => { receiver = makeReceiver(); });
 
   const kassaInvoiceXml = () => buildXml('invoice_request', `
-    <user_id>u-50</user_id>
+    <master_uuid>test-master-uuid-1234</master_uuid>
     <email>kassa@example.com</email>
     <invoice>
       <id>KINV-001</id>
