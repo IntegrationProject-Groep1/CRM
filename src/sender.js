@@ -248,7 +248,7 @@ class CRMSender {
     if (data.customer.vat_number) {
       customer.ele('vat_number').txt(data.customer.vat_number);
     }
-    customer.ele('master_uuid').txt(data.customer.master_uuid);
+    customer.ele('master_uuid').txt(data.header?.master_uuid || '');
     customer.ele('date_of_birth').txt(data.customer.date_of_birth);
 
     const paymentDue = body.ele('payment_due');
