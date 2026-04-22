@@ -12,9 +12,9 @@ jobs:
     # Only deploy if the CI Pipeline was successful AND the trigger was a version tag (starts with 'v')
     # This prevents development branches from being pushed to the production registry.
     if: >
-      github.event.workflow_run.conclusion == 'success' && 
-      (github.event.workflow_run.head_branch == null || 
-       startsWith(github.event.workflow_run.head_branch, 'v'))
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch != null &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: read

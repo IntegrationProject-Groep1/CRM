@@ -4,17 +4,20 @@ require('dotenv').config();
 const http = require('http');
 const amqp = require('amqplib');
 const { v4: uuidv4 } = require('uuid');
-const { parseStringPromise } = require('xml2js');
 const { XMLParser } = require('fast-xml-parser');
 const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
 const MySQLService = require('./mysqlClient');
- // Zorg dat deze bovenaan je receiver.js staat:
-const { create } = require('xmlbuilder2'); 
+const { create } = require('xmlbuilder2');
+
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
+
+const MAX_MESSAGE_SIZE = 1_000_000;
+const EMAIL_REGEX = /^[^\s@]{1,64}@[^\s@]{1,255}$/;
+const SAFE_ID_REGEX = /^[A-Za-z0-9_-]{1,255}$/;
 
 const MESSAGE_TYPES = {
   NEW_REGISTRATION: 'new_registration',
@@ -23,7 +26,6 @@ const MESSAGE_TYPES = {
   SESSION_UPDATE: 'session_update',
   INVOICE_STATUS: 'invoice_status',
   MAILING_STATUS: 'mailing_status',
-  // Kassa → CRM (via kassa.payments)
   CONSUMPTION_ORDER: 'consumption_order',
   BADGE_ASSIGNED: 'badge_assigned',
   REFUND_PROCESSED: 'refund_processed',
@@ -40,6 +42,41 @@ const parser = new XMLParser({
   parseAttributeValue: false,
 });
 
+function maskEmail(email) {
+  if (!email || !email.includes('@')) return '***';
+  const [local, domain] = email.split('@');
+  return `${local[0]}***@${domain}`;
+}
+
+function isValidEmail(email) {
+  return typeof email === 'string' && EMAIL_REGEX.test(email);
+}
+
+function isValidId(id) {
+  return typeof id === 'string' && SAFE_ID_REGEX.test(id);
+}
+
+function isTransientError(err) {
+  const msg = String(err);
+  return (
+    msg.includes('ECONNREFUSED') ||
+    msg.includes('ETIMEDOUT') ||
+    msg.includes('ENOTFOUND') ||
+    msg.includes('INVALID_SESSION_ID') ||
+    msg.includes('socket hang up') ||
+    msg.includes('ECONNRESET')
+  );
+}
+
+function assertSafeXml(content) {
+  if (content.length > MAX_MESSAGE_SIZE) {
+    throw new Error('XML message exceeds maximum allowed size (1 MB)');
+  }
+  if (content.includes('<!DOCTYPE') || content.includes('<!ENTITY')) {
+    throw new Error('XML message contains forbidden DOCTYPE/ENTITY declarations');
+  }
+}
+
 class ReceiverV2 {
   constructor() {
     this.connection = null;
@@ -53,9 +90,14 @@ class ReceiverV2 {
   startHealthServer() {
     const port = process.env.HEALTH_PORT || 3000;
     http.createServer((req, res) => {
+      if (req.url !== '/health') {
+        res.writeHead(404);
+        res.end('Not Found');
+        return;
+      }
       res.writeHead(200);
       res.end('OK');
-    }).listen(port, '0.0.0.0', () => {
+    }).listen(port, '127.0.0.1', () => {
       console.log(`[receiver] Health check server listening on port ${port}`);
     });
   }
@@ -143,91 +185,120 @@ class ReceiverV2 {
       return [false, `Invalid message type: ${header.type}`];
     }
 
+    const MAX_FIELD_LENGTH = 500;
+    for (const f of requiredFields) {
+      if (header[f] && String(header[f]).length > MAX_FIELD_LENGTH) {
+        return [false, `Field ${f} exceeds maximum length`];
+      }
+    }
+
+    if (!isValidId(String(header.master_uuid))) {
+      return [false, 'Invalid master_uuid format'];
+    }
+    if (!isValidId(String(header.message_id))) {
+      return [false, 'Invalid message_id format'];
+    }
+
     return [true, null];
   }
 
-getOrCreateMasterUuid(email, sourceSystem = 'crm') {
-  if (!this.channel) throw new Error('RabbitMQ channel not initialized');
+  getOrCreateMasterUuid(email, sourceSystem = 'crm') {
+    if (!this.channel) throw new Error('RabbitMQ channel not initialized');
 
-  const correlationId = uuidv4();
-  let consumerTag = null;
-  let replyQueueName = null;
+    const correlationId = uuidv4();
+    let consumerTag = null;
+    let replyQueueName = null;
 
-  // We verwijderen 'async' voor (resolve, reject) om de linter blij te maken
-  return new Promise((resolve, reject) => {
-    // 1. Setup Timeout
-    const timeout = setTimeout(async () => {
-      try {
-        if (consumerTag) await this.channel.cancel(consumerTag);
-        if (replyQueueName) await this.channel.deleteQueue(replyQueueName);
-      } catch (err) {
-        console.error("[identity] Cleanup error during timeout:", err);
-      }
-      reject(new Error(`Identity Service timeout voor ${email}`));
-    }, 15000);
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(async () => {
+        try {
+          if (consumerTag) await this.channel.cancel(consumerTag);
+          if (replyQueueName) await this.channel.deleteQueue(replyQueueName);
+        } catch (err) {
+          console.error('[identity] Cleanup error during timeout:', err);
+        }
+        reject(new Error(`Identity Service timeout voor ${maskEmail(email)}`));
+      }, 15000);
 
-    // 2. Start de flow (we gebruiken .then om de async setup te doen)
-    this.channel.assertQueue('', { exclusive: true })
-      .then((replyQueue) => {
-        replyQueueName = replyQueue.queue;
+      this.channel.assertQueue('', { exclusive: true })
+        .then((replyQueue) => {
+          replyQueueName = replyQueue.queue;
 
-        return this.channel.consume(replyQueueName, async (msg) => {
-          // De callback zelf MAG wel async zijn
-          if (!msg) return;
+          return this.channel.consume(replyQueueName, async (msg) => {
+            if (!msg) return;
 
-          if (msg.properties.correlationId === correlationId) {
-            clearTimeout(timeout);
+            if (msg.properties.correlationId === correlationId) {
+              clearTimeout(timeout);
 
-            try {
-              const responseXml = msg.content.toString();
-              const parsed = await parseStringPromise(responseXml, { explicitArray: false });
-
-              if (parsed.identity_response?.status === 'ok') {
-                resolve(parsed.identity_response.user.master_uuid);
-              } else {
-                reject(new Error('Identity Service gaf een foutmelding terug'));
-              }
-            } catch (err) {
-              reject(new Error(`Fout bij verwerken Identity antwoord: ${err.message}`));
-            } finally {
-              // Cleanup na verwerking
               try {
-                if (consumerTag) await this.channel.cancel(consumerTag);
-                await this.channel.deleteQueue(replyQueueName);
-              } catch (cleanupErr) {
-                console.error("[identity] Final cleanup error:", cleanupErr);
+                const responseXml = msg.content.toString();
+                assertSafeXml(responseXml);
+
+                const identityParser = new XMLParser({ ignoreAttributes: false, parseTagValue: false });
+                const parsed = identityParser.parse(responseXml);
+
+                if (parsed.identity_response?.status === 'ok') {
+                  this.channel.ack(msg);
+                  resolve(parsed.identity_response.user.master_uuid);
+                } else {
+                  this.channel.nack(msg, false, false);
+                  reject(new Error('Identity Service gaf een foutmelding terug'));
+                }
+              } catch (err) {
+                this.channel.nack(msg, false, false);
+                reject(new Error(`Fout bij verwerken Identity antwoord: ${err.message}`));
+              } finally {
+                try {
+                  if (consumerTag) await this.channel.cancel(consumerTag);
+                  if (replyQueueName) await this.channel.deleteQueue(replyQueueName);
+                } catch (cleanupErr) {
+                  console.error('[identity] Final cleanup error:', cleanupErr);
+                }
               }
             }
+          }, { noAck: false });
+        })
+        .then((consumeObj) => {
+          consumerTag = consumeObj.consumerTag;
+
+          const requestXml = create({ version: '1.0' })
+            .ele('identity_request')
+              .ele('email').txt(email).up()
+              .ele('source_system').txt(sourceSystem).up()
+            .end();
+
+          this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
+            correlationId: correlationId,
+            replyTo: replyQueueName,
+            contentType: 'application/xml',
+          });
+        })
+        .catch(async (err) => {
+          clearTimeout(timeout);
+          try {
+            if (consumerTag) await this.channel.cancel(consumerTag);
+            if (replyQueueName) await this.channel.deleteQueue(replyQueueName);
+          } catch (cleanupErr) {
+            console.error('[identity] Setup cleanup error:', cleanupErr);
           }
-        }, { noAck: true });
-      })
-      .then((consumeObj) => {
-        consumerTag = consumeObj.consumerTag;
-
-        // 3. Veilig XML bouwen en versturen
-        const requestXml = create({ version: '1.0' })
-          .ele('identity_request')
-            .ele('email').txt(email).up()
-            .ele('source_system').txt(sourceSystem).up()
-          .end();
-
-        this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
-          correlationId: correlationId,
-          replyTo: replyQueueName,
-          contentType: 'application/xml'
+          reject(err);
         });
-      })
-      .catch((err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
-  });
-}
+    });
+  }
 
   async handleMessage(msg) {
     try {
       const xmlContent = msg.content.toString('utf8');
       console.log(`[receiver] Received message: ${msg.fields.deliveryTag}`);
+
+      try {
+        assertSafeXml(xmlContent);
+      } catch (err) {
+        console.log(`[receiver] XML safety check failed: ${err.message}`);
+        this.sendToDeadLetter(msg.content, `XML_SAFETY_ERROR: ${err.message}`);
+        this.channel.nack(msg, false, false);
+        return;
+      }
 
       let parsed;
       try {
@@ -259,7 +330,12 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       console.log(`[receiver] Message processed successfully: ${messageId}`);
     } catch (err) {
       console.log(`[receiver] Unexpected error: ${err}`);
-      this.channel.nack(msg, false, false);
+      if (isTransientError(err)) {
+        this.channel.nack(msg, false, true);
+      } else {
+        this.sendToDeadLetter(msg.content, `PROCESSING_ERROR: ${err.message}`);
+        this.channel.nack(msg, false, false);
+      }
     }
   }
 
@@ -288,281 +364,272 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
   }
 
   async _findUserByEmail(email) {
+    if (!isValidEmail(email)) {
+      console.log('[receiver] Invalid email format, skipping Salesforce lookup');
+      return null;
+    }
     const records = await this.sf.apiCall(
       (conn) => conn.sobject('Member__c').find({ Email__c: email }, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
   }
 
-  async handleNewRegistration(header, body) {
-  try {
-    const customer = body ? body.customer : null;
-
-    if (!customer) {
-      console.log('[receiver] Missing customer element in body');
-      return;
+  async _findUserById(userId) {
+    if (!isValidId(String(userId || ''))) {
+      console.log('[receiver] Invalid user_id format, skipping Salesforce lookup');
+      return null;
     }
-
-    // --- STAP 1: IDENTITY SERVICE CHECK (NIEUW) ---
-    // We pakken het emailadres, maken het schoon, en vragen de officiële UUID op
-    const emailForIdentity = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
-    console.log(`[receiver] Requesting Master UUID from Identity Service for: ${emailForIdentity}`);
-    
-    // Roep de nieuwe RPC-functie aan
-    const masterUuid = await this.getOrCreateMasterUuid(emailForIdentity, 'crm');
-    if (!masterUuid) {
-      throw new Error(`Could not retrieve Master UUID from Identity Service for ${emailForIdentity}`);
-    }
-    console.log(`[receiver] Official Master UUID obtained: ${masterUuid}`);
-
-
-    // --- STAP 2: JOUW ORIGINELE DATA EXTRACTIE ---
-    const contact = customer.contact || null;
-    const getCustomerText = (key) =>
-      ReceiverV2.getElementText(customer, key) ||
-      ReceiverV2.getElementText(contact, key);
-
-    const address = customer.address || null;
-    const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
-    const externalUserId = getCustomerText('user_id');
-    const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
-    const rawType = getCustomerText('type');
-    const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
-
-    const paymentFlag = ReceiverV2.getElementText(regFee, 'paid');
-    const paymentState = ReceiverV2.getElementText(regFee, 'status');
-    const paymentStatus = (paymentFlag === 'true' || paymentState === 'paid') ? 'paid' : 'pending';
-
-    const amountVal = regFee ? regFee.amount : null;
-    const registrationAmount = amountVal !== null && typeof amountVal === 'object' 
-      ? amountVal['#text'] 
-      : (amountVal || null);
-
-    // Jouw volledige rawUserData (aangepast om de officiële masterUuid te gebruiken)
-    const rawUserData = {
-      Master_UUID__c: masterUuid, // Officiële UUID
-      User_ID__c: externalUserId,
-      First_Name__c: getCustomerText('first_name'),
-      Last_Name__c: getCustomerText('last_name'),
-      Email__c: emailForIdentity, // Gebruik de genormaliseerde email
-      Birthdate__c: getCustomerText('date_of_birth'),
-      User_Type__c: userType,
-      Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
-      House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
-      Postal_Code__c: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
-      City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
-      Country_Code__c: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
-      Amount__c: registrationAmount ? parseFloat(registrationAmount) : null,
-      Payment_Status__c: paymentStatus,
-      Badge_ID__c: getCustomerText('badge_id') || null,
-    };
-
-    const userData = Object.fromEntries(
-      Object.entries(rawUserData).filter(([, value]) => value !== null && value !== undefined && value !== '')
+    const records = await this.sf.apiCall(
+      (conn) => conn.sobject('Member__c').find({ User_ID__c: userId }, ['Id']).limit(1)
     );
+    return records && records.length > 0 ? records[0].Id : null;
+  }
 
+  async handleNewRegistration(header, body) {
+    try {
+      const customer = body ? body.customer : null;
 
-    // --- STAP 3: JOUW ORIGINELE ACCOUNT & COMPANY LOGICA ---
-    let companyId = null;
-    const companyData = body ? body.company : null;
-    if ((isCompanyLinked || rawType === 'company') && companyData) {
-      const companyName = ReceiverV2.getElementText(companyData, 'name');
-      const companyVat = ReceiverV2.getElementText(companyData, 'vat_number');
-      const companyEmail = ReceiverV2.getElementText(companyData, 'email');
+      if (!customer) {
+        console.log('[receiver] Missing customer element in body');
+        return;
+      }
 
-      if (companyName && companyVat) {
-        if (!this.sf.isConnected) {
-          console.log(`[receiver] DRY RUN: Would upsert Account for company VAT=${companyVat}`);
-        } else {
-          const result = await this.sf.apiCall((conn) =>
-            conn.sobject('Account').upsert({
-              Master_UUID__c: masterUuid, // Officiële UUID
-              Company_Name__c: companyName,
-              VAT_Number__c: companyVat,
-              Email__c: companyEmail || null,
-              // Optioneel: voeg hier het billing address toe als Facturatie dat op het Account wil
-              Billing_Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
-              Billing_City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
-            }, 'VAT_Number__c')
-          );
-          companyId = result.id || null;
-          console.log(`[receiver] Upserted Account: ${companyId} for VAT ${companyVat}`);
-        }
+      const emailForIdentity = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
+      console.log(`[receiver] Requesting Master UUID from Identity Service for: ${maskEmail(emailForIdentity)}`);
 
-        const dbCompanyId = await this.db.upsertCompany({
-          master_uuid: masterUuid, // Officiële UUID
-          company_name: companyName,
-          vat_number: companyVat,
-          email: companyEmail,
-          salesforce_account_id: companyId,
-        });
-        if (dbCompanyId) {
-          console.log(`[mysql] Upserted company: ${dbCompanyId}`);
+      const masterUuid = await this.getOrCreateMasterUuid(emailForIdentity, 'crm');
+      if (!masterUuid) {
+        throw new Error('Could not retrieve Master UUID from Identity Service');
+      }
+      console.log(`[receiver] Official Master UUID obtained: ${masterUuid}`);
+
+      const contact = customer.contact || null;
+      const getCustomerText = (key) =>
+        ReceiverV2.getElementText(customer, key) ||
+        ReceiverV2.getElementText(contact, key);
+
+      const address = customer.address || null;
+      const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
+      const externalUserId = getCustomerText('user_id');
+      const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
+      const rawType = getCustomerText('type');
+      const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
+
+      const paymentFlag = ReceiverV2.getElementText(regFee, 'paid');
+      const paymentState = ReceiverV2.getElementText(regFee, 'status');
+      const paymentStatus = (paymentFlag === 'true' || paymentState === 'paid') ? 'paid' : 'pending';
+
+      const amountVal = regFee ? regFee.amount : null;
+      const registrationAmount = amountVal !== null && typeof amountVal === 'object'
+        ? amountVal['#text']
+        : (amountVal || null);
+
+      const rawAmount = registrationAmount ? parseFloat(registrationAmount) : null;
+      const safeAmount = rawAmount !== null && Number.isFinite(rawAmount) && rawAmount >= 0 && rawAmount <= 1_000_000
+        ? rawAmount : null;
+
+      const rawUserData = {
+        Master_UUID__c: masterUuid,
+        User_ID__c: externalUserId,
+        First_Name__c: getCustomerText('first_name'),
+        Last_Name__c: getCustomerText('last_name'),
+        Email__c: emailForIdentity,
+        Birthdate__c: getCustomerText('date_of_birth'),
+        User_Type__c: userType,
+        Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+        House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
+        Postal_Code__c: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
+        City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
+        Country_Code__c: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
+        Amount__c: safeAmount,
+        Payment_Status__c: paymentStatus,
+        Badge_ID__c: getCustomerText('badge_id') || null,
+      };
+
+      const userData = Object.fromEntries(
+        Object.entries(rawUserData).filter(([, value]) => value !== null && value !== undefined && value !== '')
+      );
+
+      let companyId = null;
+      const companyData = body ? body.company : null;
+      if ((isCompanyLinked || rawType === 'company') && companyData) {
+        const companyName = ReceiverV2.getElementText(companyData, 'name');
+        const companyVat = ReceiverV2.getElementText(companyData, 'vat_number');
+        const companyEmail = ReceiverV2.getElementText(companyData, 'email');
+
+        if (companyName && companyVat) {
+          if (!this.sf.isConnected) {
+            console.log('[receiver] DRY RUN: Would upsert Account for company');
+          } else {
+            const result = await this.sf.apiCall((conn) =>
+              conn.sobject('Account').upsert({
+                Master_UUID__c: masterUuid,
+                Company_Name__c: companyName,
+                VAT_Number__c: companyVat,
+                Email__c: companyEmail || null,
+                Billing_Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+                Billing_City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
+              }, 'VAT_Number__c')
+            );
+            companyId = result.id || null;
+            console.log(`[receiver] Upserted Account: ${companyId}`);
+          }
+
+          const dbCompanyId = await this.db.upsertCompany({
+            master_uuid: masterUuid,
+            company_name: companyName,
+            vat_number: companyVat,
+            email: companyEmail,
+            salesforce_account_id: companyId,
+          });
+          if (dbCompanyId) {
+            console.log(`[mysql] Upserted company: ${dbCompanyId}`);
+          }
         }
       }
-    }
 
-    // KOPPELING MAKEN TUSSEN PERSOON EN BEDRIJF
-    if (companyId) {
-      userData.Account__c = companyId;
-    }
+      if (companyId) {
+        userData.Account__c = companyId;
+      }
 
+      if (!this.sf.isConnected) {
+        console.log(`[receiver] DRY RUN: Would upsert Member__c for master_uuid: ${masterUuid}`);
+      } else {
+        const result = await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert(userData, 'Master_UUID__c')
+        );
+        console.log(`[receiver] Upserted Member__c via Master UUID: ${result.id}`);
+      }
 
-    // --- STAP 4: JOUW ORIGINELE SALESFORCE MEMBER UPSERT ---
-    if (!this.sf.isConnected) {
-      console.log(`[receiver] DRY RUN: Would upsert Member__c: ${JSON.stringify(userData)}`);
-    } else {
-      const result = await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').upsert(userData, 'Master_UUID__c')
-      );
-      console.log(`[receiver] Upserted Member__c via Master UUID: ${result.id}`);
-    }
-
-
-    // --- STAP 5: JOUW ORIGINELE MYSQL PERSON UPSERT ---
-    const dbPersonId = await this.db.upsertPerson({
-      master_uuid: masterUuid, // Officiële UUID
-      external_user_id: externalUserId,
-      first_name: getCustomerText('first_name'),
-      last_name: getCustomerText('last_name'),
-      email: emailForIdentity,
-      date_of_birth: getCustomerText('date_of_birth') || null,
-      person_type: userType,
-      badge_id: getCustomerText('badge_id') || null,
-      is_company_linked: isCompanyLinked,
-      company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
-      vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-      street: address ? ReceiverV2.getElementText(address, 'street') : null,
-      house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
-      postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
-      city: address ? ReceiverV2.getElementText(address, 'city') : null,
-      country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
-      amount: registrationAmount ? parseFloat(registrationAmount) : null,
-      payment_status: paymentStatus,
-      is_deleted: false
-    });
-
-    if (dbPersonId) {
-      console.log(`[mysql] Upserted person: ${dbPersonId}`);
-    }
-
-
-    // --- STAP 6: JOUW ORIGINELE KASSA PAYLOAD ---
-    const kassaPayload = {
-      header: { master_uuid: masterUuid }, // Officiële UUID
-      customer: {
-        email: emailForIdentity,
-        first_name: getCustomerText('first_name'),
-        last_name: getCustomerText('last_name'),
-        user_id: externalUserId,
-        type: (isCompanyLinked || rawType === 'company') ? 'company' : (rawType || 'private'),
-        company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
-        vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-        date_of_birth: getCustomerText('date_of_birth'),
-      },
-      payment_due: {
-        amount: registrationAmount || '0',
-        status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
-      },
-    };
-
-    await this.sender.sendNewRegistrationToKassa(kassaPayload);
-    console.log(`[receiver] Forwarded new_registration to Kassa for Master UUID=${masterUuid}`);
-
-    
-    // --- STAP 7: JOUW ORIGINELE FOSSBILLING PAYLOAD ---
-    const fossPayload = {
-      master_uuid: masterUuid, // Officiële UUID
-      customer: {
+      const dbPersonId = await this.db.upsertPerson({
+        master_uuid: masterUuid,
+        external_user_id: externalUserId,
         first_name: getCustomerText('first_name'),
         last_name: getCustomerText('last_name'),
         email: emailForIdentity,
-        type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
+        date_of_birth: getCustomerText('date_of_birth') || null,
+        person_type: userType,
+        badge_id: getCustomerText('badge_id') || null,
+        is_company_linked: isCompanyLinked,
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
         vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-      },
-      address: {
         street: address ? ReceiverV2.getElementText(address, 'street') : null,
-        number: address ? ReceiverV2.getElementText(address, 'number') : null,
+        house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
         postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
         city: address ? ReceiverV2.getElementText(address, 'city') : null,
-        country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() : null,
-      },
-      registration_fee: {
-        amount: registrationAmount ? parseFloat(registrationAmount) : 0,
-        status: paymentStatus,
-        trigger_invoice: true  
+        country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
+        amount: safeAmount,
+        payment_status: paymentStatus,
+        is_deleted: false,
+      });
+
+      if (dbPersonId) {
+        console.log(`[mysql] Upserted person: ${dbPersonId}`);
       }
-    };
 
-    await this.sender.sendNewRegistrationToFacturatie(fossPayload);
-console.log(`[receiver] Forwarded to Facturatie voor Master UUID=${masterUuid}`);
+      const kassaPayload = {
+        header: { master_uuid: masterUuid },
+        customer: {
+          email: emailForIdentity,
+          first_name: getCustomerText('first_name'),
+          last_name: getCustomerText('last_name'),
+          user_id: externalUserId,
+          type: (isCompanyLinked || rawType === 'company') ? 'company' : (rawType || 'private'),
+          company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
+          vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+          date_of_birth: getCustomerText('date_of_birth'),
+        },
+        payment_due: {
+          amount: registrationAmount || '0',
+          status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
+        },
+      };
 
-  } catch (err) {
-    console.log(`[receiver] Error in handleNewRegistration: ${err.message}`);
-    throw err;
-  }
-}
+      await this.sender.sendNewRegistrationToKassa(kassaPayload);
+      console.log(`[receiver] Forwarded new_registration to Kassa for Master UUID=${masterUuid}`);
 
-/**
- * Verwerkt send_invoice bericht van FossBilling (inclusief PDF-link)
- */
-async handleSendInvoice(header, body) {
-  try {
-    const masterUuid = header.master_uuid;
-    const invoiceUrl = ReceiverV2.getElementText(body, 'pdf_url'); // Bevat de link naar de PDF
-    const dueDate = ReceiverV2.getElementText(body, 'due_date');
-    const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+      const fossPayload = {
+        master_uuid: masterUuid,
+        customer: {
+          first_name: getCustomerText('first_name'),
+          last_name: getCustomerText('last_name'),
+          email: emailForIdentity,
+          type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
+          company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
+          vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+        },
+        address: {
+          street: address ? ReceiverV2.getElementText(address, 'street') : null,
+          number: address ? ReceiverV2.getElementText(address, 'number') : null,
+          postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
+          city: address ? ReceiverV2.getElementText(address, 'city') : null,
+          country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() : null,
+        },
+        registration_fee: {
+          amount: safeAmount !== null ? safeAmount : 0,
+          status: paymentStatus,
+          trigger_invoice: true,
+        },
+      };
 
-    console.log(`[receiver] Processing send_invoice for ${masterUuid}, invoice: ${invoiceNumber}`);
+      await this.sender.sendNewRegistrationToFacturatie(fossPayload);
+      console.log(`[receiver] Forwarded to Facturatie voor Master UUID=${masterUuid}`);
 
-    // 1. Update Salesforce (Member__c) met de PDF-link en vervaldatum
-    if (this.sf.isConnected) {
-      await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').upsert({
-          Master_UUID__c: masterUuid,
-          Last_Invoice_URL__c: invoiceUrl,
-          Last_Invoice_Due_Date__c: dueDate,
-          Last_Invoice_Number__c: invoiceNumber
-        }, 'Master_UUID__c')
-      );
+    } catch (err) {
+      console.log(`[receiver] Error in handleNewRegistration: ${err.message}`);
+      throw err;
     }
-
-    // 2. Update lokale DB voor snelle weergave in portaal
-    await this.db.query(
-      'UPDATE crm_user_sync SET last_invoice_url = ?, last_invoice_number = ? WHERE master_uuid = ?',
-      [invoiceUrl, invoiceNumber, masterUuid]
-    );
-
-  } catch (err) {
-    console.error(`[receiver] Error in handleSendInvoice: ${err}`);
   }
-}
 
-/**
- * Verwerkt invoice_cancelled bericht van FossBilling
- */
-async handleInvoiceCancelled(header, body) {
-  try {
-    const masterUuid = header.master_uuid;
-    const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+  async handleSendInvoice(header, body) {
+    try {
+      const masterUuid = header.master_uuid;
+      const invoiceUrl = ReceiverV2.getElementText(body, 'pdf_url');
+      const dueDate = ReceiverV2.getElementText(body, 'due_date');
+      const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
 
-    console.log(`[receiver] Processing invoice_cancelled for ${masterUuid}, invoice: ${invoiceNumber}`);
+      console.log(`[receiver] Processing send_invoice for ${masterUuid}, invoice: ${invoiceNumber}`);
 
-    // Update Salesforce status naar 'Cancelled'
-    if (this.sf.isConnected) {
-      // We zoeken de consumptie op basis van het factuurnummer en de UUID
-      await this.sf.apiCall((conn) =>
-        conn.sobject('Consumption__c').find({ 
-          Invoice_Number__c: invoiceNumber,
-          Master_UUID__c: masterUuid 
-        }).update({ Status__c: 'Cancelled' })
+      if (this.sf.isConnected) {
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert({
+            Master_UUID__c: masterUuid,
+            Last_Invoice_URL__c: invoiceUrl,
+            Last_Invoice_Due_Date__c: dueDate,
+            Last_Invoice_Number__c: invoiceNumber,
+          }, 'Master_UUID__c')
+        );
+      }
+
+      await this.db.query(
+        'UPDATE crm_user_sync SET last_invoice_url = ?, last_invoice_number = ? WHERE master_uuid = ?',
+        [invoiceUrl, invoiceNumber, masterUuid]
       );
+
+    } catch (err) {
+      console.error(`[receiver] Error in handleSendInvoice: ${err}`);
     }
-  } catch (err) {
-    console.error(`[receiver] Error in handleInvoiceCancelled: ${err}`);
   }
-}
+
+  async handleInvoiceCancelled(header, body) {
+    try {
+      const masterUuid = header.master_uuid;
+      const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+
+      console.log(`[receiver] Processing invoice_cancelled for ${masterUuid}, invoice: ${invoiceNumber}`);
+
+      if (this.sf.isConnected) {
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Consumption__c').find({
+            Invoice_Number__c: invoiceNumber,
+            Master_UUID__c: masterUuid,
+          }).update({ Status__c: 'Cancelled' })
+        );
+      }
+    } catch (err) {
+      console.error(`[receiver] Error in handleInvoiceCancelled: ${err}`);
+    }
+  }
 
   async handlePaymentRegistered(header, body) {
     try {
@@ -589,15 +656,15 @@ async handleInvoiceCancelled(header, body) {
         ActivityDate: new Date().toISOString().split('T')[0],
       };
 
-      // Insert payment into MySQL (always, regardless of SF connection)
       let eventAttendeeId = null;
       if (userId) {
         const personId = await this.db.findPersonByExternalId(userId);
         if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
       }
 
+      const safeAmount = parseFloat(amountPaid);
       const paymentPayload = {
-        amount: parseFloat(amountPaid) || 0,
+        amount: Number.isFinite(safeAmount) ? safeAmount : 0,
         payment_type: paymentContext === 'consumption' ? 'consumption' : 'registration',
         status: 'completed',
         payment_method: ReceiverV2.getElementText(transaction, 'payment_method') || null,
@@ -610,7 +677,7 @@ async handleInvoiceCancelled(header, body) {
       if (dbPaymentId) console.log(`[mysql] Inserted payment: ${dbPaymentId}`);
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        console.log('[receiver] DRY RUN: Would create Task for payment');
         return;
       }
 
@@ -643,7 +710,6 @@ async handleInvoiceCancelled(header, body) {
         Description: [
           `Scan Type: ${ReceiverV2.getElementText(body, 'scan_type')}`,
           `Location: ${ReceiverV2.getElementText(body, 'location')}`,
-          `Email: ${ReceiverV2.getElementText(body, 'email')}`,
         ].join('\n'),
         Status: 'Completed',
         Type: 'Other',
@@ -651,7 +717,7 @@ async handleInvoiceCancelled(header, body) {
       };
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        console.log('[receiver] DRY RUN: Would create Task for badge scan');
         return;
       }
 
@@ -664,7 +730,6 @@ async handleInvoiceCancelled(header, body) {
       const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for badge scan: ${result?.id}`);
 
-      // Record check-in time in MySQL
       const scanEmail = ReceiverV2.getElementText(body, 'email');
       if (scanEmail) {
         const { personId, error: dbError } = await this.db.findPersonByEmailForCheckIn(scanEmail);
@@ -701,7 +766,7 @@ async handleInvoiceCancelled(header, body) {
       };
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        console.log('[receiver] DRY RUN: Would create Task for session update');
         return;
       }
 
@@ -729,7 +794,7 @@ async handleInvoiceCancelled(header, body) {
       };
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        console.log('[receiver] DRY RUN: Would create Task for invoice status');
         return;
       }
 
@@ -767,7 +832,7 @@ async handleInvoiceCancelled(header, body) {
       };
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        console.log('[receiver] DRY RUN: Would create Task for mailing status');
         return;
       }
 
@@ -811,13 +876,6 @@ async handleInvoiceCancelled(header, body) {
     return String(value);
   }
 
-  async _findUserById(userId) {
-    const records = await this.sf.apiCall(
-      (conn) => conn.sobject('Member__c').find({ User_ID__c: userId }, ['Id']).limit(1)
-    );
-    return records && records.length > 0 ? records[0].Id : null;
-  }
-
   async handleConsumptionOrder(header, body) {
     try {
       const isAnonymous = ReceiverV2.getElementText(body, 'is_anonymous') === 'true';
@@ -843,14 +901,16 @@ async handleInvoiceCancelled(header, body) {
           const lineId = item.id;
 
           const unitPriceVal = item.unit_price;
-          const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
+          const unitPriceRaw = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal);
+          const unitPrice = Number.isFinite(unitPriceRaw) && unitPriceRaw >= 0 ? unitPriceRaw : 0;
           const qty = parseInt(item.quantity, 10) || 1;
 
           const sku = item.sku || null;
-          const vatRate = item.vat_rate ? parseFloat(item.vat_rate) : null;
+          const vatRateRaw = item.vat_rate ? parseFloat(item.vat_rate) : null;
+          const vatRate = vatRateRaw !== null && Number.isFinite(vatRateRaw) ? vatRateRaw : null;
           const totalAmountVal = item.total_amount;
           const providedTotal = parseFloat(typeof totalAmountVal === 'object' ? totalAmountVal['#text'] : totalAmountVal);
-          const finalTotalAmount = isNaN(providedTotal) ? (unitPrice * qty) : providedTotal;
+          const finalTotalAmount = Number.isFinite(providedTotal) ? providedTotal : (unitPrice * qty);
 
           const consumptionData = {
             Consumption_ID__c: lineId || `${header.message_id}-${i}`,
@@ -875,7 +935,6 @@ async handleInvoiceCancelled(header, body) {
         console.log(`[receiver] DRY RUN: Would upsert ${itemList.length} Consumption__c record(s)`);
       }
 
-      // Insert each item into MySQL
       if (!isAnonymous && customer) {
         const userId = ReceiverV2.getElementText(customer, 'user_id');
         let eventAttendeeId = null;
@@ -888,7 +947,8 @@ async handleInvoiceCancelled(header, body) {
         if (eventAttendeeId) {
           for (const item of itemList) {
             const unitPriceVal = item.unit_price;
-            const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
+            const unitPriceRaw = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal);
+            const unitPrice = Number.isFinite(unitPriceRaw) && unitPriceRaw >= 0 ? unitPriceRaw : 0;
             const qty = parseInt(item.quantity, 10) || 1;
 
             await this.db.insertConsumption({
@@ -913,33 +973,29 @@ async handleInvoiceCancelled(header, body) {
   async handleDeleteUser(header, body) {
     try {
       const userId = ReceiverV2.getElementText(body, 'user_id');
-      const masterUuid = header.master_uuid; // Gebruik de UUID uit de header
+      const masterUuid = header.master_uuid;
 
       if (!userId && !masterUuid) {
         console.log('[receiver] handleDeleteUser: missing user_id or master_uuid');
         return;
       }
 
-      console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid || userId}`);
+      console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid || '[external-id]'}`);
 
-      // 1. MySQL Soft Delete
       await this.db.query(
         'UPDATE crm_user_sync SET is_deleted = true WHERE master_uuid = ? OR external_user_id = ?',
         [masterUuid, userId]
       );
 
-      // 2. Salesforce Update (indien verbonden)
       if (this.sf.isConnected) {
-        // We zoeken de member en zetten een 'Deleted' vlag of verwijderen het record
-        // Meestal is een 'Is_Deleted__c' vlag veiliger in Salesforce
         const searchCriteria = masterUuid ? { Master_UUID__c: masterUuid } : { User_ID__c: userId };
-        
+
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').find(searchCriteria).update({ Is_Deleted__c: true })
         );
       }
 
-      console.log(`[receiver] User ${masterUuid || userId} marked as deleted.`);
+      console.log(`[receiver] User ${masterUuid || '[external-id]'} marked as deleted.`);
     } catch (err) {
       console.error(`[receiver] Error in handleDeleteUser: ${err}`);
       throw err;
@@ -958,14 +1014,12 @@ async handleInvoiceCancelled(header, body) {
 
       console.log(`[receiver] Forwarding invoice_cancelled to Facturatie for UUID: ${masterUuid}`);
 
-      // Stuur door naar Facturatie via de Sender
       await this.sender.sendInvoiceCancelledToFacturatie({
         master_uuid: masterUuid,
         invoice_number: invoiceNumber,
-        reason: ReceiverV2.getElementText(body, 'reason') || 'Cancelled by user via frontend'
+        reason: ReceiverV2.getElementText(body, 'reason') || 'Cancelled by user via frontend',
       });
 
-      // Optioneel: Update ook je eigen DB of Salesforce status
       await this.db.query(
         'UPDATE crm_user_sync SET last_payment_status = "cancelled" WHERE master_uuid = ?',
         [masterUuid]
@@ -983,7 +1037,7 @@ async handleInvoiceCancelled(header, body) {
       const userId = ReceiverV2.getElementText(body, 'user_id');
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would update Member__c Badge_ID__c=${badgeId} for User_ID__c=${userId}`);
+        console.log('[receiver] DRY RUN: Would update Member__c Badge_ID__c for user');
         return;
       }
 
@@ -993,9 +1047,9 @@ async handleInvoiceCancelled(header, body) {
           Id: sfUserId,
           Badge_ID__c: badgeId,
         }));
-        console.log(`[receiver] Updated Member__c ${sfUserId} Badge_ID__c: ${badgeId}`);
+        console.log(`[receiver] Updated Member__c ${sfUserId} Badge_ID__c`);
       } else {
-        console.log(`[receiver] Badge assigned but no Member__c found for User_ID__c: ${userId}`);
+        console.log('[receiver] Badge assigned but no Member__c found for user');
       }
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);
@@ -1034,7 +1088,7 @@ async handleInvoiceCancelled(header, body) {
       };
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        console.log('[receiver] DRY RUN: Would create Task for refund');
         return;
       }
 
@@ -1080,7 +1134,7 @@ async handleInvoiceCancelled(header, body) {
       const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+        console.log('[receiver] DRY RUN: Would create Task for invoice_request');
       } else {
         if (email) {
           const contactId = await this._findUserByEmail(email);
@@ -1094,6 +1148,7 @@ async handleInvoiceCancelled(header, body) {
         console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
       }
 
+      const safeAmountPaid = parseFloat(amountPaid);
       await this.sender.sendInvoiceRequest({
         correlation_id: header.message_id,
         customer: {
@@ -1103,7 +1158,7 @@ async handleInvoiceCancelled(header, body) {
         },
         invoice: {
           description: `Invoice ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
-          amount: parseFloat(amountPaid) || 0,
+          amount: Number.isFinite(safeAmountPaid) ? safeAmountPaid : 0,
           currency,
           due_date: ReceiverV2.getElementText(invoice, 'due_date') || new Date().toISOString().split('T')[0],
           invoice_number: ReceiverV2.getElementText(invoice, 'id') || undefined,

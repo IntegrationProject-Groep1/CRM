@@ -83,8 +83,7 @@ class SFConnection {
     if (resp.ok) {
       return resp.json();
     }
-    const text = await resp.text();
-    console.log(`[SF Connection] Token refresh failed (${resp.status}): ${text}`);
+    console.log(`[SF Connection] Token refresh failed (${resp.status}): authentication error`);
     return null;
   }
 

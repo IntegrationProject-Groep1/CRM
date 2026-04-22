@@ -4,7 +4,7 @@ services:
     env_file:
       - .env
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       rabbitmq_broker:
         condition: service_healthy
@@ -15,21 +15,18 @@ services:
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       MYSQL_DATABASE: crm_demo
-      MYSQL_USER: crm_user
-      MYSQL_PASSWORD: crm_pass
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
 
   rabbitmq_broker:
     image: rabbitmq:3-management
+    # In production, remove port mappings below and use internal Docker network only
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     environment:
-      # The broker is initialized with the same credentials that the receiver
-      # uses, so the two containers can authenticate without a separate URL.
-      # When the host-side RabbitMQ variables are missing, Compose falls back
-      # to guest/guest so local development still starts cleanly.
-      RABBITMQ_DEFAULT_USER: ${RABBITMQCRM_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQCRM_PASSRAW:-guest}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQCRM_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQCRM_PASSRAW}
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
@@ -40,17 +37,18 @@ services:
     image: mysql:8.0
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: crm_demo
-      MYSQL_USER: crm_user
-      MYSQL_PASSWORD: crm_pass
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    # Do not expose MySQL port outside the Docker network in production
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ucrm_user", "-pcrm_pass"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 10
