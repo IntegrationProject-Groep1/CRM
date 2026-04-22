@@ -811,11 +811,11 @@ async handleInvoiceCancelled(header, body) {
   }
 
   async _findUserByMasterUuid(masterUuid) {
-    const records = await this.sf.apiCall(
-      (conn) => conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
-    );
-    return records && records.length > 0 ? records[0].Id : null;
-  }
+  const records = await this.sf.apiCall(
+    (conn) => conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
+  );
+  return records && records.length > 0 ? records[0].Id : null;
+}
 
   async handleConsumptionOrder(header, body) {
     try {
@@ -1067,66 +1067,82 @@ async handleInvoiceCancelled(header, body) {
 }
 
   async handleInvoiceRequestFromKassa(header, body) {
-    try {
-      const invoice = body ? body.invoice : null;
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+  try {
+    const invoice = body ? body.invoice : null;
+    
+    // 1. Identificatie: Pak de UUID uit de header of de body
+    const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
+    const externalUserId = ReceiverV2.getElementText(body, 'user_id'); // Optioneel als fallback
 
-      const taskData = {
-        Subject: `Invoice request [Kassa]: ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
-        Description: [
-          `Invoice ID: ${ReceiverV2.getElementText(invoice, 'id')}`,
-          `Amount Paid: ${ReceiverV2.getElementText(invoice, 'amount_paid')}`,
-          `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
-          `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
-          userId ? `User ID: ${userId}` : null,
-        ].filter(Boolean).join('\n'),
-        Status: 'Completed',
-        Type: 'Other',
-        ActivityDate: new Date().toISOString().split('T')[0],
-      };
+    const taskData = {
+      Subject: `Invoice request [Kassa]: ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
+      Description: [
+        `Invoice ID: ${ReceiverV2.getElementText(invoice, 'id')}`,
+        `Amount Paid: ${ReceiverV2.getElementText(invoice, 'amount_paid')}`,
+        `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
+        `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
+        masterUuid ? `Master UUID: ${masterUuid}` : `User ID: ${externalUserId}`,
+      ].filter(Boolean).join('\n'),
+      Status: 'Completed',
+      Type: 'Other',
+      ActivityDate: new Date().toISOString().split('T')[0],
+    };
 
-      const email = ReceiverV2.getElementText(body, 'email');
-      const amountPaidVal = invoice ? invoice.amount_paid : null;
-      const amountPaid = amountPaidVal !== null && typeof amountPaidVal === 'object' ? amountPaidVal['#text'] : amountPaidVal;
-      const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';
+    const email = ReceiverV2.getElementText(body, 'email');
+    const amountPaidVal = invoice ? invoice.amount_paid : null;
+    const amountPaid = amountPaidVal !== null && typeof amountPaidVal === 'object' ? amountPaidVal['#text'] : amountPaidVal;
+    const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';
 
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
-      } else {
-        if (email) {
-          const contactId = await this._findUserByEmail(email);
-          if (contactId) taskData.WhoId = contactId;
-        } else if (userId) {
-          const contactId = await this._findUserById(userId);
-          if (contactId) taskData.WhoId = contactId;
-        }
+    // 2. Salesforce koppeling
+    if (!this.sf.isConnected) {
+      console.log(`[receiver] DRY RUN: Would create Task for UUID: ${masterUuid}`);
+    } else {
+      let contactId = null;
 
-        const sfResult = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-        console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
+      if (masterUuid) {
+        // Zoek eerst op de nieuwe UUID
+        contactId = await this._findUserByMasterUuid(masterUuid);
+      } 
+      
+      if (!contactId && email) {
+        // Fallback op email
+        contactId = await this._findUserByEmail(email);
       }
 
-      await this.sender.sendInvoiceRequest({
-        correlation_id: header.message_id,
-        customer: {
-          email: email || '',
-          first_name: ReceiverV2.getElementText(body, 'first_name') || '',
-          last_name: ReceiverV2.getElementText(body, 'last_name') || '',
-        },
-        invoice: {
-          description: `Invoice ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
-          amount: parseFloat(amountPaid) || 0,
-          currency,
-          due_date: ReceiverV2.getElementText(invoice, 'due_date') || new Date().toISOString().split('T')[0],
-          invoice_number: ReceiverV2.getElementText(invoice, 'id') || undefined,
-        },
-        items: [],
-      });
-      console.log('[receiver] Forwarded invoice_request to facturatie');
-    } catch (err) {
-      console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
-      throw err;
+      if (contactId) {
+        taskData.WhoId = contactId;
+      }
+
+      const sfResult = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+      console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
     }
+
+    // 3. Doorsturen naar Facturatie (Sender)
+    // BELANGRIJK: We voegen master_uuid toe aan de payload voor de Facturatie-module
+    await this.sender.sendInvoiceRequest({
+      correlation_id: header.message_id,
+      master_uuid: masterUuid, // De lijm voor FossBilling
+      customer: {
+        email: email || '',
+        first_name: ReceiverV2.getElementText(body, 'first_name') || '',
+        last_name: ReceiverV2.getElementText(body, 'last_name') || '',
+      },
+      invoice: {
+        description: `Invoice ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
+        amount: parseFloat(amountPaid) || 0,
+        currency,
+        due_date: ReceiverV2.getElementText(invoice, 'due_date') || new Date().toISOString().split('T')[0],
+        invoice_number: ReceiverV2.getElementText(invoice, 'id') || undefined,
+      },
+      items: [],
+    });
+    
+    console.log(`[receiver] Forwarded invoice_request to facturatie for UUID: ${masterUuid}`);
+  } catch (err) {
+    console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
+    throw err;
   }
+}
 
   async shutdown() {
     console.log('[receiver] Signal received, shutting down gracefully...');
