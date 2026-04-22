@@ -29,6 +29,7 @@ const MESSAGE_TYPES = {
   INVOICE_REQUEST: 'invoice_request',
   INVOICE_CANCELLED: 'invoice_cancelled',
   DELETE_USER: 'delete_user',
+  USER_DELETED: 'user_deleted', //nieuw type voor deletions die al in de frontend gebeuren, zodat we die ook kunnen opvangen en verwerken
 };
 
 const parser = new XMLParser({
@@ -284,6 +285,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
       [MESSAGE_TYPES.INVOICE_CANCELLED]: () => this.handleInvoiceCancellationRequest(header, body),
       [MESSAGE_TYPES.DELETE_USER]: () => this.handleDeleteUser(header, body),
+      [MESSAGE_TYPES.USER_DELETED]: () => this.handleDeleteUser(header, body), //nieuw voor frontend deletions
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -839,33 +841,39 @@ async handleInvoiceCancelled(header, body) {
 
   async handleDeleteUser(header, body) {
   try {
-    // Pak de UUID bij voorkeur uit de header, anders uit de body
-    const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
+    // Check eerst de header, dan de body (user.master_uuid), dan de body (master_uuid)
+    const masterUuid = header.master_uuid || 
+                       ReceiverV2.getElementText(body?.user, 'master_uuid') || 
+                       ReceiverV2.getElementText(body, 'master_uuid');
 
     if (!masterUuid) {
-      console.log('[receiver] handleDeleteUser: missing master_uuid');
+      console.error('[receiver] Delete request ignored: No master_uuid found in header or body');
       return;
     }
 
-    console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid}`);
+    console.log(`[receiver] Executing delete for UUID: ${masterUuid}`);
 
-    // 1. MySQL Soft Delete (Zoek op UUID)
+    // 1. MySQL Update
     await this.db.query(
-      'UPDATE crm_user_sync SET is_deleted = true WHERE master_uuid = ?',
+      'UPDATE crm_user_sync SET is_deleted = true, last_sync = NOW() WHERE master_uuid = ?',
       [masterUuid]
     );
 
     // 2. Salesforce Update
     if (this.sf.isConnected) {
-      // Zoek op het unieke External ID veld in Salesforce
-      await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c')
-            .find({ Master_UUID__c: masterUuid })
-            .update({ Is_Deleted__c: true })
-      );
+      const contactId = await this._findUserByMasterUuid(masterUuid);
+      if (contactId) {
+        await this.sf.apiCall((conn) => 
+          conn.sobject('Member__c').update({ 
+            Id: contactId, 
+            Is_Deleted__c: true,
+            Status__c: 'Deleted' 
+          })
+        );
+      }
     }
 
-    console.log(`[receiver] User ${masterUuid} marked as deleted.`);
+    console.log(`[receiver] Successfully processed delete for ${masterUuid}`);
   } catch (err) {
     console.error(`[receiver] Error in handleDeleteUser: ${err}`);
     throw err;
