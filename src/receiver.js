@@ -911,40 +911,40 @@ async handleInvoiceCancelled(header, body) {
   }
 
   async handleDeleteUser(header, body) {
-    try {
-      const userId = ReceiverV2.getElementText(body, 'user_id');
-      const masterUuid = header.master_uuid; // Gebruik de UUID uit de header
+  try {
+    // Pak de UUID bij voorkeur uit de header, anders uit de body
+    const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
+    const externalUserId = ReceiverV2.getElementText(body, 'user_id'); // Als referentie
 
-      if (!userId && !masterUuid) {
-        console.log('[receiver] handleDeleteUser: missing user_id or master_uuid');
-        return;
-      }
-
-      console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid || userId}`);
-
-      // 1. MySQL Soft Delete
-      await this.db.query(
-        'UPDATE crm_user_sync SET is_deleted = true WHERE master_uuid = ? OR external_user_id = ?',
-        [masterUuid, userId]
-      );
-
-      // 2. Salesforce Update (indien verbonden)
-      if (this.sf.isConnected) {
-        // We zoeken de member en zetten een 'Deleted' vlag of verwijderen het record
-        // Meestal is een 'Is_Deleted__c' vlag veiliger in Salesforce
-        const searchCriteria = masterUuid ? { Master_UUID__c: masterUuid } : {};
-        
-        await this.sf.apiCall((conn) =>
-          conn.sobject('Member__c').find(searchCriteria).update({ Is_Deleted__c: true })
-        );
-      }
-
-      console.log(`[receiver] User ${masterUuid || userId} marked as deleted.`);
-    } catch (err) {
-      console.error(`[receiver] Error in handleDeleteUser: ${err}`);
-      throw err;
+    if (!masterUuid) {
+      console.log('[receiver] handleDeleteUser: missing master_uuid');
+      return;
     }
+
+    console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid}`);
+
+    // 1. MySQL Soft Delete (Zoek op UUID)
+    await this.db.query(
+      'UPDATE crm_user_sync SET is_deleted = true WHERE master_uuid = ?',
+      [masterUuid]
+    );
+
+    // 2. Salesforce Update
+    if (this.sf.isConnected) {
+      // Zoek op het unieke External ID veld in Salesforce
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c')
+            .find({ Master_UUID__c: masterUuid })
+            .update({ Is_Deleted__c: true })
+      );
+    }
+
+    console.log(`[receiver] User ${masterUuid} marked as deleted.`);
+  } catch (err) {
+    console.error(`[receiver] Error in handleDeleteUser: ${err}`);
+    throw err;
   }
+}
 
   async handleInvoiceCancellationRequest(header, body) {
     try {
@@ -978,82 +978,93 @@ async handleInvoiceCancelled(header, body) {
   }
 
   async handleBadgeAssigned(header, body) {
-    try {
-      const badgeId = ReceiverV2.getElementText(body, 'badge_id');
-      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
+  try {
+    const badgeId = ReceiverV2.getElementText(body, 'badge_id');
+    const masterUuid = ReceiverV2.getElementText(body, 'master_uuid') || header.master_uuid;
 
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would update Member__c Badge_ID__c=${badgeId} for Master_UUID__c=${masterUuid}`); 
-        return;
-      }
-
-      const sfUserId = masterUuid ? await this._findUserById(masterUuid) : null;
-      if (sfUserId) {
-        await this.sf.apiCall((conn) => conn.sobject('Member__c').update({
-          Id: sfUserId,
-          Badge_ID__c: badgeId,
-        }));
-        console.log(`[receiver] Updated Member__c ${sfUserId} Badge_ID__c: ${badgeId}`);
-      } else {
-        console.log(`[receiver] Badge assigned but no Member__c found for Master_UUID__c: ${masterUuid}`);
-      }
-    } catch (err) {
-      console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);
-      throw err;
+    if (!this.sf.isConnected) {
+      console.log(`[receiver] DRY RUN: Update Badge_ID__c=${badgeId} for UUID=${masterUuid}`); 
+      return;
     }
+
+    // Gebruik de nieuwe helperfunctie die we eerder hebben gedefinieerd
+    const sfMemberId = masterUuid ? await this._findUserByMasterUuid(masterUuid) : null;
+    
+    if (sfMemberId) {
+      await this.sf.apiCall((conn) => conn.sobject('Member__c').update({
+        Id: sfMemberId,
+        Badge_ID__c: badgeId,
+      }));
+      console.log(`[receiver] Updated Member__c ${sfMemberId} Badge_ID__c: ${badgeId}`);
+    }
+  } catch (err) {
+    console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);
+    throw err;
   }
+}
 
   async handleRefundProcessed(header, body) {
-    try {
-      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
-      const refund = body ? body.refund : null;
-      const refundType = ReceiverV2.getElementText(body, 'refund_type');
-      const originalTxId = ReceiverV2.getElementText(body, 'original_transaction_id');
+  try {
+    // 1. Identificatie ophalen
+    const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
+    const refund = body ? body.refund : null;
+    const refundType = ReceiverV2.getElementText(body, 'refund_type');
+    const originalTxId = ReceiverV2.getElementText(body, 'original_transaction_id');
 
-      const amountVal = refund ? refund.amount : null;
-      const amount = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
-      const currency = typeof amountVal === 'object' ? (amountVal.currency || 'eur') : 'eur';
+    // 2. Bedragen en valuta parsen
+    const amountVal = refund ? refund.amount : null;
+    const amount = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
+    const currency = typeof amountVal === 'object' ? (amountVal.currency || 'eur') : 'eur';
 
-      const walletVal = body ? body.new_wallet_balance : null;
-      const newWallet = typeof walletVal === 'object' ? walletVal['#text'] : walletVal;
+    const walletVal = body ? body.new_wallet_balance : null;
+    const newWallet = typeof walletVal === 'object' ? walletVal['#text'] : walletVal;
 
-      const taskData = {
-        Subject: `Refund processed [${refundType}]: ${amount} ${currency}`,
-        Description: [
-          `Type: ${refundType}`,
-          `Amount: ${amount} ${currency}`,
-          `Method: ${ReceiverV2.getElementText(refund, 'method')}`,
-          `Reason: ${ReceiverV2.getElementText(refund, 'reason')}`,
-          originalTxId ? `Original Transaction ID: ${originalTxId}` : null,
-          newWallet ? `New Wallet Balance: ${newWallet}` : null,
-          userId ? `User ID: ${userId}` : null,
-        ].filter(Boolean).join('\n'),
-        Status: 'Completed',
-        Type: 'Other',
-        ActivityDate: new Date().toISOString().split('T')[0],
-      };
+    // 3. Task voor Salesforce voorbereiden
+    const taskData = {
+      Subject: `Refund processed [${refundType}]: ${amount} ${currency}`,
+      Description: [
+        `Type: ${refundType}`,
+        `Amount: ${amount} ${currency}`,
+        `Method: ${ReceiverV2.getElementText(refund, 'method')}`,
+        `Reason: ${ReceiverV2.getElementText(refund, 'reason')}`,
+        originalTxId ? `Original Transaction ID: ${originalTxId}` : null,
+        newWallet ? `New Wallet Balance: ${newWallet}` : null,
+        masterUuid ? `Master UUID: ${masterUuid}` : null,
+      ].filter(Boolean).join('\n'),
+      Status: 'Completed',
+      Type: 'Other',
+      ActivityDate: new Date().toISOString().split('T')[0],
+    };
 
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
-        return;
-      }
-
-      const email = ReceiverV2.getElementText(body, 'email');
-      if (email) {
-        const contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
-      } else if (userId) {
-        const contactId = await this._findUserById(userId);
-        if (contactId) taskData.WhoId = contactId;
-      }
-
-      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-      console.log(`[receiver] Created Task for refund_processed: ${result?.id}`);
-    } catch (err) {
-      console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
-      throw err;
+    if (!this.sf.isConnected) {
+      console.log(`[receiver] DRY RUN: Would create Refund Task for UUID: ${masterUuid}`);
+      return;
     }
+
+    // 4. De juiste persoon zoeken in Salesforce
+    const email = ReceiverV2.getElementText(body, 'email');
+    
+    if (masterUuid) {
+      // Prioriteit 1: Zoeken op de nieuwe Master UUID
+      const contactId = await this._findUserByMasterUuid(masterUuid);
+      if (contactId) taskData.WhoId = contactId;
+    } 
+    
+    if (!taskData.WhoId && email) {
+      // Prioriteit 2: Fallback op email als de UUID nog niet gekoppeld is
+      const contactId = await this._findUserByEmail(email);
+      if (contactId) taskData.WhoId = contactId;
+    }
+
+    // 5. Task aanmaken
+    const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+    console.log(`[receiver] Created Task for refund_processed: ${result?.id}`);
+
+  } catch (err) {
+    console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
+    throw err;
   }
+}
 
   async handleInvoiceRequestFromKassa(header, body) {
     try {
