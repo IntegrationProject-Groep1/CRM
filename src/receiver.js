@@ -324,7 +324,6 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
 
     const address = customer.address || null;
     const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
-    const externalUserId = getCustomerText('user_id');
     const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
     const rawType = getCustomerText('type');
     const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
@@ -389,7 +388,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
         }
 
         const dbCompanyId = await this.db.upsertCompany({
-          master_uuid: masterUuid, // Officiële UUID
+          master_uuid: masterUuid, 
           company_name: companyName,
           vat_number: companyVat,
           email: companyEmail,
@@ -421,7 +420,6 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     // --- STAP 5: JOUW ORIGINELE MYSQL PERSON UPSERT ---
     const dbPersonId = await this.db.upsertPerson({
       master_uuid: masterUuid, // Officiële UUID
-      external_user_id: externalUserId,
       first_name: getCustomerText('first_name'),
       last_name: getCustomerText('last_name'),
       email: emailForIdentity,
@@ -453,7 +451,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
         email: emailForIdentity,
         first_name: getCustomerText('first_name'),
         last_name: getCustomerText('last_name'),
-        user_id: externalUserId,
+        master_uuid: masterUuid,
         type: (isCompanyLinked || rawType === 'company') ? 'company' : (rawType || 'private'),
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
         vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
@@ -877,11 +875,11 @@ async handleInvoiceCancelled(header, body) {
 
       // Insert each item into MySQL
       if (!isAnonymous && customer) {
-        const userId = ReceiverV2.getElementText(customer, 'user_id');
+        const masterUuid = ReceiverV2.getElementText(customer, 'master_uuid');
         let eventAttendeeId = null;
 
-        if (userId) {
-          const personId = await this.db.findPersonByExternalId(userId);
+        if (masterUuid) {
+          const personId = await this.db.findPersonByMasterUuid(masterUuid);
           if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
         }
 
@@ -914,7 +912,6 @@ async handleInvoiceCancelled(header, body) {
   try {
     // Pak de UUID bij voorkeur uit de header, anders uit de body
     const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
-    const externalUserId = ReceiverV2.getElementText(body, 'user_id'); // Als referentie
 
     if (!masterUuid) {
       console.log('[receiver] handleDeleteUser: missing master_uuid');
@@ -1072,7 +1069,6 @@ async handleInvoiceCancelled(header, body) {
     
     // 1. Identificatie: Pak de UUID uit de header of de body
     const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
-    const externalUserId = ReceiverV2.getElementText(body, 'user_id'); // Optioneel als fallback
 
     const taskData = {
       Subject: `Invoice request [Kassa]: ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
@@ -1081,7 +1077,7 @@ async handleInvoiceCancelled(header, body) {
         `Amount Paid: ${ReceiverV2.getElementText(invoice, 'amount_paid')}`,
         `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
         `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
-        masterUuid ? `Master UUID: ${masterUuid}` : `User ID: ${externalUserId}`,
+        masterUuid ? `Master UUID: ${masterUuid}` : null,
       ].filter(Boolean).join('\n'),
       Status: 'Completed',
       Type: 'Other',
