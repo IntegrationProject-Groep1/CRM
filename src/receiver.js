@@ -880,6 +880,7 @@ async handleInvoiceCancelled(header, body) {
 
   async handleRefundProcessed(header, body) {
     try {
+      const masterUuid = header ? header.master_uuid : null;
       const userId = ReceiverV2.getElementText(body, 'user_id');
       const refund = body ? body.refund : null;
       const refundType = ReceiverV2.getElementText(body, 'refund_type');
@@ -899,6 +900,7 @@ async handleInvoiceCancelled(header, body) {
           `Amount: ${amount} ${currency}`,
           `Method: ${ReceiverV2.getElementText(refund, 'method')}`,
           `Reason: ${ReceiverV2.getElementText(refund, 'reason')}`,
+          masterUuid ? `Master UUID: ${masterUuid}` : null,
           originalTxId ? `Original Transaction ID: ${originalTxId}` : null,
           newWallet ? `New Wallet Balance: ${newWallet}` : null,
           userId ? `User ID: ${userId}` : null,
