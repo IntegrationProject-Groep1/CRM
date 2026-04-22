@@ -341,7 +341,6 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     // Jouw volledige rawUserData (aangepast om de officiële masterUuid te gebruiken)
     const rawUserData = {
       Master_UUID__c: masterUuid, // Officiële UUID
-      User_ID__c: externalUserId,
       First_Name__c: getCustomerText('first_name'),
       Last_Name__c: getCustomerText('last_name'),
       Email__c: emailForIdentity, // Gebruik de genormaliseerde email
@@ -811,9 +810,9 @@ async handleInvoiceCancelled(header, body) {
     return String(value);
   }
 
-  async _findUserById(userId) {
+  async _findUserById(masterUuid) {
     const records = await this.sf.apiCall(
-      (conn) => conn.sobject('Member__c').find({ User_ID__c: userId }, ['Id']).limit(1)
+      (conn) => conn.sobject('Member__c').find({ master_uuid: masterUuid}, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
   }
@@ -932,7 +931,7 @@ async handleInvoiceCancelled(header, body) {
       if (this.sf.isConnected) {
         // We zoeken de member en zetten een 'Deleted' vlag of verwijderen het record
         // Meestal is een 'Is_Deleted__c' vlag veiliger in Salesforce
-        const searchCriteria = masterUuid ? { Master_UUID__c: masterUuid } : { User_ID__c: userId };
+        const searchCriteria = masterUuid ? { Master_UUID__c: masterUuid } : {};
         
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').find(searchCriteria).update({ Is_Deleted__c: true })
@@ -980,14 +979,14 @@ async handleInvoiceCancelled(header, body) {
   async handleBadgeAssigned(header, body) {
     try {
       const badgeId = ReceiverV2.getElementText(body, 'badge_id');
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
 
       if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would update Member__c Badge_ID__c=${badgeId} for User_ID__c=${userId}`);
+        console.log(`[receiver] DRY RUN: Would update Member__c Badge_ID__c=${badgeId} for Master_UUID__c=${masterUuid}`); 
         return;
       }
 
-      const sfUserId = userId ? await this._findUserById(userId) : null;
+      const sfUserId = masterUuid ? await this._findUserById(masterUuid) : null;
       if (sfUserId) {
         await this.sf.apiCall((conn) => conn.sobject('Member__c').update({
           Id: sfUserId,
@@ -995,7 +994,7 @@ async handleInvoiceCancelled(header, body) {
         }));
         console.log(`[receiver] Updated Member__c ${sfUserId} Badge_ID__c: ${badgeId}`);
       } else {
-        console.log(`[receiver] Badge assigned but no Member__c found for User_ID__c: ${userId}`);
+        console.log(`[receiver] Badge assigned but no Member__c found for Master_UUID__c: ${masterUuid}`);
       }
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);
@@ -1005,7 +1004,7 @@ async handleInvoiceCancelled(header, body) {
 
   async handleRefundProcessed(header, body) {
     try {
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
       const refund = body ? body.refund : null;
       const refundType = ReceiverV2.getElementText(body, 'refund_type');
       const originalTxId = ReceiverV2.getElementText(body, 'original_transaction_id');
