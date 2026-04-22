@@ -6,6 +6,9 @@ const { getAmqpOptions } = require('./amqpUrl');
 const { create } = require('xmlbuilder2');
 const { v4: uuidv4 } = require('uuid');
 
+const USER_UNREGISTERED_EXCHANGE = 'frontend.user.unregistered';
+const USER_UNREGISTERED_QUEUES = ['crm.salesforce', 'planning.outlook', 'mailing.sendgrid'];
+
 class CRMSender {
   constructor() {
     this.connection = null;
@@ -207,6 +210,64 @@ class CRMSender {
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send mailing send request: ${error}`);
+      throw error;
+    }
+  }
+
+  buildUserUnregisteredXml(data) {
+    const root = create({ version: '1.0', encoding: 'UTF-8' })
+      .ele('message', { xmlns: 'urn:integration:planning:v1' });
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(data.message_id || uuidv4());
+    header.ele('timestamp').txt(data.timestamp || new Date().toISOString());
+    header.ele('source').txt(data.source || 'frontend.drupal');
+    header.ele('receiver').txt(data.receiver || USER_UNREGISTERED_QUEUES.join(' '));
+    header.ele('type').txt('user.unregistered');
+    header.ele('version').txt('1.0');
+    header.ele('correlation_id').txt(data.correlation_id || '');
+
+    const body = root.ele('body');
+    body.ele('user_id').txt(data.user_id);
+    body.ele('session_id').txt(data.session_id);
+    body.ele('timestamp').txt(data.body_timestamp || data.timestamp || new Date().toISOString());
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendUserUnregisteredFanout(data) {
+    if (!this.channel) {
+      throw new Error('CRM Sender not initialized. Call init() first.');
+    }
+    try {
+      const xmlPayload = this.buildUserUnregisteredXml(data);
+      await this.channel.assertExchange(USER_UNREGISTERED_EXCHANGE, 'fanout', { durable: true });
+
+      for (const queue of USER_UNREGISTERED_QUEUES) {
+        await this.channel.assertQueue(queue, { durable: true });
+        await this.channel.bindQueue(queue, USER_UNREGISTERED_EXCHANGE, '');
+      }
+
+      const ok = this.channel.publish(
+        USER_UNREGISTERED_EXCHANGE,
+        '',
+        Buffer.from(xmlPayload),
+        {
+          contentType: 'application/xml',
+          deliveryMode: 2,
+        },
+      );
+
+      if (!ok) console.log(`[sender] Warning: write buffer full for exchange "${USER_UNREGISTERED_EXCHANGE}"`);
+      console.log(`user.unregistered published to fanout exchange "${USER_UNREGISTERED_EXCHANGE}"`);
+      return {
+        success: true,
+        exchange: USER_UNREGISTERED_EXCHANGE,
+        queues: [...USER_UNREGISTERED_QUEUES],
+        payload: xmlPayload,
+      };
+    } catch (error) {
+      console.log(`Failed to send user.unregistered fanout: ${error}`);
       throw error;
     }
   }

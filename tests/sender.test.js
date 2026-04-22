@@ -29,7 +29,10 @@ const parser = new XMLParser({
 function makeMockChannel({ sendOk = true } = {}) {
   return {
     assertQueue: jest.fn().mockResolvedValue(undefined),
+    assertExchange: jest.fn().mockResolvedValue(undefined),
+    bindQueue: jest.fn().mockResolvedValue(undefined),
     sendToQueue: jest.fn().mockReturnValue(sendOk),
+    publish: jest.fn().mockReturnValue(sendOk),
   };
 }
 
@@ -599,5 +602,83 @@ describe('Mailing flow — sendMailingSend', () => {
     attachMockChannel(sender);
     const result = await sender.sendMailingSend(data);
     expect(result).toMatchObject({ success: true, queue: 'crm.to.mailing' });
+  });
+});
+
+describe('Frontend flow — buildUserUnregisteredXml', () => {
+  let sender;
+
+  beforeEach(() => { sender = new CRMSender(); });
+
+  const baseData = () => ({
+    message_id: '3d6f0a7b-71ab-4fb8-99ee-65dbd4499999',
+    timestamp: '2026-04-04T10:00:00+02:00',
+    source: 'frontend.drupal',
+    receiver: 'crm.salesforce planning.outlook mailing.sendgrid',
+    correlation_id: '',
+    user_id: 'user-001',
+    session_id: 'sess-42',
+    body_timestamp: '2026-04-04T10:00:00+02:00',
+  });
+
+  test('bouwt user.unregistered met namespace en verplichte velden', () => {
+    const xml = sender.buildUserUnregisteredXml(baseData());
+    expect(xml).toContain('urn:integration:planning:v1');
+
+    const root = parser.parse(xml).message;
+    expect(root.header.type).toBe('user.unregistered');
+    expect(root.header.version).toBe('1.0');
+    expect(root.header.source).toBe('frontend.drupal');
+    expect(root.header.receiver).toBe('crm.salesforce planning.outlook mailing.sendgrid');
+    expect(root.body.user_id).toBe('user-001');
+    expect(root.body.session_id).toBe('sess-42');
+  });
+});
+
+describe('Frontend flow — sendUserUnregisteredFanout', () => {
+  let sender;
+
+  beforeEach(() => { sender = new CRMSender(); });
+
+  const data = {
+    message_id: '3d6f0a7b-71ab-4fb8-99ee-65dbd4499999',
+    timestamp: '2026-04-04T10:00:00+02:00',
+    source: 'frontend.drupal',
+    receiver: 'crm.salesforce planning.outlook mailing.sendgrid',
+    user_id: 'user-001',
+    session_id: 'sess-42',
+    body_timestamp: '2026-04-04T10:00:00+02:00',
+  };
+
+  test('gooit error als channel niet geinitialiseerd is', async () => {
+    await expect(sender.sendUserUnregisteredFanout(data)).rejects.toThrow('not initialized');
+  });
+
+  test('maakt fanout exchange en bindt alle doelqueues', async () => {
+    const ch = attachMockChannel(sender);
+    await sender.sendUserUnregisteredFanout(data);
+
+    expect(ch.assertExchange).toHaveBeenCalledWith('frontend.user.unregistered', 'fanout', { durable: true });
+    expect(ch.bindQueue).toHaveBeenCalledTimes(3);
+    expect(ch.bindQueue).toHaveBeenCalledWith('crm.salesforce', 'frontend.user.unregistered', '');
+    expect(ch.bindQueue).toHaveBeenCalledWith('planning.outlook', 'frontend.user.unregistered', '');
+    expect(ch.bindQueue).toHaveBeenCalledWith('mailing.sendgrid', 'frontend.user.unregistered', '');
+  });
+
+  test('publiceert XML naar de fanout exchange', async () => {
+    const ch = attachMockChannel(sender);
+    const result = await sender.sendUserUnregisteredFanout(data);
+
+    expect(ch.publish).toHaveBeenCalledWith(
+      'frontend.user.unregistered',
+      '',
+      expect.any(Buffer),
+      expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
+    );
+    expect(result).toMatchObject({
+      success: true,
+      exchange: 'frontend.user.unregistered',
+      queues: ['crm.salesforce', 'planning.outlook', 'mailing.sendgrid'],
+    });
   });
 });
