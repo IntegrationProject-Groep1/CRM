@@ -9,9 +9,7 @@ const { XMLParser } = require('fast-xml-parser');
 const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
-const MySQLService = require('./mysqlClient');
- // Zorg dat deze bovenaan je receiver.js staat:
-const { create } = require('xmlbuilder2'); 
+const { create } = require('xmlbuilder2');
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
@@ -46,7 +44,6 @@ class ReceiverV2 {
     this.channel = null;
     this.sf = new SFConnection();
     this.sender = new CRMSender();
-    this.db = new MySQLService();
     this.running = true;
   }
 
@@ -64,7 +61,6 @@ class ReceiverV2 {
     this.startHealthServer();
     await this.sf.init();
     await this.sender.init();
-    this.db.init();
     await this.connectRabbitMQ();
   }
 
@@ -388,17 +384,6 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
           companyId = result.id || null;
           console.log(`[receiver] Upserted Account: ${companyId} for VAT ${companyVat}`);
         }
-
-        const dbCompanyId = await this.db.upsertCompany({
-          master_uuid: masterUuid, // Officiële UUID
-          company_name: companyName,
-          vat_number: companyVat,
-          email: companyEmail,
-          salesforce_account_id: companyId,
-        });
-        if (dbCompanyId) {
-          console.log(`[mysql] Upserted company: ${dbCompanyId}`);
-        }
       }
     }
 
@@ -418,36 +403,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       console.log(`[receiver] Upserted Member__c via Master UUID: ${result.id}`);
     }
 
-
-    // --- STAP 5: JOUW ORIGINELE MYSQL PERSON UPSERT ---
-    const dbPersonId = await this.db.upsertPerson({
-      master_uuid: masterUuid, // Officiële UUID
-      external_user_id: externalUserId,
-      first_name: getCustomerText('first_name'),
-      last_name: getCustomerText('last_name'),
-      email: emailForIdentity,
-      date_of_birth: getCustomerText('date_of_birth') || null,
-      person_type: userType,
-      badge_id: getCustomerText('badge_id') || null,
-      is_company_linked: isCompanyLinked,
-      company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
-      vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-      street: address ? ReceiverV2.getElementText(address, 'street') : null,
-      house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
-      postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
-      city: address ? ReceiverV2.getElementText(address, 'city') : null,
-      country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
-      amount: registrationAmount ? parseFloat(registrationAmount) : null,
-      payment_status: paymentStatus,
-      is_deleted: false
-    });
-
-    if (dbPersonId) {
-      console.log(`[mysql] Upserted person: ${dbPersonId}`);
-    }
-
-
-    // --- STAP 6: JOUW ORIGINELE KASSA PAYLOAD ---
+    // --- STAP 5: JOUW ORIGINELE KASSA PAYLOAD ---
     const kassaPayload = {
       header: { master_uuid: masterUuid }, // Officiële UUID
       customer: {
@@ -470,7 +426,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     console.log(`[receiver] Forwarded new_registration to Kassa for Master UUID=${masterUuid}`);
 
     
-    // --- STAP 7: JOUW ORIGINELE FOSSBILLING PAYLOAD ---
+    // --- STAP 6: JOUW ORIGINELE FOSSBILLING PAYLOAD ---
     const fossPayload = {
       master_uuid: masterUuid, // Officiële UUID
       customer: {
@@ -528,12 +484,6 @@ async handleSendInvoice(header, body) {
       );
     }
 
-    // 2. Update lokale DB voor snelle weergave in portaal
-    await this.db.query(
-      'UPDATE crm_user_sync SET last_invoice_url = ?, last_invoice_number = ? WHERE master_uuid = ?',
-      [invoiceUrl, invoiceNumber, masterUuid]
-    );
-
   } catch (err) {
     console.error(`[receiver] Error in handleSendInvoice: ${err}`);
   }
@@ -588,27 +538,6 @@ async handleInvoiceCancelled(header, body) {
         Type: 'Payment',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
-
-      // Insert payment into MySQL (always, regardless of SF connection)
-      let eventAttendeeId = null;
-      if (userId) {
-        const personId = await this.db.findPersonByExternalId(userId);
-        if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
-      }
-
-      const paymentPayload = {
-        amount: parseFloat(amountPaid) || 0,
-        payment_type: paymentContext === 'consumption' ? 'consumption' : 'registration',
-        status: 'completed',
-        payment_method: ReceiverV2.getElementText(transaction, 'payment_method') || null,
-        paid_at: new Date().toISOString(),
-      };
-
-      if (eventAttendeeId) paymentPayload.event_attendee_id = eventAttendeeId;
-
-      const dbPaymentId = await this.db.insertPayment(paymentPayload);
-      if (dbPaymentId) console.log(`[mysql] Inserted payment: ${dbPaymentId}`);
-
       if (!this.sf.isConnected) {
         console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
         return;
@@ -663,17 +592,6 @@ async handleInvoiceCancelled(header, body) {
 
       const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for badge scan: ${result?.id}`);
-
-      // Record check-in time in MySQL
-      const scanEmail = ReceiverV2.getElementText(body, 'email');
-      if (scanEmail) {
-        const { personId, error: dbError } = await this.db.findPersonByEmailForCheckIn(scanEmail);
-        if (dbError) {
-          console.log(`[mysql] Error looking up person for badge scan: ${dbError.message}`);
-        } else if (personId) {
-          await this.db.updateEventAttendeeCheckIn(personId);
-        }
-      }
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeScanned: ${err}`);
       throw err;
@@ -874,36 +792,6 @@ async handleInvoiceCancelled(header, body) {
       } else {
         console.log(`[receiver] DRY RUN: Would upsert ${itemList.length} Consumption__c record(s)`);
       }
-
-      // Insert each item into MySQL
-      if (!isAnonymous && customer) {
-        const userId = ReceiverV2.getElementText(customer, 'user_id');
-        let eventAttendeeId = null;
-
-        if (userId) {
-          const personId = await this.db.findPersonByExternalId(userId);
-          if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
-        }
-
-        if (eventAttendeeId) {
-          for (const item of itemList) {
-            const unitPriceVal = item.unit_price;
-            const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
-            const qty = parseInt(item.quantity, 10) || 1;
-
-            await this.db.insertConsumption({
-              event_attendee_id: eventAttendeeId,
-              item_name: String(item.description),
-              quantity: qty,
-              unit_price: unitPrice,
-              total_price: unitPrice * qty,
-              paid: false,
-            });
-          }
-
-          console.log(`[mysql] Inserted ${itemList.length} consumption(s) for attendee: ${eventAttendeeId}`);
-        }
-      }
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
       throw err;
@@ -921,14 +809,7 @@ async handleInvoiceCancelled(header, body) {
       }
 
       console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid || userId}`);
-
-      // 1. MySQL Soft Delete
-      await this.db.query(
-        'UPDATE crm_user_sync SET is_deleted = true WHERE master_uuid = ? OR external_user_id = ?',
-        [masterUuid, userId]
-      );
-
-      // 2. Salesforce Update (indien verbonden)
+      // Salesforce Update (indien verbonden)
       if (this.sf.isConnected) {
         // We zoeken de member en zetten een 'Deleted' vlag of verwijderen het record
         // Meestal is een 'Is_Deleted__c' vlag veiliger in Salesforce
@@ -964,12 +845,6 @@ async handleInvoiceCancelled(header, body) {
         invoice_number: invoiceNumber,
         reason: ReceiverV2.getElementText(body, 'reason') || 'Cancelled by user via frontend'
       });
-
-      // Optioneel: Update ook je eigen DB of Salesforce status
-      await this.db.query(
-        'UPDATE crm_user_sync SET last_payment_status = "cancelled" WHERE master_uuid = ?',
-        [masterUuid]
-      );
 
     } catch (err) {
       console.error(`[receiver] Error in handleInvoiceCancellationRequest: ${err.message}`);
@@ -1162,3 +1037,6 @@ module.exports = ReceiverV2;
 if (require.main === module) {
   main();
 }
+
+
+

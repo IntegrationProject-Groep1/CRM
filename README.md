@@ -2,9 +2,7 @@
 
 ## Wat doet dit project?
 
-Dit is een Node.js integratie-microservice die berichten ontvangt via RabbitMQ, ze verwerkt, en gegevens opslaat in Salesforce. Salesforce is de beoogde enige databron voor deze service.
-
-Er loopt nog een tijdelijke afbouw van de oude MySQL-integratie. Buiten `src/receiver.js` is die al verwijderd of opgeruimd. Zolang `receiver.js` nog niet mee aangepast is, blijven `src/mysqlClient.js` en de `mysql2` dependency bewust tijdelijk aanwezig als compatibiliteitslaag.
+Dit is een Node.js integratie-microservice die berichten ontvangt via RabbitMQ, ze verwerkt, en gegevens opslaat in Salesforce. Salesforce is de enige databron voor deze service.
 
 ## Architectuuroverzicht
 
@@ -37,7 +35,6 @@ CRM/
 |   |-- receiver.js       <- Hoofdbestand: ontvangt en verwerkt berichten
 |   |-- sender.js         <- Verstuurt XML-berichten naar andere queues
 |   |-- sfConnection.js   <- Verbinding en authenticatie met Salesforce
-|   |-- mysqlClient.js    <- Tijdelijke compatibiliteitslaag, nog enkel nodig tot receiver.js is opgeschoond
 |   `-- heartbeat.js      <- Stuurt elke seconde een statussignaal
 |-- tests/
 |   |-- receiver.test.js  <- Tests voor de receiver-flow
@@ -156,4 +153,3 @@ npm run lint
 | `jsforce` | Salesforce API client |
 | `dotenv` | omgevingsvariabelen laden uit `.env` |
 | `uuid` | unieke message IDs genereren |
-| `mysql2` | tijdelijke dependency zolang `receiver.js` nog niet van MySQL is losgekoppeld |
