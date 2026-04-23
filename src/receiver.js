@@ -13,6 +13,8 @@ const { create } = require('xmlbuilder2');
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
+const USER_REGISTERED_QUEUE = 'user.registered';
+const USER_CREATED_QUEUE = 'user.created';
 
 const MESSAGE_TYPES = {
   USER_CREATED: 'user.created',
@@ -537,7 +539,7 @@ async handleUserCreated(header, body) {
         User_Type__c: isCompany ? 'Bedrijf' : 'Particulier'
       };
 
-      const result = await this.sf.apiCall((conn) => 
+      await this.sf.apiCall((conn) => 
         conn.sobject('Member__c').upsert(sfData, 'Master_UUID__c')
       );
       
