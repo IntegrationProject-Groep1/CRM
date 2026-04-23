@@ -85,6 +85,33 @@ function buildFrontendUserUnregisteredXml(overrides = {}) {
 </message>`;
 }
 
+function buildSendInvoiceXml() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<message>
+  <header>
+    <message_id>c91df23a-47be-6789-d012-3e25f5a6b702</message_id>
+    <version>2.0</version>
+    <type>send_invoice</type>
+    <timestamp>2026-03-29T18:36:00Z</timestamp>
+    <source>facturatie_system_01</source>
+    <correlation_id>f47ac10b-58cc-4372-a567-0e02b2c3d479</correlation_id>
+  </header>
+  <body>
+    <customer>
+      <id>12345</id>
+      <email>info@bedrijf.be</email>
+    </customer>
+    <invoice>
+      <id>INV-2026-001</id>
+      <status>paid</status>
+      <amount_paid currency="eur">15.00</amount_paid>
+      <due_date>2026-03-06</due_date>
+      <pdf_url>https://example.test/invoice.pdf</pdf_url>
+    </invoice>
+  </body>
+</message>`;
+}
+
 /** Create a fresh ReceiverV2 instance with a mocked channel. */
 function makeReceiver() {
   const receiver = new ReceiverV2();
@@ -109,8 +136,27 @@ describe('ReceiverV2.getElementText', () => {
 });
 
 describe('validateXmlMessage', () => {
+  let receiver;
+
+  beforeEach(() => { receiver = makeReceiver(); });
+
+  function validParsed(overrides = {}) {
+    return {
+      message: {
+        header: {
+          message_id: 'id-1',
+          version: '2.0',
+          type: 'new_registration',
+          timestamp: new Date().toISOString(),
+          source: 'test',
+          master_uuid: 'uuid-1',
+          ...overrides,
+        },
+      },
+    };
+  }
+
   test('geldig bericht geeft true terug', () => {
-    const receiver = makeReceiver();
     const [valid, err] = receiver.validateXmlMessage({
       message: {
         header: {
@@ -129,7 +175,6 @@ describe('validateXmlMessage', () => {
   });
 
   test('ongeldig bericht zonder root geeft fout', () => {
-    const receiver = makeReceiver();
     const [valid, err] = receiver.validateXmlMessage({});
     expect(valid).toBe(false);
     expect(err).toMatch(/Missing message root/);
@@ -165,12 +210,22 @@ describe('validateXmlMessage', () => {
     const validTypes = [
       'new_registration', 'payment_registered', 'badge_scanned', 'session_update',
       'invoice_status', 'mailing_status', 'consumption_order', 'badge_assigned',
-      'refund_processed', 'invoice_request',
+      'refund_processed', 'invoice_request', 'send_invoice',
     ];
     for (const type of validTypes) {
       const [valid] = receiver.validateXmlMessage(validParsed({ type }));
       expect(valid).toBe(true);
     }
+  });
+
+  test('send_invoice zonder master_uuid en met version 2.0 is geldig', () => {
+    const parsed = validParsed({ type: 'send_invoice' });
+    delete parsed.message.header.master_uuid;
+
+    const [valid, err] = receiver.validateXmlMessage(parsed);
+
+    expect(valid).toBe(true);
+    expect(err).toBeNull();
   });
 
   test('frontend user.unregistered met version 1.0 en zonder master_uuid is geldig', () => {
@@ -220,6 +275,80 @@ describe('handleMessage', () => {
     await receiver.handleMessage(buildMsg(xml));
 
     expect(receiver.channel.ack).toHaveBeenCalled();
+  });
+});
+
+describe('handleSendInvoice', () => {
+  test('routeert send_invoice naar handleSendInvoice', async () => {
+    const receiver = makeReceiver();
+    receiver.handleSendInvoice = jest.fn().mockResolvedValue(undefined);
+    const header = { type: 'send_invoice' };
+    const body = {};
+
+    await receiver.routeMessage(header, body);
+
+    expect(receiver.handleSendInvoice).toHaveBeenCalledWith(header, body);
+  });
+
+  test('parset nested XML en update alleen de factuurvelden op Member__c', async () => {
+    const receiver = makeReceiver();
+    const update = jest.fn().mockResolvedValue({ id: 'sf-member-1' });
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: jest.fn().mockReturnValue({ update }),
+    }));
+    jest.spyOn(receiver, '_findUserByMasterUuid').mockResolvedValue('sf-member-1');
+    jest.spyOn(receiver, '_findUserByEmail').mockResolvedValue(null);
+
+    await receiver.handleMessage(buildMsg(buildSendInvoiceXml().replace(
+      '<correlation_id>f47ac10b-58cc-4372-a567-0e02b2c3d479</correlation_id>',
+      '<master_uuid>master-from-header</master_uuid><correlation_id>f47ac10b-58cc-4372-a567-0e02b2c3d479</correlation_id>'
+    )));
+
+    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('master-from-header');
+    expect(receiver._findUserByEmail).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith({
+      Id: 'sf-member-1',
+      Last_Invoice_URL__c: 'https://example.test/invoice.pdf',
+      Last_Invoice_Due_Date__c: '2026-03-06',
+      Last_Invoice_Number__c: 'INV-2026-001',
+    });
+    expect(receiver.channel.ack).toHaveBeenCalled();
+  });
+
+  test('valt terug op customer.email wanneer master_uuid ontbreekt', async () => {
+    const receiver = makeReceiver();
+    const update = jest.fn().mockResolvedValue({ id: 'sf-member-2' });
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: jest.fn().mockReturnValue({ update }),
+    }));
+    jest.spyOn(receiver, '_findUserByMasterUuid').mockResolvedValue(null);
+    jest.spyOn(receiver, '_findUserByEmail').mockResolvedValue('sf-member-2');
+
+    await receiver.handleMessage(buildMsg(buildSendInvoiceXml()));
+
+    expect(receiver._findUserByMasterUuid).not.toHaveBeenCalled();
+    expect(receiver._findUserByEmail).toHaveBeenCalledWith('info@bedrijf.be');
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ Id: 'sf-member-2' }));
+    expect(receiver.channel.ack).toHaveBeenCalled();
+  });
+
+  test('faalt expliciet wanneer geen Member__c gevonden wordt', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    jest.spyOn(receiver, '_findUserByMasterUuid').mockResolvedValue(null);
+    jest.spyOn(receiver, '_findUserByEmail').mockResolvedValue(null);
+
+    await expect(receiver.handleSendInvoice(
+      { type: 'send_invoice' },
+      {
+        customer: { email: 'missing@example.com' },
+        invoice: { id: 'INV-404', due_date: '2026-03-06', pdf_url: '' },
+      }
+    )).rejects.toThrow(/No Member__c found/);
+
+    expect(receiver.sf.apiCall).not.toHaveBeenCalled();
   });
 });
 

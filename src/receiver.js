@@ -23,6 +23,7 @@ const MESSAGE_TYPES = {
   BADGE_SCANNED: 'badge_scanned',
   SESSION_UPDATE: 'session_update',
   INVOICE_STATUS: 'invoice_status',
+  SEND_INVOICE: 'send_invoice',
   MAILING_STATUS: 'mailing_status',
   // Kassa → CRM (via kassa.payments)
   CONSUMPTION_ORDER: 'consumption_order',
@@ -134,15 +135,19 @@ class ReceiverV2 {
 
     const messageType = header.type;
     const isFrontendUnregistered = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
+    const isSendInvoice = messageType === MESSAGE_TYPES.SEND_INVOICE;
     const requiredFields = isFrontendUnregistered
       ? ['message_id', 'version', 'type', 'timestamp', 'source', 'receiver']
+      : isSendInvoice
+        ? ['message_id', 'version', 'type', 'timestamp', 'source']
       : ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
     const missingFields = requiredFields.filter((f) => header[f] === undefined || header[f] === null);
     if (missingFields.length > 0) {
       return [false, `Missing required header fields: ${missingFields.join(', ')}`];
     }
 
-    if (String(header.version) !== '1.0','2.0') {
+    const validVersions = isFrontendUnregistered ? ['1.0', '2.0'] : ['2.0'];
+    if (!validVersions.includes(String(header.version))) {
       return [false, `Invalid version: expected 2.0, got ${header.version}`];
     }
 
@@ -282,6 +287,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.BADGE_SCANNED]: () => this.handleBadgeScanned(header, body),
       [MESSAGE_TYPES.SESSION_UPDATE]: () => this.handleSessionUpdate(header, body),
       [MESSAGE_TYPES.INVOICE_STATUS]: () => this.handleInvoiceStatus(header, body),
+      [MESSAGE_TYPES.SEND_INVOICE]: () => this.handleSendInvoice(header, body),
       [MESSAGE_TYPES.MAILING_STATUS]: () => this.handleMailingStatus(header, body),
       [MESSAGE_TYPES.CONSUMPTION_ORDER]: () => this.handleConsumptionOrder(header, body),
       [MESSAGE_TYPES.BADGE_ASSIGNED]: () => this.handleBadgeAssigned(header, body),
@@ -593,27 +599,51 @@ async handleUserRegistered(header, body) {
  */
 async handleSendInvoice(header, body) {
   try {
-    const masterUuid = header.master_uuid;
-    const invoiceUrl = ReceiverV2.getElementText(body, 'pdf_url'); // Bevat de link naar de PDF
-    const dueDate = ReceiverV2.getElementText(body, 'due_date');
-    const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+    const customer = body ? body.customer : null;
+    const invoice = body ? body.invoice : null;
+    const masterUuid = header.master_uuid ||
+      ReceiverV2.getElementText(customer, 'master_uuid') ||
+      ReceiverV2.getElementText(body, 'master_uuid');
+    const email = ReceiverV2.getElementText(customer, 'email');
+    const invoiceUrl = ReceiverV2.getElementText(invoice, 'pdf_url');
+    const dueDate = ReceiverV2.getElementText(invoice, 'due_date');
+    const invoiceNumber = ReceiverV2.getElementText(invoice, 'id');
+    const invoiceStatus = ReceiverV2.getElementText(invoice, 'status');
+    const amountPaid = ReceiverV2.getElementText(invoice, 'amount_paid');
 
-    console.log(`[receiver] Processing send_invoice for ${masterUuid}, invoice: ${invoiceNumber}`);
+    console.log(`[receiver] Processing send_invoice for ${masterUuid || email || 'unknown customer'}, invoice: ${invoiceNumber}, status: ${invoiceStatus}, amount_paid: ${amountPaid}`);
 
-    // 1. Update Salesforce (Member__c) met de PDF-link en vervaldatum
-    if (this.sf.isConnected) {
-      await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').upsert({
-          Master_UUID__c: masterUuid,
-          Last_Invoice_URL__c: invoiceUrl,
-          Last_Invoice_Due_Date__c: dueDate,
-          Last_Invoice_Number__c: invoiceNumber
-        }, 'Master_UUID__c')
-      );
+    if (!this.sf.isConnected) {
+      console.log(`[receiver] DRY RUN: Would update Member__c invoice fields for ${masterUuid || email || 'unknown customer'}`);
+      return;
     }
+
+    let memberId = null;
+    if (masterUuid) {
+      memberId = await this._findUserByMasterUuid(masterUuid);
+    }
+    if (!memberId && email) {
+      memberId = await this._findUserByEmail(email);
+    }
+
+    if (!memberId) {
+      const lookupValue = masterUuid ? `master_uuid=${masterUuid}` : `email=${email || 'missing'}`;
+      console.log(`[receiver] No Member__c found for send_invoice (${lookupValue})`);
+      throw new Error(`No Member__c found for send_invoice (${lookupValue})`);
+    }
+
+    await this.sf.apiCall((conn) =>
+      conn.sobject('Member__c').update({
+        Id: memberId,
+        Last_Invoice_URL__c: invoiceUrl,
+        Last_Invoice_Due_Date__c: dueDate,
+        Last_Invoice_Number__c: invoiceNumber
+      })
+    );
 
   } catch (err) {
     console.error(`[receiver] Error in handleSendInvoice: ${err}`);
+    throw err;
   }
 }
 
