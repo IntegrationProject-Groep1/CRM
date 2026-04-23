@@ -974,10 +974,12 @@ async handleInvoiceCancelled(header, body) {
     console.log(`[receiver] Executing delete for UUID: ${masterUuid}`);
 
     // 1. MySQL Update
-    await this.db.query(
-      'UPDATE crm_user_sync SET is_deleted = true, last_sync = NOW() WHERE master_uuid = ?',
-      [masterUuid]
-    );
+    if (this.db) {
+      await this.db.query(
+        'UPDATE crm_user_sync SET is_deleted = true, last_sync = NOW() WHERE master_uuid = ?',
+        [masterUuid]
+      );
+    }
 
     // 2. Salesforce Update
     if (this.sf.isConnected) {

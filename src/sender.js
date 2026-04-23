@@ -302,6 +302,12 @@ class CRMSender {
     contact.ele('first_name').txt(data.customer.first_name);
     contact.ele('last_name').txt(data.customer.last_name);
 
+    if (data.customer.user_id) {
+      customer.ele('user_id').txt(data.customer.user_id);
+    }
+    if (data.customer.age !== undefined && data.customer.age !== null) {
+      customer.ele('age').txt(String(data.customer.age));
+    }
     if (data.customer.company_name) {
       customer.ele('company_name').txt(data.customer.company_name);
     }
@@ -374,7 +380,13 @@ class CRMSender {
 
     const body = root.ele('body');
     body.ele('master_uuid').txt(data.master_uuid);
+    if (data.user_id) {
+      body.ele('user_id').txt(data.user_id);
+    }
     body.ele('email').txt(data.email);
+    if (data.age !== undefined && data.age !== null) {
+      body.ele('age').txt(String(data.age));
+    }
     body.ele('date_of_birth').txt(data.date_of_birth);
     body.ele('type').txt(data.type || 'private');
 
@@ -462,6 +474,9 @@ class CRMSender {
 
     const body = root.ele('body');
     body.ele('master_uuid').txt(data.master_uuid);
+    if (data.user_id) {
+      body.ele('user_id').txt(data.user_id);
+    }
     body.ele('session_id').txt(data.session_id || '');
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
