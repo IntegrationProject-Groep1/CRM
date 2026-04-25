@@ -295,7 +295,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.BADGE_ASSIGNED]: () => this.handleBadgeAssigned(header, body),
       [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body),
       [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
-      [MESSAGE_TYPES.INVOICE_CANCELLED]: () => this.handleInvoiceCancellationRequest(header, body),
+      [MESSAGE_TYPES.INVOICE_CANCELLED]: () => this.handleReceivedInvoiceCancelled(header, body),
       [MESSAGE_TYPES.DELETE_USER]: () => this.handleDeleteUser(header, body),
       [MESSAGE_TYPES.USER_DELETED]: () => this.handleDeleteUser(header, body), //nieuw voor frontend deletions
     };
@@ -652,7 +652,7 @@ async handleSendInvoice(header, body) {
 /**
  * Verwerkt invoice_cancelled bericht van FossBilling
  */
-async handleInvoiceCancelled(header, body) {
+async handleReceivedInvoiceCancelled(header, body) {
   try {
     const masterUuid = header.master_uuid;
     const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
@@ -670,7 +670,7 @@ async handleInvoiceCancelled(header, body) {
       );
     }
   } catch (err) {
-    console.error(`[receiver] Error in handleInvoiceCancelled: ${err}`);
+    console.error(`[receiver] Error in handleReceivedInvoiceCancelled: ${err}`);
   }
 }
 
@@ -1004,7 +1004,7 @@ async handleInvoiceCancelled(header, body) {
   }
 }
 
-  async handleInvoiceCancellationRequest(header, body) {
+  async forwardInvoiceCancelledToFacturatie(header, body) {
     try {
       const masterUuid = header.master_uuid;
       const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
@@ -1024,7 +1024,7 @@ async handleInvoiceCancelled(header, body) {
       });
 
     } catch (err) {
-      console.error(`[receiver] Error in handleInvoiceCancellationRequest: ${err.message}`);
+      console.error(`[receiver] Error in forwardInvoiceCancelledToFacturatie: ${err.message}`);
       throw err;
     }
   }

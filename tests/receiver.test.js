@@ -210,7 +210,7 @@ describe('validateXmlMessage', () => {
     const validTypes = [
       'new_registration', 'payment_registered', 'badge_scanned', 'session_update',
       'invoice_status', 'mailing_status', 'consumption_order', 'badge_assigned',
-      'refund_processed', 'invoice_request', 'send_invoice',
+      'refund_processed', 'invoice_request', 'invoice_cancelled', 'send_invoice',
     ];
     for (const type of validTypes) {
       const [valid] = receiver.validateXmlMessage(validParsed({ type }));
@@ -527,6 +527,22 @@ describe('handleInvoiceRequestFromKassa', () => {
         invoice: expect.objectContaining({ amount: 150 }),
       }),
     );
+  });
+});
+
+describe('handleReceivedInvoiceCancelled', () => {
+  test('routeert invoice_cancelled naar de ontvang-handler', async () => {
+    const receiver = makeReceiver();
+    receiver.handleReceivedInvoiceCancelled = jest.fn().mockResolvedValue(undefined);
+
+    const xml = buildXml('invoice_cancelled', `
+      <invoice_number>INV-123</invoice_number>
+      <reason>Cancelled in billing</reason>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.handleReceivedInvoiceCancelled).toHaveBeenCalled();
   });
 });
 

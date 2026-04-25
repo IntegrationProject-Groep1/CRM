@@ -72,6 +72,7 @@ Ondersteunde berichttypen:
 | `badge_assigned` | badge-ID bijwerken op `Member__c` in Salesforce |
 | `refund_processed` | taak aanmaken in Salesforce |
 | `invoice_request` | taak aanmaken in Salesforce en doorsturen naar `crm.to.facturatie` |
+| `invoice_cancelled` | geannuleerde factuur verwerken in Salesforce |
 
 Ongeldige of niet-parseerbare berichten gaan naar `crm.dead-letter`.
 
