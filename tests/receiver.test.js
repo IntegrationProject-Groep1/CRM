@@ -410,7 +410,7 @@ describe('handleNewRegistration', () => {
 });
 
 describe('handlePaymentRegistered', () => {
-  test('maakt Task aan in Salesforce als verbonden en neemt transaction_id mee', async () => {
+  test('maakt Task aan in Salesforce en neemt payment_context en transaction_id mee', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
     receiver._findUserByEmail = jest.fn().mockResolvedValue('member-1');
@@ -438,6 +438,12 @@ describe('handlePaymentRegistered', () => {
     await receiver.handleMessage(buildMsg(xml));
 
     expect(receiver.sf.apiCall).toHaveBeenCalled();
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      Subject: expect.stringContaining('[registration]'),
+    }));
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      Description: expect.stringContaining('Context: registration'),
+    }));
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
       Description: expect.stringContaining('Transaction ID: TX-12345'),
     }));
