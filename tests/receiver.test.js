@@ -410,10 +410,14 @@ describe('handleNewRegistration', () => {
 });
 
 describe('handlePaymentRegistered', () => {
-  test('maakt Task aan in Salesforce als verbonden', async () => {
+  test('maakt Task aan in Salesforce als verbonden en neemt transaction_id mee', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
-    receiver.sf.apiCall.mockResolvedValue({ id: 'task-1' });
+    receiver._findUserByEmail = jest.fn().mockResolvedValue('member-1');
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-1' });
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({ create: createTask }),
+    }));
 
     const xml = buildXml('payment_registered', `
       <master_uuid>test-master-uuid-1234</master_uuid>
@@ -426,6 +430,7 @@ describe('handlePaymentRegistered', () => {
         <status>paid</status>
       </invoice>
       <transaction>
+        <transaction_id>TX-12345</transaction_id>
         <payment_method>card</payment_method>
       </transaction>
     `);
@@ -433,6 +438,9 @@ describe('handlePaymentRegistered', () => {
     await receiver.handleMessage(buildMsg(xml));
 
     expect(receiver.sf.apiCall).toHaveBeenCalled();
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      Description: expect.stringContaining('Transaction ID: TX-12345'),
+    }));
   });
 });
 

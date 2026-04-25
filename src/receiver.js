@@ -680,6 +680,7 @@ async handleInvoiceCancelled(header, body) {
       const transaction = body ? body.transaction : null;
       const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
       const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
+      const transactionId = ReceiverV2.getElementText(transaction, 'transaction_id');
 
       const amountVal = invoice ? invoice.amount_paid : null;
       const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
@@ -689,6 +690,7 @@ async handleInvoiceCancelled(header, body) {
         Description: [
           `Context: ${paymentContext}`,
           `Payment Method: ${ReceiverV2.getElementText(transaction, 'payment_method')}`,
+          transactionId ? `Transaction ID: ${transactionId}` : null,
           `Amount Paid: ${amountPaid}`,
           `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
           `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
