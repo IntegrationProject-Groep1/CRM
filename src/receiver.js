@@ -244,6 +244,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     try {
       const xmlContent = msg.content.toString('utf8');
       console.log(`[receiver] Received message: ${msg.fields.deliveryTag}`);
+      console.log(`[receiver] Inkomend XML bericht (queue: ${msg.fields.routingKey}):\n${xmlContent}`);
 
       let parsed;
       try {

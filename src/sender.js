@@ -54,6 +54,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized');
     try {
       const xmlPayload = this.buildInvoiceCancelledXml(data);
+      console.log(`[sender] Uitgaand XML bericht (queue: crm.to.facturatie):\n${xmlPayload}`);
       const queue = 'crm.to.facturatie'; // De queue van FossBilling
       await this.channel.assertQueue(queue, { durable: true });
       this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -178,6 +179,7 @@ class CRMSender {
     }
     try {
       const xmlPayload = this.buildInvoiceRequestXml(data);
+      console.log(`[sender] Uitgaand XML bericht (queue: crm.to.facturatie):\n${xmlPayload}`);
       const queue = 'crm.to.facturatie';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -199,6 +201,7 @@ class CRMSender {
     }
     try {
       const xmlPayload = this.buildMailingSendXml(data);
+      console.log(`[sender] Uitgaand XML bericht (queue: crm.to.mailing):\n${xmlPayload}`);
       const queue = 'crm.to.mailing';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -241,6 +244,7 @@ class CRMSender {
     }
     try {
       const xmlPayload = this.buildUserUnregisteredXml(data);
+      console.log(`[sender] Uitgaand XML bericht (exchange: ${USER_UNREGISTERED_EXCHANGE}):\n${xmlPayload}`);
       await this.channel.assertExchange(USER_UNREGISTERED_EXCHANGE, 'fanout', { durable: true });
 
       for (const queue of USER_UNREGISTERED_QUEUES) {
@@ -330,6 +334,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
       const xmlPayload = this.buildNewRegistrationForKassaXml(data);
+      console.log(`[sender] Uitgaand XML bericht (queue: kassa.incoming):\n${xmlPayload}`);
       const queue = 'kassa.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -349,6 +354,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized.');
     try {
       const xmlPayload = this.buildNewRegistrationForFacturatieXml(data);
+      console.log(`[sender] Uitgaand XML bericht (queue: crm.to.facturatie):\n${xmlPayload}`);
       const queue = 'crm.to.facturatie'; // De queue waar FossBilling op luistert
       await this.channel.assertQueue(queue, { durable: true });
       this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -404,6 +410,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
       const xmlPayload = this.buildProfileUpdateXml(data);
+      console.log(`[sender] Uitgaand XML bericht (queue: kassa.incoming):\n${xmlPayload}`);
       const queue = 'kassa.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -486,6 +493,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
       const xmlPayload = this.buildCancelRegistrationXml(data);
+      console.log(`[sender] Uitgaand XML bericht (queue: kassa.incoming):\n${xmlPayload}`);
       const queue = 'kassa.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
