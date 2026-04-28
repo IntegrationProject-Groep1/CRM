@@ -33,6 +33,7 @@ const MESSAGE_TYPES = {
   REFUND_PROCESSED: 'refund_processed',
   INVOICE_REQUEST: 'invoice_request',
   INVOICE_CANCELLED: 'invoice_cancelled',
+  USER_UPDATED: 'user.updated',
   DELETE_USER: 'delete_user',
   USER_DELETED: 'user_deleted', //nieuw type voor deletions die al in de frontend gebeuren, zodat we die ook kunnen opvangen en verwerken
 };
@@ -296,6 +297,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body),
       [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
       [MESSAGE_TYPES.INVOICE_CANCELLED]: () => this.handleReceivedInvoiceCancelled(header, body),
+      [MESSAGE_TYPES.USER_UPDATED]: () => this.handleUserUpdated(header, body),
       [MESSAGE_TYPES.DELETE_USER]: () => this.handleDeleteUser(header, body),
       [MESSAGE_TYPES.USER_DELETED]: () => this.handleDeleteUser(header, body), //nieuw voor frontend deletions
     };
@@ -1000,6 +1002,53 @@ async handleReceivedInvoiceCancelled(header, body) {
     console.log(`[receiver] Successfully processed delete for ${masterUuid}`);
   } catch (err) {
     console.error(`[receiver] Error in handleDeleteUser: ${err}`);
+    throw err;
+  }
+}
+
+async handleUserUpdated(header, body) {
+  try {
+    const masterUuid = header.master_uuid || ReceiverV2.getElementText(body?.user, 'master_uuid');
+    const user = body?.user;
+
+    if (!masterUuid) {
+      console.error('[receiver] user.updated ignored: missing master_uuid');
+      return;
+    }
+
+    const firstName = ReceiverV2.getElementText(user, 'first_name');
+    const lastName = ReceiverV2.getElementText(user, 'last_name');
+    const email = ReceiverV2.getElementText(user, 'email');
+
+    console.log(`[receiver] Updating user for UUID: ${masterUuid}`);
+
+    // 1. Update MySQL (zodat je lokale kopie synchroon blijft)
+    await this.db.query(
+      'UPDATE crm_user_sync SET first_name = ?, last_name = ?, email = ?, last_sync = NOW() WHERE master_uuid = ?',
+      [firstName, lastName, email, masterUuid]
+    );
+
+    // 2. Update Salesforce
+    if (this.sf.isConnected) {
+      const sfMemberId = await this._findUserByMasterUuid(masterUuid);
+      
+      if (sfMemberId) {
+        await this.sf.apiCall((conn) => 
+          conn.sobject('Member__c').update({
+            Id: sfMemberId,
+            First_Name__c: firstName,
+            Last_Name__c: lastName,
+            Email__c: email,
+            // Voeg hier eventueel Is_Company__c etc. toe
+          })
+        );
+        console.log(`[receiver] Salesforce Member ${sfMemberId} succesvol bijgewerkt.`);
+      } else {
+        console.warn(`[receiver] Geen Salesforce record gevonden voor UUID ${masterUuid} om bij te werken.`);
+      }
+    }
+  } catch (err) {
+    console.error(`[receiver] Error in handleUserUpdated: ${err.message}`);
     throw err;
   }
 }
