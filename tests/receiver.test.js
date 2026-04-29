@@ -430,7 +430,7 @@ describe('handlePaymentRegistered', () => {
         <status>paid</status>
       </invoice>
       <transaction>
-        <transaction_id>TX-12345</transaction_id>
+        <id>TX-12345</id>
         <payment_method>card</payment_method>
       </transaction>
     `);
@@ -517,12 +517,12 @@ describe('handleInvoiceRequestFromKassa', () => {
     const xml = buildXml('invoice_request', `
       <master_uuid>test-master-uuid-1234</master_uuid>
       <email>kassa@example.com</email>
-      <invoice>
+      <invoice_data>
         <id>KINV-001</id>
         <amount_paid currency="eur">150.00</amount_paid>
         <status>pending</status>
         <due_date>2026-06-01</due_date>
-      </invoice>
+      </invoice_data>
     `);
 
     await receiver.handleMessage(buildMsg(xml));

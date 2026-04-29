@@ -682,7 +682,7 @@ async handleReceivedInvoiceCancelled(header, body) {
       const transaction = body ? body.transaction : null;
       const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
       const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
-      const transactionId = ReceiverV2.getElementText(transaction, 'transaction_id');
+      const transactionId = ReceiverV2.getElementText(transaction, 'id');
 
       const amountVal = invoice ? invoice.amount_paid : null;
       const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
@@ -1161,8 +1161,8 @@ async handleUserUpdated(header, body) {
 
   async handleInvoiceRequestFromKassa(header, body) {
   try {
-    const invoice = body ? body.invoice : null;
-    
+    const invoice = body ? body.invoice_data : null;
+
     // 1. Identificatie: Pak de UUID uit de header of de body
     const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
 
