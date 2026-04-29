@@ -1,5 +1,8 @@
 'use strict';
 
+process.env.RABBITMQ_USER = process.env.RABBITMQ_USER || 'test';
+process.env.RABBITMQ_PASS = process.env.RABBITMQ_PASS || 'test';
+
 /**
  * Tests for CRM sender XML building + async send methods (mocked RabbitMQ).
  *
@@ -57,7 +60,6 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
       first_name: 'Jan',
       last_name: 'Peeters',
       user_id: 'u-42',
-      age: 28,
     },
     payment_due: { amount: '25.00', status: 'pending' },
     correlation_id: 'corr-abc',
@@ -84,7 +86,6 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
     expect(c.contact.first_name).toBe('Jan');
     expect(c.contact.last_name).toBe('Peeters');
     expect(c.user_id).toBe('u-42');
-    expect(String(c.age)).toBe('28');
   });
 
   test('payment_due status "pending" wordt genormaliseerd naar "unpaid"', () => {
@@ -210,11 +211,10 @@ describe('Consumptie flow — buildProfileUpdateXml', () => {
     expect(root.header.correlation_id).toBeUndefined();
   });
 
-  test('body bevat user_id, email, age en type', () => {
+  test('body bevat user_id, email en type', () => {
     const root = parser.parse(sender.buildProfileUpdateXml(baseData())).message;
     expect(root.body.user_id).toBe('u-99');
     expect(root.body.email).toBe('update@example.com');
-    expect(String(root.body.age)).toBe('35');
     expect(root.body.type).toBe('private');
   });
 

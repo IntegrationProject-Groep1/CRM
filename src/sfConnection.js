@@ -83,8 +83,8 @@ class SFConnection {
     if (resp.ok) {
       return resp.json();
     }
-    const text = await resp.text();
-    console.log(`[SF Connection] Token refresh failed (${resp.status}): ${text}`);
+    const errorText = await resp.text().catch(() => 'Unknown error');
+    console.error('[SF Connection] Token refresh failed (' + resp.status + '): ' + errorText);
     return null;
   }
 

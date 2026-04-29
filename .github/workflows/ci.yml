@@ -36,5 +36,8 @@ jobs:
           node --check src/heartbeat.js
           echo "All files syntax OK"
 
+      - name: Security audit
+        run: npm audit --audit-level=high
+
       - name: Run unit tests
         run: npm test
