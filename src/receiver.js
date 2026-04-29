@@ -23,7 +23,7 @@ const MESSAGE_TYPES = {
   USER_UNREGISTERED: 'user.unregistered',
   PAYMENT_REGISTERED: 'payment_registered',
   BADGE_SCANNED: 'badge_scanned',
-  SESSION_UPDATE: 'session_update',
+  SESSION_UPDATE: 'session_updated',
   INVOICE_STATUS: 'invoice_status',
   SEND_INVOICE: 'send_invoice',
   MAILING_STATUS: 'mailing_status',
@@ -765,7 +765,7 @@ async handleReceivedInvoiceCancelled(header, body) {
   async handleSessionUpdate(header, body) {
     try {
       if (!body) {
-        console.log('[receiver] Missing body in session_update message');
+        console.log('[receiver] Missing body in session_updated message');
         return;
       }
 

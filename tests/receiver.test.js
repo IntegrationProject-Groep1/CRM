@@ -208,7 +208,7 @@ describe('validateXmlMessage', () => {
 
   test('alle geldige message types worden geaccepteerd', () => {
     const validTypes = [
-      'new_registration', 'payment_registered', 'badge_scanned', 'session_update',
+      'new_registration', 'payment_registered', 'badge_scanned', 'session_updated',
       'invoice_status', 'mailing_status', 'consumption_order', 'badge_assigned',
       'refund_processed', 'invoice_request', 'invoice_cancelled', 'send_invoice',
     ];
