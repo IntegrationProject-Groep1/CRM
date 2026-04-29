@@ -1,5 +1,8 @@
 'use strict';
 
+process.env.RABBITMQ_USER = process.env.RABBITMQ_USER || 'test';
+process.env.RABBITMQ_PASS = process.env.RABBITMQ_PASS || 'test';
+
 /**
  * Tests for CRM sender XML building + async send methods (mocked RabbitMQ).
  *
