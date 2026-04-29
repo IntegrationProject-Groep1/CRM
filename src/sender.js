@@ -85,7 +85,7 @@ class CRMSender {
     }
 
     const body = root.ele('body');
-    body.ele('user_id').txt(data.user_id || data.master_uuid || '');
+    body.ele('user_id').txt(data.user_id || data.customer?.user_id || data.master_uuid || '');
 
     const invoiceData = body.ele('invoice_data');
     invoiceData.ele('first_name').txt(data.customer.first_name);
@@ -97,7 +97,7 @@ class CRMSender {
     address.ele('number').txt(data.address?.number || '');
     address.ele('postal_code').txt(data.address?.postal_code || '');
     address.ele('city').txt(data.address?.city || '');
-    address.ele('country').txt(data.address?.country || '');
+    address.ele('country').txt(data.address?.country || 'BE');
 
     if (data.customer.company_name) {
       invoiceData.ele('company_name').txt(data.customer.company_name);
@@ -117,10 +117,10 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('version').txt('2.0');
     header.ele('type').txt('send_mailing');
-    header.ele('timestamp').txt(timestamp);
     header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
     if (data.correlation_id) {
       header.ele('correlation_id').txt(data.correlation_id);
     }
@@ -268,7 +268,7 @@ class CRMSender {
 
     const body = root.ele('body');
     const customer = body.ele('customer');
-    customer.ele('user_id').txt(data.customer.user_id || '');
+    customer.ele('user_id').txt(data.customer.user_id || data.user_id || data.master_uuid || '');
     customer.ele('email').txt(data.customer.email);
     customer.ele('date_of_birth').txt(data.customer.date_of_birth || '');
 

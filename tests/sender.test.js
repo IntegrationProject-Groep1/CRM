@@ -443,13 +443,13 @@ describe('Betaling flow — sendInvoiceRequest', () => {
     await expect(sender.sendInvoiceRequest(data)).rejects.toThrow('not initialized');
   });
 
-  test('assertQueue wordt aangeroepen met "crm.to.facturatie"', async () => {
+  test('assertQueue is called with "facturatie.incoming"', async () => {
     const ch = attachMockChannel(sender);
     await sender.sendInvoiceRequest(data);
     expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
   });
 
-  test('sendToQueue stuurt naar "crm.to.facturatie" met XML en correcte opties', async () => {
+  test('sendToQueue sends to "facturatie.incoming" with XML and correct options', async () => {
     const ch = attachMockChannel(sender);
     await sender.sendInvoiceRequest(data);
     expect(ch.sendToQueue).toHaveBeenCalledWith(
@@ -466,7 +466,7 @@ describe('Betaling flow — sendInvoiceRequest', () => {
     expect(root.header.type).toBe('invoice_request');
   });
 
-  test('retourneert { success: true, queue: "crm.to.facturatie", payload }', async () => {
+  test('returns { success: true, queue: "facturatie.incoming", payload }', async () => {
     attachMockChannel(sender);
     const result = await sender.sendInvoiceRequest(data);
     expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming' });
