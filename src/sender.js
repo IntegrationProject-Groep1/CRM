@@ -464,6 +464,36 @@ class CRMSender {
     }
   }
 
+  async sendCancelRegistrationToPlanning(data) {
+    if (!this.channel) {
+      throw new Error('CRM Sender not initialized. Call init() first.');
+    }
+    try {
+      const xmlPayload = this.buildCancelRegistrationXml(data);
+      const exchange = 'calendar.exchange';
+      
+      // Maak de exchange aan (topic is de standaard voor kalender-sync in 2026)
+      await this.channel.assertExchange(exchange, 'topic', { durable: true });
+
+      // Publiceer naar de exchange met de juiste routing key
+      this.channel.publish(
+        exchange,
+        'registration.cancelled',
+        Buffer.from(xmlPayload),
+        {
+          contentType: 'application/xml',
+          deliveryMode: 2,
+        }
+      );
+
+      console.log(`[sender] Cancel registration forwarded to Planning exchange: ${exchange}`);
+      return { success: true, exchange, payload: xmlPayload };
+    } catch (error) {
+      console.error(`[sender] Failed to send cancel registration to Planning: ${error}`);
+      throw error;
+    }
+  }
+
   
 
   // ────────────────────────────────────────────────────────────────────────────

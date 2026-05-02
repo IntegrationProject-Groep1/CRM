@@ -353,6 +353,46 @@ describe('Consumptie flow — sendCancelRegistrationToKassa', () => {
   });
 });
 
+describe('Consumptie flow — sendCancelRegistrationToPlanning', () => {
+  let sender;
+
+  beforeEach(() => { 
+    sender = new CRMSender(); 
+  });
+
+  const data = { 
+    user_id: 'u-55', 
+    session_id: 'sess-1' 
+  };
+
+  test('assertExchange wordt aangeroepen met "calendar.exchange"', async () => {
+    const ch = attachMockChannel(sender);
+    await sender.sendCancelRegistrationToPlanning(data);
+    expect(ch.assertExchange).toHaveBeenCalledWith('calendar.exchange', 'topic', { durable: true });
+  });
+
+  test('publish wordt aangeroepen met de juiste routing key en XML', async () => {
+    const ch = attachMockChannel(sender);
+    await sender.sendCancelRegistrationToPlanning(data);
+    expect(ch.publish).toHaveBeenCalledWith(
+      'calendar.exchange',
+      'registration.cancelled',
+      expect.any(Buffer),
+      expect.objectContaining({ 
+        contentType: 'application/xml', 
+        deliveryMode: 2 
+      }),
+    );
+  });
+
+  test('retourneert success object met exchange naam', async () => {
+    attachMockChannel(sender);
+    const result = await sender.sendCancelRegistrationToPlanning(data);
+    expect(result.success).toBe(true);
+    expect(result.exchange).toBe('calendar.exchange');
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BETALING FLOW
 // ─────────────────────────────────────────────────────────────────────────────

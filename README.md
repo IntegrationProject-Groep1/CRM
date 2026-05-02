@@ -65,7 +65,7 @@ Ondersteunde berichttypen:
 | `new_registration` | klant aanmaken of bijwerken in Salesforce en doorsturen naar Kassa |
 | `payment_registered` | taak aanmaken in Salesforce |
 | `badge_scanned` | taak aanmaken in Salesforce |
-| `session_update` | taak aanmaken in Salesforce |
+| `session_updated` | taak aanmaken in Salesforce |
 | `invoice_status` | taak aanmaken in Salesforce |
 | `mailing_status` | taak aanmaken in Salesforce |
 | `consumption_order` | consumptierecords aanmaken in Salesforce |
