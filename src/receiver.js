@@ -36,6 +36,7 @@ const MESSAGE_TYPES = {
   USER_UPDATED: 'user.updated',
   DELETE_USER: 'delete_user',
   USER_DELETED: 'user_deleted', //nieuw type voor deletions die al in de frontend gebeuren, zodat we die ook kunnen opvangen en verwerken
+  COMPANY_REGISTRATION: 'company_registration',
 };
 
 const parser = new XMLParser({
@@ -300,6 +301,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.USER_UPDATED]: () => this.handleUserUpdated(header, body),
       [MESSAGE_TYPES.DELETE_USER]: () => this.handleDeleteUser(header, body),
       [MESSAGE_TYPES.USER_DELETED]: () => this.handleDeleteUser(header, body), //nieuw voor frontend deletions
+      [MESSAGE_TYPES.COMPANY_REGISTRATION]: () => this.handleCompanyRegistration(header, body),
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -513,6 +515,8 @@ console.log(`[receiver] Forwarded to Facturatie voor Master UUID=${masterUuid}`)
     throw err;
   }
 }
+
+
 async handleUserCreated(header, body) {
   try {
     const user = body?.user;
@@ -598,6 +602,48 @@ async handleUserRegistered(header, body) {
     throw err;
   }
 }
+
+async handleCompanyRegistration(header, body) {
+  try {
+    const company = body?.company;
+    if (!company) throw new Error('Body missing company element');
+
+    // 1. Identificatie (Altijd via Master UUID)
+    const masterUuid = header.master_uuid || ReceiverV2.getElementText(company, 'master_uuid');
+    const email = (ReceiverV2.getElementText(company, 'email') || '').toLowerCase().trim();
+
+    console.log(`[receiver] Processing company_registration for: ${masterUuid}`);
+
+    // 2. Data Mapping naar jouw specifieke Salesforce velden
+    const sfCompanyData = {
+      Master_UUID__c: masterUuid,
+      Company_Name__c: ReceiverV2.getElementText(company, 'name'),
+      Email__c: email,
+      VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
+      VAT_Rate__c: parseFloat(ReceiverV2.getElementText(company, 'vat_rate') || 0),
+      User_Type__c: ReceiverV2.getElementText(company, 'user_type') || 'Bedrijf',
+      // Company_ID__c laten we leeg of vullen we met message_id indien nodig
+      Company_ID__c: header.message_id 
+    };
+
+    // 3. Salesforce Upsert
+    // Ik ga er vanuit dat dit op het 'Account' object moet, 
+    // of pas 'Account' aan naar je custom Company object naam.
+    if (this.sf.isConnected) {
+      const result = await this.sf.apiCall((conn) => 
+        conn.sobject('Account').upsert(sfCompanyData, 'Master_UUID__c')
+      );
+      console.log(`[salesforce] Company gesynchroniseerd: ${result.id}`);
+    } else {
+      console.log(`[receiver] DRY RUN: Company data: ${JSON.stringify(sfCompanyData)}`);
+    }
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleCompanyRegistration: ${err.message}`);
+    throw err; // Zorgt voor nack/retry in RabbitMQ
+  }
+}
+
 /**
  * Verwerkt send_invoice bericht van FossBilling (inclusief PDF-link)
  */
