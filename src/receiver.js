@@ -38,6 +38,7 @@ const MESSAGE_TYPES = {
   USER_DELETED: 'user_deleted', //nieuw type voor deletions die al in de frontend gebeuren, zodat we die ook kunnen opvangen en verwerken
   COMPANY_REGISTRATION: 'company_registration',
   COMPANY_UPDATE: 'company_update',
+  COMPANY_DELETE: 'company_delete',
 };
 
 const parser = new XMLParser({
@@ -304,6 +305,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.USER_DELETED]: () => this.handleDeleteUser(header, body), //nieuw voor frontend deletions
       [MESSAGE_TYPES.COMPANY_REGISTRATION]: () => this.handleCompanyRegistration(header, body),
       [MESSAGE_TYPES.COMPANY_UPDATE]: () => this.handleCompanyUpdate(header, body),
+      [MESSAGE_TYPES.COMPANY_DELETE]: () => this.handleCompanyDelete(header, body),
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -710,6 +712,45 @@ async handleCompanyUpdate(header, body) {
 
   } catch (err) {
     console.error(`[receiver] Error in handleCompanyUpdate: ${err.message}`);
+    throw err;
+  }
+}
+
+async handleCompanyDelete(header, body) {
+  try {
+    const companyUuid = header.master_uuid || ReceiverV2.getElementText(body?.company, 'master_uuid');
+    
+    if (!companyUuid) {
+      console.error('[receiver] company_delete ignored: missing master_uuid');
+      return;
+    }
+
+    console.log(`[receiver] Processing company_delete for UUID: ${companyUuid}`);
+
+    if (this.sf.isConnected) {
+      // 1. Zoek de Salesforce ID (AccountId) op basis van de Master UUID
+      const records = await this.sf.apiCall((conn) => 
+        conn.sobject('Account').find({ Master_UUID__c: companyUuid }, ['Id']).limit(1)
+      );
+
+      const accountId = records && records.length > 0 ? records[0].Id : null;
+
+      if (accountId) {
+        // 2. Verwijder het record uit Salesforce
+        await this.sf.apiCall((conn) => 
+        conn.sobject('Account').update({ Id: accountId, Status__c: 'Inactive' }) //momenteel soft delete, pas aan naar .delete() als je hard delete wilt
+        );
+        console.log(`[salesforce] Account ${accountId} succesvol verwijderd.`);
+      } else {
+        console.warn(`[receiver] Geen Account gevonden in Salesforce voor UUID: ${companyUuid}`);
+      }
+    }
+
+    // 3. Optioneel: Verwijder ook uit je lokale database als je daar een bedrijven-tabel hebt
+    // await this.db.query('DELETE FROM crm_companies WHERE master_uuid = ?', [companyUuid]);
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleCompanyDelete: ${err.message}`);
     throw err;
   }
 }
