@@ -1,100 +1,138 @@
-# CRM Integratieservice
+# CRM Integration Service
 
-## Wat doet dit project?
+## What does this project do?
 
-Dit is een Node.js integratie-microservice die berichten ontvangt via RabbitMQ, ze verwerkt, en gegevens opslaat in Salesforce. Salesforce is de enige databron voor deze service.
+This is a Node.js integration microservice that receives messages via RabbitMQ, processes them, and stores data in Salesforce. Salesforce is the only external data source for this service. The service also integrates with an Identity Service for Master UUID management and sends outgoing messages to the POS (Kassa), Invoicing (Facturatie), Mailing, and Planning systems.
 
-## Architectuuroverzicht
+## Architecture overview
 
 ```text
-Andere systemen (Kassa, IoT, enz.)
+Other systems (Frontend, POS, IoT, etc.)
          |
          v
-   RabbitMQ Queues
+   RabbitMQ Queues (incoming)
    +----------------------+
-   |  crm.incoming        |  <- berichten voor het CRM
-   |  kassa.payments      |  <- betalings- en consumptieberichten van Kassa
+   |  crm.incoming        |  <- general CRM messages
+   |  kassa.payments      |  <- payment and consumption messages from POS
+   |  user.created        |  <- new users from Frontend/Drupal
+   |  user.registered     |  <- session registrations from Frontend/Drupal
    +----------------------+
          |
          v
-    receiver.js  ---> Salesforce (Member__c, Task, Consumption__c)
+    receiver.js
+         |-- Identity Service RPC (identity.user.create.request) for Master UUID management
+         |-- Salesforce (Member__c, Task, Consumption__c)
          |
          v  (via sender.js)
-   +----------------------+
-   |  crm.to.facturatie   |  -> Factuurverzoeken
-   |  crm.to.mailing      |  -> E-mailcampagnes
-   |  kassa.incoming      |  -> Klantregistraties, profielen, annuleringen
-   +----------------------+
+   +------------------------------------------+
+   |  facturatie.incoming                     |  -> Invoice requests & new registrations
+   |  crm.to.mailing                          |  -> Email campaigns
+   |  kassa.incoming                          |  -> Customer registrations, profile updates, cancellations
+   |  frontend.user.unregistered (fanout)     |  -> crm.salesforce, planning.outlook, mailing.sendgrid
+   |  calendar.exchange (topic)               |  -> registration.cancelled (to Planning)
+   +------------------------------------------+
+
+   Invalid messages -> crm.dead-letter
 ```
 
-## Bestandsstructuur
+## File structure
 
 ```text
 CRM/
 |-- src/
-|   |-- receiver.js       <- Hoofdbestand: ontvangt en verwerkt berichten
-|   |-- sender.js         <- Verstuurt XML-berichten naar andere queues
-|   |-- sfConnection.js   <- Verbinding en authenticatie met Salesforce
-|   `-- heartbeat.js      <- Stuurt elke seconde een statussignaal
+|   |-- receiver.js       <- Main file: receives and processes messages
+|   |-- sender.js         <- Sends XML messages to other queues
+|   |-- sfConnection.js   <- Salesforce connection and authentication
+|   |-- heartbeat.js      <- Sends a status signal every second
+|   `-- amqpUrl.js        <- Builds the RabbitMQ connection options
 |-- tests/
-|   |-- receiver.test.js  <- Tests voor de receiver-flow
-|   `-- sender.test.js    <- Tests voor XML-opbouw
-|-- .env.example          <- Voorbeeld van vereiste omgevingsvariabelen
-|-- Dockerfile            <- Containerisatie (Node 20)
-|-- docker-compose.yml    <- Start de service met RabbitMQ
-`-- package.json          <- NPM-projectconfiguratie en scripts
+|   |-- receiver.test.js  <- Tests for the receiver flow
+|   `-- sender.test.js    <- Tests for XML construction
+|-- .env.example          <- Example of required environment variables
+|-- Dockerfile            <- Containerisation (Node 20)
+|-- docker-compose.yml    <- Starts the service with RabbitMQ
+`-- package.json          <- NPM project configuration and scripts
 ```
 
-## Belangrijkste onderdelen
+## Key components
 
 ### `src/receiver.js`
 
-Het hoofdbestand dat automatisch opstart via `npm start`. Het:
+The main file that starts automatically via `npm start`. It:
 
-- start een health check HTTP-server op poort `3000`
-- verbindt met RabbitMQ
-- luistert op `crm.incoming` en `kassa.payments`
-- parseert XML-berichten
-- valideert headers en types
-- routeert elk bericht naar de juiste handler
+- starts a health check HTTP server on port `3000`
+- connects to RabbitMQ
+- listens on `crm.incoming`, `kassa.payments`, `user.created`, and `user.registered`
+- parses XML messages
+- validates headers and types
+- makes RPC calls to the Identity Service to retrieve/create Master UUIDs
+- routes each message to the appropriate handler
 
-Ondersteunde berichttypen:
+Supported message types:
 
-| Type | Actie |
-|---|---|
-| `new_registration` | klant aanmaken of bijwerken in Salesforce en doorsturen naar Kassa |
-| `payment_registered` | taak aanmaken in Salesforce |
-| `badge_scanned` | taak aanmaken in Salesforce |
-| `session_updated` | taak aanmaken in Salesforce |
-| `invoice_status` | taak aanmaken in Salesforce |
-| `mailing_status` | taak aanmaken in Salesforce |
-| `consumption_order` | consumptierecords aanmaken in Salesforce |
-| `badge_assigned` | badge-ID bijwerken op `Member__c` in Salesforce |
-| `refund_processed` | taak aanmaken in Salesforce |
-| `invoice_request` | taak aanmaken in Salesforce en doorsturen naar `crm.to.facturatie` |
-| `invoice_cancelled` | geannuleerde factuur verwerken in Salesforce |
+| Type | Queue | Action |
+|---|---|---|
+| `user.created` | `user.created` | Create or update `Member__c` in Salesforce via Master UUID |
+| `user.registered` | `user.registered` | Update `Member__c` + store session registration as a `Task` in Salesforce |
+| `new_registration` | `crm.incoming` | Upsert customer in Salesforce, forward to POS and Invoicing |
+| `user.unregistered` | `crm.incoming` | Publish fanout to `frontend.user.unregistered` exchange |
+| `user.updated` | `crm.incoming` | Update `Member__c` in Salesforce |
+| `delete_user` | `crm.incoming` | Mark `Member__c` as deleted in Salesforce |
+| `user_deleted` | `crm.incoming` | Same as `delete_user` (for frontend-initiated deletions) |
+| `payment_registered` | `crm.incoming` | Create `Task` in Salesforce |
+| `badge_scanned` | `crm.incoming` | Create `Task` in Salesforce |
+| `session_updated` | `crm.incoming` | Create `Task` in Salesforce |
+| `invoice_status` | `crm.incoming` | Create `Task` in Salesforce |
+| `send_invoice` | `crm.incoming` | Update latest invoice fields on `Member__c` in Salesforce |
+| `mailing_status` | `crm.incoming` | Create `Task` in Salesforce |
+| `consumption_order` | `kassa.payments` | Create `Consumption__c` records in Salesforce |
+| `badge_assigned` | `kassa.payments` | Update badge ID on `Member__c` in Salesforce |
+| `refund_processed` | `kassa.payments` | Create `Task` in Salesforce |
+| `invoice_request` | `kassa.payments` | Create `Task` in Salesforce and forward to `facturatie.incoming` |
+| `invoice_cancelled` | `kassa.payments` | Process cancelled invoice in Salesforce |
 
-Ongeldige of niet-parseerbare berichten gaan naar `crm.dead-letter`.
+Invalid or unparseable messages are sent to `crm.dead-letter`.
 
 ### `src/sender.js`
 
-Bouwt XML-berichten op en verstuurt die naar de juiste RabbitMQ-queue.
+Builds XML messages and sends them to the appropriate RabbitMQ queue or exchange:
+
+| Method | Target / Queue |
+|---|---|
+| `sendNewRegistrationToKassa` | `kassa.incoming` |
+| `sendNewRegistrationToFacturatie` | `facturatie.incoming` |
+| `sendProfileUpdateToKassa` | `kassa.incoming` |
+| `sendCancelRegistrationToKassa` | `kassa.incoming` |
+| `sendCancelRegistrationToPlanning` | `calendar.exchange` (topic, routing key `registration.cancelled`) |
+| `sendInvoiceRequest` | `facturatie.incoming` |
+| `sendInvoiceCancelledToFacturatie` | `facturatie.incoming` |
+| `sendMailingSend` | `crm.to.mailing` |
+| `sendUserUnregisteredFanout` | `frontend.user.unregistered` (fanout exchange) |
 
 ### `src/sfConnection.js`
 
-Beheert authenticatie en API-calls naar Salesforce. Ondersteunt OAuth2 met refresh token en directe access token fallback. Als geen geldige credentials aanwezig zijn, draait de service in DRY RUN mode.
+Manages authentication and API calls to Salesforce. Supports OAuth2 with refresh token and direct access token fallback. If no valid credentials are present, the service runs in DRY RUN mode (all Salesforce operations are simulated and logged, but not executed).
 
 ### `src/heartbeat.js`
 
-Stuurt elke seconde een heartbeat-bericht naar de `heartbeat` queue. Elke 10 seconden gebeurt ook een Salesforce health check.
+Sends a heartbeat message (XML) to the `heartbeat` queue every second. A Salesforce health check is also performed every 10 seconds. The reported status is `online`, `degraded`, or `offline`.
 
-## Omgevingsvariabelen
+### `src/amqpUrl.js`
 
-Kopieer `.env.example` naar `.env` en vul aan:
+Builds the RabbitMQ connection options from environment variables. Logs a warning if TLS (`amqps`) is not enabled.
+
+### Identity Service integration
+
+When processing `new_registration`, `user.created`, and `user.registered` messages, the service makes an RPC call to the Identity Service via the `identity.user.create.request` queue. This ensures that every member in Salesforce receives the same Master UUID as the rest of the infrastructure. The call uses a temporary exclusive reply queue and a 15-second timeout.
+
+## Environment variables
+
+Copy `.env.example` to `.env` and fill in the values:
 
 ```env
 RABBITMQ_HOST=integrationproject-2526s2-dag01.westeurope.cloudapp.azure.com
 RABBITMQ_PORT=30000
+RABBITMQ_PROTOCOL=amqps
 RABBITMQ_USER=your_rabbitmq_user
 RABBITMQ_PASS=your_rabbitmq_password
 RABBITMQ_VHOST=/
@@ -110,18 +148,18 @@ SF_CALLBACK_URL=https://oauth.pstmn.io/v1/callback
 HEALTH_PORT=3000
 ```
 
-## Opstarten
+## Getting started
 
-Met Docker:
+With Docker:
 
 ```bash
 cp .env.example .env
 docker compose up
 ```
 
-Dit start RabbitMQ en de CRM-service.
+This starts RabbitMQ and the CRM service.
 
-Lokaal:
+Locally:
 
 ```bash
 npm install
@@ -132,7 +170,7 @@ npm run heartbeat
 
 ## Tests
 
-Tests uitvoeren:
+Run tests:
 
 ```bash
 npm test
@@ -144,13 +182,14 @@ Linting:
 npm run lint
 ```
 
-## Gebruikte bibliotheken
+## Dependencies
 
-| Bibliotheek | Doel |
+| Library | Purpose |
 |---|---|
-| `amqplib` | RabbitMQ berichten ontvangen en versturen |
-| `fast-xml-parser` | inkomende XML-berichten parsen |
-| `xmlbuilder2` | uitgaande XML-berichten bouwen |
+| `amqplib` | Receive and send RabbitMQ messages |
+| `fast-xml-parser` | Parse incoming XML messages |
+| `xml2js` | Parse XML messages for Identity Service RPC responses |
+| `xmlbuilder2` | Build outgoing XML messages |
 | `jsforce` | Salesforce API client |
-| `dotenv` | omgevingsvariabelen laden uit `.env` |
-| `uuid` | unieke message IDs genereren |
+| `dotenv` | Load environment variables from `.env` |
+| `uuid` | Generate unique message IDs |
