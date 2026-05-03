@@ -37,6 +37,7 @@ const MESSAGE_TYPES = {
   DELETE_USER: 'delete_user',
   USER_DELETED: 'user_deleted', //nieuw type voor deletions die al in de frontend gebeuren, zodat we die ook kunnen opvangen en verwerken
   COMPANY_REGISTRATION: 'company_registration',
+  COMPANY_UPDATE: 'company_update',
 };
 
 const parser = new XMLParser({
@@ -302,6 +303,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.DELETE_USER]: () => this.handleDeleteUser(header, body),
       [MESSAGE_TYPES.USER_DELETED]: () => this.handleDeleteUser(header, body), //nieuw voor frontend deletions
       [MESSAGE_TYPES.COMPANY_REGISTRATION]: () => this.handleCompanyRegistration(header, body),
+      [MESSAGE_TYPES.COMPANY_UPDATE]: () => this.handleCompanyUpdate(header, body),
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -641,6 +643,74 @@ async handleCompanyRegistration(header, body) {
   } catch (err) {
     console.error(`[receiver] Error in handleCompanyRegistration: ${err.message}`);
     throw err; // Zorgt voor nack/retry in RabbitMQ
+  }
+}
+
+async handleCompanyUpdate(header, body) {
+  try {
+    const company = body?.company;
+    const companyUuid = header.master_uuid;
+    
+    if (!company || !companyUuid) {
+      console.error('[receiver] Company update ignored: missing company data or master_uuid');
+      return;
+    }
+
+    console.log(`[receiver] Processing company_update for: ${companyUuid}`);
+
+    // 1. Update de bedrijfsgegevens in Salesforce (Account)
+    let accountId = null;
+    if (this.sf.isConnected) {
+      const accountResult = await this.sf.apiCall((conn) => 
+        conn.sobject('Account').upsert({
+          Master_UUID__c: companyUuid, // Jouw External ID
+          Company_Name__c: ReceiverV2.getElementText(company, 'name'),
+          VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
+          Email__c: ReceiverV2.getElementText(company, 'email'),
+          User_Type__c: 'Bedrijf'
+        }, 'Master_UUID__c')
+      );
+      accountId = accountResult.id;
+      console.log(`[receiver] Account upserted/found: ${accountId}`);
+    }
+
+    // 2. Verwerk de leden (toevoegen/verwijderen)
+    const membersNode = company.members?.member;
+    if (membersNode && accountId) {
+      // Zorg dat we altijd een array hebben (ook als er maar 1 lid in de XML staat)
+      const memberList = Array.isArray(membersNode) ? membersNode : [membersNode];
+
+      for (const memberData of memberList) {
+        const userUuid = ReceiverV2.getElementText(memberData, 'master_uuid');
+        // Let op: action komt uit het XML attribuut <member action="add">
+        const action = memberData.action; 
+
+        if (!userUuid) continue;
+
+        // Gebruik je bestaande methode om de Salesforce ID van de persoon te vinden
+        const memberSfId = await this._findUserByMasterUuid(userUuid);
+        
+        if (memberSfId) {
+          console.log(`[receiver] Performing '${action}' for member ${userUuid} on account ${accountId}`);
+          
+          await this.sf.apiCall((conn) => 
+            conn.sobject('Member__c').update({
+              Id: memberSfId,
+              // Bij 'add' vullen we de lookup naar het bedrijf, bij 'remove' maken we hem leeg
+              Account__c: action === 'add' ? accountId : null 
+            })
+          );
+        } else {
+          console.warn(`[receiver] Could not find Member__c with UUID ${userUuid} to perform ${action}`);
+        }
+      }
+    }
+
+    console.log(`[receiver] Company update for ${companyUuid} completed successfully.`);
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleCompanyUpdate: ${err.message}`);
+    throw err;
   }
 }
 
