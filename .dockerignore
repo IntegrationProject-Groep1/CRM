@@ -1,0 +1,12 @@
+.env
+.env.*
+.git/
+node_modules/
+tests/
+.github/
+test-send.js
+*.md
+*.pdf
+*.docx
+*.rtf
+db/

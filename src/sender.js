@@ -54,7 +54,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized');
     try {
       const xmlPayload = this.buildInvoiceCancelledXml(data);
-      const queue = 'crm.to.facturatie'; // De queue van FossBilling
+      const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
@@ -76,54 +76,34 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('master_uuid').txt(data.header?.master_uuid || ''); // NIEUW
-    header.ele('version').txt('2.0');
     header.ele('type').txt('invoice_request');
-    header.ele('timestamp').txt(timestamp);
     header.ele('source').txt('crm');
-    
-    // Hersteld: correlation_id
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
     if (data.correlation_id) {
       header.ele('correlation_id').txt(data.correlation_id);
     }
 
     const body = root.ele('body');
+    body.ele('user_id').txt(data.user_id || data.customer?.user_id || data.master_uuid || '');
 
-    const customer = body.ele('customer');
-    customer.ele('email').txt(data.customer.email);
-    customer.ele('first_name').txt(data.customer.first_name);
-    customer.ele('last_name').txt(data.customer.last_name);
-    if (data.customer.phone) {
-      customer.ele('phone').txt(data.customer.phone);
-    }
-    
-    // Nieuw: Adresgegevens voor FossBilling
-    const address = customer.ele('address');
+    const invoiceData = body.ele('invoice_data');
+    invoiceData.ele('first_name').txt(data.customer.first_name);
+    invoiceData.ele('last_name').txt(data.customer.last_name);
+    invoiceData.ele('email').txt(data.customer.email);
+
+    const address = invoiceData.ele('address');
     address.ele('street').txt(data.address?.street || '');
     address.ele('number').txt(data.address?.number || '');
     address.ele('postal_code').txt(data.address?.postal_code || '');
     address.ele('city').txt(data.address?.city || '');
+    address.ele('country').txt(data.address?.country || 'BE');
 
-    const invoice = body.ele('invoice');
-    invoice.ele('description').txt(data.invoice.description);
-    invoice.ele('amount').att('currency', data.invoice.currency || 'eur').txt(String(data.invoice.amount));
-    invoice.ele('due_date').txt(data.invoice.due_date);
-    
-    // Hersteld: invoice_number
-    if (data.invoice.invoice_number) {
-      invoice.ele('invoice_number').txt(data.invoice.invoice_number);
+    if (data.customer.company_name) {
+      invoiceData.ele('company_name').txt(data.customer.company_name);
     }
-
-    const items = body.ele('items');
-    for (const item of (data.items || [])) {
-      const itemElem = items.ele('item');
-      itemElem.ele('description').txt(item.description);
-      itemElem.ele('quantity').txt(String(item.quantity));
-      itemElem.ele('unit_price').att('currency', item.currency || 'eur').txt(String(item.unit_price));
-      itemElem.ele('vat_rate').txt(String(item.vat_rate ?? 21));
-      if (item.sku) {
-        itemElem.ele('sku').txt(item.sku);
-      }
+    if (data.customer.vat_number) {
+      invoiceData.ele('vat_number').txt(data.customer.vat_number);
     }
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
@@ -137,11 +117,10 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('master_uuid').txt(data.master_uuid);
-    header.ele('version').txt('2.0');
-    header.ele('type').txt('mailing_status');
-    header.ele('timestamp').txt(timestamp);
+    header.ele('type').txt('send_mailing');
     header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
     if (data.correlation_id) {
       header.ele('correlation_id').txt(data.correlation_id);
     }
@@ -178,7 +157,7 @@ class CRMSender {
     }
     try {
       const xmlPayload = this.buildInvoiceRequestXml(data);
-      const queue = 'crm.to.facturatie';
+      const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
@@ -281,42 +260,29 @@ class CRMSender {
      const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
      const header = root.ele('header');
-      header.ele('message_id').txt(messageId);
-      header.ele('master_uuid').txt(data.master_uuid);
-      header.ele('type').txt('new_registration');
-      header.ele('source').txt('crm');
-      header.ele('timestamp').txt(timestamp);
-      header.ele('version').txt('2.0');
-    
-    // --> DIT MOET ERBIJ <--
-    if (data.header && data.header.master_uuid) {
-      header.ele('master_uuid').txt(data.header.master_uuid);
-    }
-    // ----------------------
+    header.ele('message_id').txt(messageId);
+    header.ele('type').txt('new_registration');
+    header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
 
     const body = root.ele('body');
     const customer = body.ele('customer');
+    customer.ele('user_id').txt(data.customer.user_id || data.user_id || data.master_uuid || '');
     customer.ele('email').txt(data.customer.email);
+    customer.ele('date_of_birth').txt(data.customer.date_of_birth || '');
 
     const contact = customer.ele('contact');
     contact.ele('first_name').txt(data.customer.first_name);
     contact.ele('last_name').txt(data.customer.last_name);
 
-    if (data.customer.user_id) {
-      customer.ele('user_id').txt(data.customer.user_id);
-    }
-    if (data.customer.age !== undefined && data.customer.age !== null) {
-      customer.ele('age').txt(String(data.customer.age));
-    }
+    customer.ele('type').txt(data.customer.type || 'private');
     if (data.customer.company_name) {
       customer.ele('company_name').txt(data.customer.company_name);
     }
-    customer.ele('type').txt(data.customer.type || 'private');
     if (data.customer.vat_number) {
       customer.ele('vat_number').txt(data.customer.vat_number);
     }
-    customer.ele('master_uuid').txt(data.header?.master_uuid || '');
-    customer.ele('date_of_birth').txt(data.customer.date_of_birth);
 
     const paymentDue = body.ele('payment_due');
     paymentDue.ele('amount').txt(String(data.payment_due.amount));
@@ -349,7 +315,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized.');
     try {
       const xmlPayload = this.buildNewRegistrationForFacturatieXml(data);
-      const queue = 'crm.to.facturatie'; // De queue waar FossBilling op luistert
+      const queue = 'facturatie.incoming'; // De queue waar FossBilling op luistert
       await this.channel.assertQueue(queue, { durable: true });
       this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
@@ -384,9 +350,6 @@ class CRMSender {
       body.ele('user_id').txt(data.user_id);
     }
     body.ele('email').txt(data.email);
-    if (data.age !== undefined && data.age !== null) {
-      body.ele('age').txt(String(data.age));
-    }
     body.ele('date_of_birth').txt(data.date_of_birth);
     body.ele('type').txt(data.type || 'private');
 
@@ -497,6 +460,36 @@ class CRMSender {
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send cancel registration to Kassa: ${error}`);
+      throw error;
+    }
+  }
+
+  async sendCancelRegistrationToPlanning(data) {
+    if (!this.channel) {
+      throw new Error('CRM Sender not initialized. Call init() first.');
+    }
+    try {
+      const xmlPayload = this.buildCancelRegistrationXml(data);
+      const exchange = 'calendar.exchange';
+      
+      // Maak de exchange aan (topic is de standaard voor kalender-sync in 2026)
+      await this.channel.assertExchange(exchange, 'topic', { durable: true });
+
+      // Publiceer naar de exchange met de juiste routing key
+      this.channel.publish(
+        exchange,
+        'registration.cancelled',
+        Buffer.from(xmlPayload),
+        {
+          contentType: 'application/xml',
+          deliveryMode: 2,
+        }
+      );
+
+      console.log(`[sender] Cancel registration forwarded to Planning exchange: ${exchange}`);
+      return { success: true, exchange, payload: xmlPayload };
+    } catch (error) {
+      console.error(`[sender] Failed to send cancel registration to Planning: ${error}`);
       throw error;
     }
   }

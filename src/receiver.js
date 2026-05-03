@@ -23,7 +23,7 @@ const MESSAGE_TYPES = {
   USER_UNREGISTERED: 'user.unregistered',
   PAYMENT_REGISTERED: 'payment_registered',
   BADGE_SCANNED: 'badge_scanned',
-  SESSION_UPDATE: 'session_update',
+  SESSION_UPDATED: 'session_updated',
   INVOICE_STATUS: 'invoice_status',
   SEND_INVOICE: 'send_invoice',
   MAILING_STATUS: 'mailing_status',
@@ -289,7 +289,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body),
       [MESSAGE_TYPES.BADGE_SCANNED]: () => this.handleBadgeScanned(header, body),
-      [MESSAGE_TYPES.SESSION_UPDATE]: () => this.handleSessionUpdate(header, body),
+      [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handleSessionUpdate(header, body),
       [MESSAGE_TYPES.INVOICE_STATUS]: () => this.handleInvoiceStatus(header, body),
       [MESSAGE_TYPES.SEND_INVOICE]: () => this.handleSendInvoice(header, body),
       [MESSAGE_TYPES.MAILING_STATUS]: () => this.handleMailingStatus(header, body),
@@ -728,7 +728,7 @@ async handleReceivedInvoiceCancelled(header, body) {
       const transaction = body ? body.transaction : null;
       const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
       const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
-      const transactionId = ReceiverV2.getElementText(transaction, 'transaction_id');
+      const transactionId = ReceiverV2.getElementText(transaction, 'id');
 
       const amountVal = invoice ? invoice.amount_paid : null;
       const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
@@ -811,7 +811,7 @@ async handleReceivedInvoiceCancelled(header, body) {
   async handleSessionUpdate(header, body) {
     try {
       if (!body) {
-        console.log('[receiver] Missing body in session_update message');
+        console.log('[receiver] Missing body in session_updated message');
         return;
       }
 
@@ -1207,8 +1207,8 @@ async handleUserUpdated(header, body) {
 
   async handleInvoiceRequestFromKassa(header, body) {
   try {
-    const invoice = body ? body.invoice : null;
-    
+    const invoice = body ? body.invoice_data : null;
+
     // 1. Identificatie: Pak de UUID uit de header of de body
     const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
 

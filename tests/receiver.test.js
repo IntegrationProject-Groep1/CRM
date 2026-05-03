@@ -206,11 +206,14 @@ describe('validateXmlMessage', () => {
     expect(err).toMatch(/Invalid message type/);
   });
 
-  test('alle geldige message types worden geaccepteerd', () => {
+  test('all valid message types with standard header are accepted', () => {
+    // Types that require the standard header fields (message_id, version, type, timestamp, source, master_uuid).
+    // user.unregistered and send_invoice have different required fields and are covered by dedicated tests below.
     const validTypes = [
-      'new_registration', 'payment_registered', 'badge_scanned', 'session_update',
-      'invoice_status', 'mailing_status', 'consumption_order', 'badge_assigned',
-      'refund_processed', 'invoice_request', 'invoice_cancelled', 'send_invoice',
+      'user.created', 'user.registered', 'new_registration', 'payment_registered',
+      'badge_scanned', 'session_updated', 'invoice_status', 'mailing_status',
+      'consumption_order', 'badge_assigned', 'refund_processed', 'invoice_request',
+      'invoice_cancelled', 'user.updated', 'delete_user', 'user_deleted',
     ];
     for (const type of validTypes) {
       const [valid] = receiver.validateXmlMessage(validParsed({ type }));
@@ -430,7 +433,7 @@ describe('handlePaymentRegistered', () => {
         <status>paid</status>
       </invoice>
       <transaction>
-        <transaction_id>TX-12345</transaction_id>
+        <id>TX-12345</id>
         <payment_method>card</payment_method>
       </transaction>
     `);
@@ -517,12 +520,12 @@ describe('handleInvoiceRequestFromKassa', () => {
     const xml = buildXml('invoice_request', `
       <master_uuid>test-master-uuid-1234</master_uuid>
       <email>kassa@example.com</email>
-      <invoice>
+      <invoice_data>
         <id>KINV-001</id>
         <amount_paid currency="eur">150.00</amount_paid>
         <status>pending</status>
         <due_date>2026-06-01</due_date>
-      </invoice>
+      </invoice_data>
     `);
 
     await receiver.handleMessage(buildMsg(xml));

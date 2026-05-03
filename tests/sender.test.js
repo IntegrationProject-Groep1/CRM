@@ -1,5 +1,8 @@
 'use strict';
 
+process.env.RABBITMQ_USER = process.env.RABBITMQ_USER || 'test';
+process.env.RABBITMQ_PASS = process.env.RABBITMQ_PASS || 'test';
+
 /**
  * Tests for CRM sender XML building + async send methods (mocked RabbitMQ).
  *
@@ -57,7 +60,6 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
       first_name: 'Jan',
       last_name: 'Peeters',
       user_id: 'u-42',
-      age: 28,
     },
     payment_due: { amount: '25.00', status: 'pending' },
     correlation_id: 'corr-abc',
@@ -84,7 +86,6 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
     expect(c.contact.first_name).toBe('Jan');
     expect(c.contact.last_name).toBe('Peeters');
     expect(c.user_id).toBe('u-42');
-    expect(String(c.age)).toBe('28');
   });
 
   test('payment_due status "pending" wordt genormaliseerd naar "unpaid"', () => {
@@ -210,11 +211,10 @@ describe('Consumptie flow — buildProfileUpdateXml', () => {
     expect(root.header.correlation_id).toBeUndefined();
   });
 
-  test('body bevat user_id, email, age en type', () => {
+  test('body bevat user_id, email en type', () => {
     const root = parser.parse(sender.buildProfileUpdateXml(baseData())).message;
     expect(root.body.user_id).toBe('u-99');
     expect(root.body.email).toBe('update@example.com');
-    expect(String(root.body.age)).toBe('35');
     expect(root.body.type).toBe('private');
   });
 
@@ -353,6 +353,46 @@ describe('Consumptie flow — sendCancelRegistrationToKassa', () => {
   });
 });
 
+describe('Consumptie flow — sendCancelRegistrationToPlanning', () => {
+  let sender;
+
+  beforeEach(() => { 
+    sender = new CRMSender(); 
+  });
+
+  const data = { 
+    user_id: 'u-55', 
+    session_id: 'sess-1' 
+  };
+
+  test('assertExchange wordt aangeroepen met "calendar.exchange"', async () => {
+    const ch = attachMockChannel(sender);
+    await sender.sendCancelRegistrationToPlanning(data);
+    expect(ch.assertExchange).toHaveBeenCalledWith('calendar.exchange', 'topic', { durable: true });
+  });
+
+  test('publish wordt aangeroepen met de juiste routing key en XML', async () => {
+    const ch = attachMockChannel(sender);
+    await sender.sendCancelRegistrationToPlanning(data);
+    expect(ch.publish).toHaveBeenCalledWith(
+      'calendar.exchange',
+      'registration.cancelled',
+      expect.any(Buffer),
+      expect.objectContaining({ 
+        contentType: 'application/xml', 
+        deliveryMode: 2 
+      }),
+    );
+  });
+
+  test('retourneert success object met exchange naam', async () => {
+    attachMockChannel(sender);
+    const result = await sender.sendCancelRegistrationToPlanning(data);
+    expect(result.success).toBe(true);
+    expect(result.exchange).toBe('calendar.exchange');
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BETALING FLOW
 // ─────────────────────────────────────────────────────────────────────────────
@@ -363,97 +403,66 @@ describe('Betaling flow — buildInvoiceRequestXml', () => {
   beforeEach(() => { sender = new CRMSender(); });
 
   const baseData = () => ({
+    user_id: 'u-invoice-001',
     customer: { email: 'klant@example.com', first_name: 'Luc', last_name: 'Vermeersch' },
-    invoice: { description: 'Jaarabonnement', amount: 250.0, due_date: '2026-12-31' },
-    items: [{ description: 'Abonnement', quantity: 1, unit_price: 250.0 }],
+    address: { street: 'Laarbeeklaan', number: '121', postal_code: '1090', city: 'Jette', country: 'BE' },
+    correlation_id: 'corr-inv-1',
   });
 
-  test('header bevat type "invoice_request", source "crm" en version "2.0"', () => {
+  test('header contains type "invoice_request", source "crm" and version "2.0"', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
     expect(root.header.type).toBe('invoice_request');
     expect(root.header.source).toBe('crm');
     expect(String(root.header.version)).toBe('2.0');
   });
 
-  test('klantgegevens worden correct opgenomen in body', () => {
+  test('header does not contain master_uuid (forbidden by contract v2.0)', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
-    expect(root.body.customer.email).toBe('klant@example.com');
-    expect(root.body.customer.first_name).toBe('Luc');
-    expect(root.body.customer.last_name).toBe('Vermeersch');
+    expect(root.header.master_uuid).toBeUndefined();
   });
 
-  test('factuurgegevens worden correct opgenomen', () => {
+  test('body contains user_id at top level', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
-    expect(root.body.invoice.description).toBe('Jaarabonnement');
-    expect(root.body.invoice.due_date).toBe('2026-12-31');
+    expect(root.body.user_id).toBe('u-invoice-001');
   });
 
-  test('amount heeft standaard currency "eur"', () => {
+  test('invoice_data contains first_name, last_name and email', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
-    expect(root.body.invoice.amount.currency).toBe('eur');
+    expect(root.body.invoice_data.first_name).toBe('Luc');
+    expect(root.body.invoice_data.last_name).toBe('Vermeersch');
+    expect(root.body.invoice_data.email).toBe('klant@example.com');
   });
 
-  test('alternatieve currency wordt overgenomen', () => {
-    const data = baseData();
-    data.invoice.currency = 'usd';
-    const root = parser.parse(sender.buildInvoiceRequestXml(data)).message;
-    expect(root.body.invoice.amount.currency).toBe('usd');
-  });
-
-  test('optioneel invoice_number wordt opgenomen als aanwezig', () => {
-    const data = baseData();
-    data.invoice.invoice_number = 'INV-2026-001';
-    const root = parser.parse(sender.buildInvoiceRequestXml(data)).message;
-    expect(root.body.invoice.invoice_number).toBe('INV-2026-001');
-  });
-
-  test('optioneel klant-telefoonnummer wordt opgenomen', () => {
-    const data = baseData();
-    data.customer.phone = '+32 470 00 00 00';
-    const root = parser.parse(sender.buildInvoiceRequestXml(data)).message;
-    expect(root.body.customer.phone).toBe('+32 470 00 00 00');
-  });
-
-  test('meerdere items worden allemaal opgenomen', () => {
-    const data = baseData();
-    data.items = [
-      { description: 'Item A', quantity: 2, unit_price: 50.0 },
-      { description: 'Item B', quantity: 1, unit_price: 150.0 },
-    ];
-    const root = parser.parse(sender.buildInvoiceRequestXml(data)).message;
-    const items = root.body.items.item;
-    expect(Array.isArray(items)).toBe(true);
-    expect(items).toHaveLength(2);
-    expect(items[0].description).toBe('Item A');
-    expect(items[1].description).toBe('Item B');
-  });
-
-  test('item vat_rate valt terug op 21 als niet opgegeven', () => {
+  test('invoice_data contains address block', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
-    expect(String(root.body.items.item.vat_rate)).toBe('21');
+    const addr = root.body.invoice_data.address;
+    expect(addr.street).toBe('Laarbeeklaan');
+    expect(addr.number).toBe('121');
+    expect(addr.postal_code).toBe('1090');
+    expect(addr.city).toBe('Jette');
+    expect(addr.country).toBe('BE');
   });
 
-  test('optionele sku wordt opgenomen per item', () => {
+  test('optional company_name and vat_number are included when present', () => {
     const data = baseData();
-    data.items[0].sku = 'SKU-001';
+    data.customer.company_name = 'Acme NV';
+    data.customer.vat_number = 'BE0123456789';
     const root = parser.parse(sender.buildInvoiceRequestXml(data)).message;
-    expect(root.body.items.item.sku).toBe('SKU-001');
+    expect(root.body.invoice_data.company_name).toBe('Acme NV');
+    expect(root.body.invoice_data.vat_number).toBe('BE0123456789');
   });
 
-  test('lege items lijst produceert geen item elementen', () => {
-    const data = baseData();
-    data.items = [];
-    const root = parser.parse(sender.buildInvoiceRequestXml(data)).message;
-    expect(root.body.items.item).toBeUndefined();
+  test('body does not contain <items> block (CRM is passthrough — Facturatie fetches items via correlation_id)', () => {
+    const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
+    expect(root.body.items).toBeUndefined();
   });
 
-  test('correlation_id in header wordt opgenomen als aanwezig', () => {
-    const data = { ...baseData(), correlation_id: 'corr-inv-1' };
-    const root = parser.parse(sender.buildInvoiceRequestXml(data)).message;
+  test('correlation_id in header is included when present', () => {
+    const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
     expect(root.header.correlation_id).toBe('corr-inv-1');
   });
 
-  test('message_id start met "inv-crm-"', () => {
+  test('message_id starts with "inv-crm-"', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
     expect(root.header.message_id).toMatch(/^inv-crm-/);
   });
@@ -474,17 +483,17 @@ describe('Betaling flow — sendInvoiceRequest', () => {
     await expect(sender.sendInvoiceRequest(data)).rejects.toThrow('not initialized');
   });
 
-  test('assertQueue wordt aangeroepen met "crm.to.facturatie"', async () => {
+  test('assertQueue is called with "facturatie.incoming"', async () => {
     const ch = attachMockChannel(sender);
     await sender.sendInvoiceRequest(data);
-    expect(ch.assertQueue).toHaveBeenCalledWith('crm.to.facturatie', { durable: true });
+    expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
   });
 
-  test('sendToQueue stuurt naar "crm.to.facturatie" met XML en correcte opties', async () => {
+  test('sendToQueue sends to "facturatie.incoming" with XML and correct options', async () => {
     const ch = attachMockChannel(sender);
     await sender.sendInvoiceRequest(data);
     expect(ch.sendToQueue).toHaveBeenCalledWith(
-      'crm.to.facturatie',
+      'facturatie.incoming',
       expect.any(Buffer),
       expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
     );
@@ -497,10 +506,10 @@ describe('Betaling flow — sendInvoiceRequest', () => {
     expect(root.header.type).toBe('invoice_request');
   });
 
-  test('retourneert { success: true, queue: "crm.to.facturatie", payload }', async () => {
+  test('returns { success: true, queue: "facturatie.incoming", payload }', async () => {
     attachMockChannel(sender);
     const result = await sender.sendInvoiceRequest(data);
-    expect(result).toMatchObject({ success: true, queue: 'crm.to.facturatie' });
+    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming' });
     expect(typeof result.payload).toBe('string');
   });
 });
@@ -521,9 +530,9 @@ describe('Mailing flow — buildMailingSendXml', () => {
     ],
   });
 
-  test('header bevat type "mailing_status" en source "crm"', () => {
+  test('header contains type "send_mailing" and source "crm"', () => {
     const root = parser.parse(sender.buildMailingSendXml(baseData())).message;
-    expect(root.header.type).toBe('mailing_status');
+    expect(root.header.type).toBe('send_mailing');
     expect(root.header.source).toBe('crm');
   });
 
