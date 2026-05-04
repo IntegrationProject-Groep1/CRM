@@ -555,6 +555,65 @@ describe('handleReceivedInvoiceCancelled', () => {
   });
 });
 
+describe('handleCancelRegistration', () => {
+  let receiver;
+
+  beforeEach(() => {
+    receiver = makeReceiver();
+    receiver.sender.sendCancelRegistrationToKassa = jest.fn().mockResolvedValue({ success: true });
+    receiver.sender.sendCancelRegistrationToPlanning = jest.fn().mockResolvedValue({ success: true });
+  });
+
+  test('stuurt door naar Kassa en Planning bij geldig bericht', async () => {
+    const xml = buildXml('cancel_registration', `
+      <user_id>test-master-uuid-1234</user_id>
+      <session_id>sess-keynote-001</session_id>
+      <reason>Gebruiker gevraagd</reason>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendCancelRegistrationToKassa).toHaveBeenCalledWith(
+      expect.objectContaining({ user_id: 'test-master-uuid-1234', session_id: 'sess-keynote-001' })
+    );
+    expect(receiver.sender.sendCancelRegistrationToPlanning).toHaveBeenCalledWith(
+      expect.objectContaining({ user_id: 'test-master-uuid-1234', session_id: 'sess-keynote-001' })
+    );
+  });
+
+  test('negeert bericht als user_id ontbreekt', async () => {
+    const xml = buildXml('cancel_registration', `<session_id>sess-001</session_id>`);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendCancelRegistrationToKassa).not.toHaveBeenCalled();
+    expect(receiver.sender.sendCancelRegistrationToPlanning).not.toHaveBeenCalled();
+  });
+
+  test('negeert bericht als session_id ontbreekt', async () => {
+    const xml = buildXml('cancel_registration', `<user_id>test-master-uuid-1234</user_id>`);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendCancelRegistrationToKassa).not.toHaveBeenCalled();
+  });
+
+  test('update Member__c Status__c in Salesforce als verbonden', async () => {
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('sf-member-id-001');
+
+    const xml = buildXml('cancel_registration', `
+      <user_id>test-master-uuid-1234</user_id>
+      <session_id>sess-keynote-001</session_id>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+});
+
 describe('handleUserUnregistered', () => {
   let receiver;
 

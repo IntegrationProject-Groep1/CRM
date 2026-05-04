@@ -1408,6 +1408,19 @@ async handleUserUpdated(header, body) {
 
       console.log(`[receiver] Processing cancel_registration for user=${userId}, session=${sessionId}`);
 
+      if (this.sf.isConnected) {
+        const memberId = await this._findUserByMasterUuid(userId);
+        if (memberId) {
+          await this.sf.apiCall((conn) =>
+            conn.sobject('Member__c').update({ Id: memberId, Status__c: 'Cancelled' })
+          );
+        } else {
+          console.log(`[receiver] No Member__c found for cancel_registration user=${userId}`);
+        }
+      } else {
+        console.log(`[receiver] DRY RUN: Would update Member__c Status__c=Cancelled for user=${userId}`);
+      }
+
       const payload = { user_id: userId, session_id: sessionId, reason };
 
       await Promise.all([
