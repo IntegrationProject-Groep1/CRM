@@ -10,18 +10,23 @@ const { create: xmlCreate } = require('xmlbuilder2');
 const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
-const MySQLService = require('./mysqlClient');
-
+const { create } = require('xmlbuilder2');
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
+const USER_REGISTERED_QUEUE = 'user.registered';
+const USER_CREATED_QUEUE = 'user.created';
 
 const MESSAGE_TYPES = {
+  USER_CREATED: 'user.created',
+  USER_REGISTERED: 'user.registered',
   NEW_REGISTRATION: 'new_registration',
+  USER_UNREGISTERED: 'user.unregistered',
   PAYMENT_REGISTERED: 'payment_registered',
   BADGE_SCANNED: 'badge_scanned',
-  SESSION_UPDATE: 'session_update',
+  SESSION_UPDATED: 'session_updated',
   INVOICE_STATUS: 'invoice_status',
+  SEND_INVOICE: 'send_invoice',
   MAILING_STATUS: 'mailing_status',
   // Kassa → CRM (via kassa.payments)
   CONSUMPTION_ORDER: 'consumption_order',
@@ -29,7 +34,12 @@ const MESSAGE_TYPES = {
   REFUND_PROCESSED: 'refund_processed',
   INVOICE_REQUEST: 'invoice_request',
   INVOICE_CANCELLED: 'invoice_cancelled',
+  USER_UPDATED: 'user.updated',
   DELETE_USER: 'delete_user',
+  USER_DELETED: 'user_deleted', //nieuw type voor deletions die al in de frontend gebeuren, zodat we die ook kunnen opvangen en verwerken
+  COMPANY_REGISTRATION: 'company_registration',
+  COMPANY_UPDATE: 'company_update',
+  COMPANY_DELETE: 'company_delete',
 };
 
 const parser = new XMLParser({
@@ -46,7 +56,6 @@ class ReceiverV2 {
     this.channel = null;
     this.sf = new SFConnection();
     this.sender = new CRMSender();
-    this.db = new MySQLService();
     this.running = true;
   }
 
@@ -64,7 +73,6 @@ class ReceiverV2 {
     this.startHealthServer();
     await this.sf.init();
     await this.sender.init();
-    this.db.init();
     await this.connectRabbitMQ();
   }
 
@@ -79,6 +87,8 @@ class ReceiverV2 {
 
         await this.channel.assertQueue(QUEUE_NAME, { durable: true });
         await this.channel.assertQueue(KASSA_QUEUE, { durable: true });
+        await this.channel.assertQueue(USER_REGISTERED_QUEUE, { durable: true });
+        await this.channel.assertQueue(USER_CREATED_QUEUE, { durable: true });
         await this.channel.assertQueue(DEAD_LETTER_QUEUE, {
           durable: true,
           arguments: { 'x-dead-letter-exchange': '' },
@@ -97,6 +107,8 @@ class ReceiverV2 {
 
         this.channel.consume(QUEUE_NAME, consume, { noAck: false });
         this.channel.consume(KASSA_QUEUE, consume, { noAck: false });
+        this.channel.consume(USER_CREATED_QUEUE, consume, { noAck: false });
+        this.channel.consume(USER_REGISTERED_QUEUE, consume, { noAck: false });
 
         console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}`);
 
@@ -128,17 +140,25 @@ class ReceiverV2 {
       return [false, 'Missing header element'];
     }
 
-    const requiredFields = ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
+    const messageType = header.type;
+    const isFrontendUnregistered = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
+    const isSendInvoice = messageType === MESSAGE_TYPES.SEND_INVOICE;
+    const requiredFields = isFrontendUnregistered
+      ? ['message_id', 'version', 'type', 'timestamp', 'source', 'receiver']
+      : isSendInvoice
+        ? ['message_id', 'version', 'type', 'timestamp', 'source']
+      : ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
     const missingFields = requiredFields.filter((f) => header[f] === undefined || header[f] === null);
     if (missingFields.length > 0) {
       return [false, `Missing required header fields: ${missingFields.join(', ')}`];
     }
 
-    if (String(header.version) !== '2.0') {
+    const validVersions = isFrontendUnregistered ? ['1.0', '2.0'] : ['2.0'];
+    if (!validVersions.includes(String(header.version))) {
       return [false, `Invalid version: expected 2.0, got ${header.version}`];
     }
 
-    const validTypes = Object.values(MESSAGE_TYPES);
+    const validTypes = Object.values(MESSAGE_TYPES); 
     if (!validTypes.includes(header.type)) {
       return [false, `Invalid message type: ${header.type}`];
     }
@@ -146,85 +166,83 @@ class ReceiverV2 {
     return [true, null];
   }
 
-  async getOrCreateMasterUuid(email, sourceSystem = 'crm') {
-    if (!this.channel) throw new Error('RabbitMQ channel not initialized');
+getOrCreateMasterUuid(email, sourceSystem = 'crm') {
+  if (!this.channel) throw new Error('RabbitMQ channel not initialized');
 
-    const correlationId = uuidv4();
-    const q = await this.channel.assertQueue('', { exclusive: true });
+  const correlationId = uuidv4();
+  let consumerTag = null;
+  let replyQueueName = null;
 
-    // Build XML safely using xmlbuilder2 to prevent XML injection
-    const requestXml = xmlCreate({ version: '1.0', encoding: 'UTF-8' })
-      .ele('identity_request')
-        .ele('email').txt(email).up()
-        .ele('source_system').txt(sourceSystem).up()
-      .end({ prettyPrint: false });
+  // We verwijderen 'async' voor (resolve, reject) om de linter blij te maken
+  return new Promise((resolve, reject) => {
+    // 1. Setup Timeout
+    const timeout = setTimeout(async () => {
+      try {
+        if (consumerTag) await this.channel.cancel(consumerTag);
+        if (replyQueueName) await this.channel.deleteQueue(replyQueueName);
+      } catch (err) {
+        console.error("[identity] Cleanup error during timeout:", err);
+      }
+      reject(new Error(`Identity Service timeout voor ${email}`));
+    }, 15000);
 
-    const IDENTITY_TIMEOUT_MS = 15000;
+    // 2. Start de flow (we gebruiken .then om de async setup te doen)
+    this.channel.assertQueue('', { exclusive: true })
+      .then((replyQueue) => {
+        replyQueueName = replyQueue.queue;
 
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      let consumerTag = null;
+        return this.channel.consume(replyQueueName, async (msg) => {
+          // De callback zelf MAG wel async zijn
+          if (!msg) return;
 
-      const cleanup = () => {
-        if (consumerTag) {
-          this.channel.cancel(consumerTag).catch((err) => console.error(`[receiver] Error cancelling consumer ${consumerTag}:`, err));
-        }
-        this.channel.deleteQueue(q.queue).catch((err) => console.error(`[receiver] Error deleting queue ${q.queue}:`, err));
-      };
+          if (msg.properties.correlationId === correlationId) {
+            clearTimeout(timeout);
 
-      // Timeout: reject and clean up if identity service does not respond in time
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error(`Identity service timeout after ${IDENTITY_TIMEOUT_MS}ms for ${email}`));
-      }, IDENTITY_TIMEOUT_MS);
+            try {
+              const responseXml = msg.content.toString();
+              const parsed = await parseStringPromise(responseXml, { explicitArray: false });
 
-      this.channel.consume(q.queue, async (msg) => {
-        // RabbitMQ sends null when the consumer is cancelled
-        if (!msg) return;
-
-        if (msg.properties.correlationId !== correlationId) {
-          console.log(`[receiver] getOrCreateMasterUuid: unexpected correlationId, ignoring message`);
-          return;
-        }
-
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        cleanup();
-
-        try {
-          const parsed = await parseStringPromise(msg.content.toString(), { explicitArray: false });
-
-          if (parsed.identity_response && parsed.identity_response.status === 'ok') {
-            resolve(parsed.identity_response.user.master_uuid);
-          } else {
-            reject(new Error('Identity service returned error status'));
+              if (parsed.identity_response?.status === 'ok') {
+                resolve(parsed.identity_response.user.master_uuid);
+              } else {
+                reject(new Error('Identity Service gaf een foutmelding terug'));
+              }
+            } catch (err) {
+              reject(new Error(`Fout bij verwerken Identity antwoord: ${err.message}`));
+            } finally {
+              // Cleanup na verwerking
+              try {
+                if (consumerTag) await this.channel.cancel(consumerTag);
+                await this.channel.deleteQueue(replyQueueName);
+              } catch (cleanupErr) {
+                console.error("[identity] Final cleanup error:", cleanupErr);
+              }
+            }
           }
-        } catch (err) {
-          reject(err);
-        }
-      }, { noAck: true }).then((result) => {
-        consumerTag = result.consumerTag;
-        // Race condition guard: if the operation already settled before consume() resolved,
-        // cancel the consumer now since cleanup() ran before consumerTag was available
-        if (settled) this.channel.cancel(consumerTag).catch((err) => console.error(`[receiver] Error cancelling consumer ${consumerTag} in race guard:`, err));
-      }).catch((err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        cleanup();
+        }, { noAck: true });
+      })
+      .then((consumeObj) => {
+        consumerTag = consumeObj.consumerTag;
+
+        // 3. Veilig XML bouwen en versturen
+        const requestXml = create({ version: '1.0' })
+          .ele('identity_request')
+            .ele('email').txt(email).up()
+            .ele('source_system').txt(sourceSystem).up()
+          .end();
+
+        this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
+          correlationId: correlationId,
+          replyTo: replyQueueName,
+          contentType: 'application/xml'
+        });
+      })
+      .catch((err) => {
+        clearTimeout(timeout);
         reject(err);
       });
-
-      this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
-        correlationId: correlationId,
-        replyTo: q.queue,
-        contentType: 'application/xml',
-      });
-    });
-  }
+  });
+}
 
   async handleMessage(msg) {
     try {
@@ -268,18 +286,27 @@ class ReceiverV2 {
   async routeMessage(header, body) {
     const msgType = header.type;
     const handlers = {
+      [MESSAGE_TYPES.USER_CREATED]: () => this.handleUserCreated(header, body),
+      [MESSAGE_TYPES.USER_REGISTERED]: () => this.handleUserRegistered(header, body),
       [MESSAGE_TYPES.NEW_REGISTRATION]: () => this.handleNewRegistration(header, body),
+      [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body),
       [MESSAGE_TYPES.BADGE_SCANNED]: () => this.handleBadgeScanned(header, body),
-      [MESSAGE_TYPES.SESSION_UPDATE]: () => this.handleSessionUpdate(header, body),
+      [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handleSessionUpdate(header, body),
       [MESSAGE_TYPES.INVOICE_STATUS]: () => this.handleInvoiceStatus(header, body),
+      [MESSAGE_TYPES.SEND_INVOICE]: () => this.handleSendInvoice(header, body),
       [MESSAGE_TYPES.MAILING_STATUS]: () => this.handleMailingStatus(header, body),
       [MESSAGE_TYPES.CONSUMPTION_ORDER]: () => this.handleConsumptionOrder(header, body),
       [MESSAGE_TYPES.BADGE_ASSIGNED]: () => this.handleBadgeAssigned(header, body),
       [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body),
       [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
-      [MESSAGE_TYPES.INVOICE_CANCELLED]: () => this.handleInvoiceCancellationRequest(header, body),
+      [MESSAGE_TYPES.INVOICE_CANCELLED]: () => this.handleReceivedInvoiceCancelled(header, body),
+      [MESSAGE_TYPES.USER_UPDATED]: () => this.handleUserUpdated(header, body),
       [MESSAGE_TYPES.DELETE_USER]: () => this.handleDeleteUser(header, body),
+      [MESSAGE_TYPES.USER_DELETED]: () => this.handleDeleteUser(header, body), //nieuw voor frontend deletions
+      [MESSAGE_TYPES.COMPANY_REGISTRATION]: () => this.handleCompanyRegistration(header, body),
+      [MESSAGE_TYPES.COMPANY_UPDATE]: () => this.handleCompanyUpdate(header, body),
+      [MESSAGE_TYPES.COMPANY_DELETE]: () => this.handleCompanyDelete(header, body),
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -294,6 +321,36 @@ class ReceiverV2 {
       (conn) => conn.sobject('Member__c').find({ Email__c: email }, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
+  }
+
+  async handleUserUnregistered(header, body) {
+    try {
+      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
+      const sessionId = ReceiverV2.getElementText(body, 'session_id');
+      const bodyTimestamp = ReceiverV2.getElementText(body, 'timestamp');
+
+      if (!masterUuid || !sessionId) {
+        console.log('[receiver] Missing master_uuid or session_id in user.unregistered body');
+        return;
+      }
+
+      await this.sender.sendUserUnregisteredFanout({
+        message_id: header.message_id,
+        timestamp: header.timestamp,
+        source: header.source,
+        receiver: header.receiver,
+        correlation_id: ReceiverV2.getElementText(header, 'correlation_id') || '',
+        master_uuid: masterUuid,
+        session_id: sessionId,
+        body_timestamp: bodyTimestamp || header.timestamp,
+      });
+
+      console.log(`[receiver] Forwarded user.unregistered for master_uuid=${masterUuid}, session_id=${sessionId}`);
+      console.log('[receiver] user.unregistered triggers downstream CRM cancellation flow, including invoice_cancelled to Facturatie.');
+    } catch (err) {
+      console.log(`[receiver] Error in handleUserUnregistered: ${err}`);
+      throw err;
+    }
   }
 
   async handleNewRegistration(header, body) {
@@ -326,7 +383,6 @@ class ReceiverV2 {
 
     const address = customer.address || null;
     const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
-    const externalUserId = getCustomerText('user_id');
     const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
     const rawType = getCustomerText('type');
     const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
@@ -343,7 +399,6 @@ class ReceiverV2 {
     // Jouw volledige rawUserData (aangepast om de officiële masterUuid te gebruiken)
     const rawUserData = {
       Master_UUID__c: masterUuid, // Officiële UUID
-      User_ID__c: externalUserId,
       First_Name__c: getCustomerText('first_name'),
       Last_Name__c: getCustomerText('last_name'),
       Email__c: emailForIdentity, // Gebruik de genormaliseerde email
@@ -390,17 +445,6 @@ class ReceiverV2 {
           companyId = result.id || null;
           console.log(`[receiver] Upserted Account: ${companyId} for VAT ${companyVat}`);
         }
-
-        const dbCompanyId = await this.db.upsertCompany({
-          master_uuid: masterUuid, // Officiële UUID
-          company_name: companyName,
-          vat_number: companyVat,
-          email: companyEmail,
-          salesforce_account_id: companyId,
-        });
-        if (dbCompanyId) {
-          console.log(`[mysql] Upserted company: ${dbCompanyId}`);
-        }
       }
     }
 
@@ -420,43 +464,14 @@ class ReceiverV2 {
       console.log(`[receiver] Upserted Member__c via Master UUID: ${result.id}`);
     }
 
-
-    // --- STAP 5: JOUW ORIGINELE MYSQL PERSON UPSERT ---
-    const dbPersonId = await this.db.upsertPerson({
-      master_uuid: masterUuid, // Officiële UUID
-      external_user_id: externalUserId,
-      first_name: getCustomerText('first_name'),
-      last_name: getCustomerText('last_name'),
-      email: emailForIdentity,
-      date_of_birth: getCustomerText('date_of_birth') || null,
-      person_type: userType,
-      badge_id: getCustomerText('badge_id') || null,
-      is_company_linked: isCompanyLinked,
-      company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
-      vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
-      street: address ? ReceiverV2.getElementText(address, 'street') : null,
-      house_number: address ? ReceiverV2.getElementText(address, 'number') : null,
-      postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
-      city: address ? ReceiverV2.getElementText(address, 'city') : null,
-      country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
-      amount: registrationAmount ? parseFloat(registrationAmount) : null,
-      payment_status: paymentStatus,
-      is_deleted: false
-    });
-
-    if (dbPersonId) {
-      console.log(`[mysql] Upserted person: ${dbPersonId}`);
-    }
-
-
-    // --- STAP 6: JOUW ORIGINELE KASSA PAYLOAD ---
+    // --- STAP 5: JOUW ORIGINELE KASSA PAYLOAD ---
     const kassaPayload = {
       header: { master_uuid: masterUuid }, // Officiële UUID
       customer: {
         email: emailForIdentity,
         first_name: getCustomerText('first_name'),
         last_name: getCustomerText('last_name'),
-        user_id: externalUserId,
+        master_uuid: masterUuid,
         type: (isCompanyLinked || rawType === 'company') ? 'company' : (rawType || 'private'),
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
         vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
@@ -472,7 +487,7 @@ class ReceiverV2 {
     console.log(`[receiver] Forwarded new_registration to Kassa for Master UUID=${masterUuid}`);
 
     
-    // --- STAP 7: JOUW ORIGINELE FOSSBILLING PAYLOAD ---
+    // --- STAP 6: JOUW ORIGINELE FOSSBILLING PAYLOAD ---
     const fossPayload = {
       master_uuid: masterUuid, // Officiële UUID
       customer: {
@@ -498,10 +513,245 @@ class ReceiverV2 {
     };
 
     await this.sender.sendNewRegistrationToFacturatie(fossPayload);
-    console.log(`[receiver] Forwarded new_registration to Facturatie for Master UUID=${masterUuid}`);
+console.log(`[receiver] Forwarded to Facturatie voor Master UUID=${masterUuid}`);
 
   } catch (err) {
-    console.log(`[receiver] Error in handleNewRegistration: ${err}`);
+    console.log(`[receiver] Error in handleNewRegistration: ${err.message}`);
+    throw err;
+  }
+}
+
+
+async handleUserCreated(header, body) {
+  try {
+    const user = body?.user;
+    if (!user) throw new Error('Body missing user element');
+
+    // 1. Data extractie & Normalisatie
+    const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
+    const firstName = ReceiverV2.getElementText(user, 'first_name');
+    const lastName = ReceiverV2.getElementText(user, 'last_name');
+    const isCompany = ReceiverV2.getElementText(user, 'is_company') === 'true';
+
+    console.log(`[receiver] Processing user.created for: ${email}`);
+
+    // 2. Identity Service (RPC) aanroepen voor de officiële Master UUID
+    // Cruciaal: dit zorgt dat de user in Salesforce hetzelfde ID krijgt als in de rest van de infra
+    const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
+    if (!masterUuid) throw new Error(`Could not get Master UUID for ${email}`);
+
+    // 3. Salesforce Upsert
+    if (this.sf.isConnected) {
+      const sfData = {
+        Master_UUID__c: masterUuid,
+        First_Name__c: firstName,
+        Last_Name__c: lastName,
+        Email__c: email,
+        User_Type__c: isCompany ? 'Bedrijf' : 'Particulier'
+      };
+
+      await this.sf.apiCall((conn) => 
+        conn.sobject('Member__c').upsert(sfData, 'Master_UUID__c')
+      );
+      
+      console.log(`[salesforce] Member gesynchroniseerd via Master UUID: ${masterUuid}`);
+    } else {
+      console.log(`[receiver] DRY RUN: Salesforce niet verbonden. Data: ${email}`);
+    }
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleUserCreated: ${err.message}`);
+    // We gooien de error door zodat RabbitMQ het bericht kan nacken/retryen
+    throw err; 
+  }
+}
+// Handler voor een sessie-inschrijving
+async handleUserRegistered(header, body) {
+  try {
+    const user = body?.user;
+    const session = body?.session;
+    if (!user || !session) throw new Error('Body missing user or session');
+
+    const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
+    const sessionId = ReceiverV2.getElementText(session, 'session_id');
+    const sessionName = ReceiverV2.getElementText(session, 'session_name'); // Match met je XML
+    const paymentStatus = ReceiverV2.getElementText(body, 'payment_status');
+
+    const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
+
+    if (this.sf.isConnected) {
+      // 1. Update/Upsert Member
+      await this.sf.apiCall((conn) => 
+        conn.sobject('Member__c').upsert({
+          Master_UUID__c: masterUuid,
+          First_Name__c: ReceiverV2.getElementText(user, 'first_name'),
+          Last_Name__c: ReceiverV2.getElementText(user, 'last_name'),
+          Email__c: email
+        }, 'Master_UUID__c')
+      );
+
+      // 2. Registreer Sessie als Taak
+      await this.sf.apiCall((conn) => 
+        conn.sobject('Task').create({
+          Subject: `Sessie Inschrijving: ${sessionName}`,
+          Description: `ID: ${sessionId} | Status: ${paymentStatus}`,
+          Status: 'Completed',
+          Master_UUID__c: masterUuid,
+          ActivityDate: new Date().toISOString().split('T')[0]
+        })
+      );
+      console.log(`[receiver] Session Registered: ${sessionName} for ${masterUuid}`);
+    }
+  } catch (err) {
+    console.error(`[receiver] Error in handleUserRegistered: ${err.message}`);
+    throw err;
+  }
+}
+
+async handleCompanyRegistration(header, body) {
+  try {
+    const company = body?.company;
+    if (!company) throw new Error('Body missing company element');
+
+    // 1. Identificatie (Altijd via Master UUID)
+    const masterUuid = header.master_uuid || ReceiverV2.getElementText(company, 'master_uuid');
+    const email = (ReceiverV2.getElementText(company, 'email') || '').toLowerCase().trim();
+
+    console.log(`[receiver] Processing company_registration for: ${masterUuid}`);
+
+    // 2. Data Mapping naar jouw specifieke Salesforce velden
+    const sfCompanyData = {
+      Master_UUID__c: masterUuid,
+      Company_Name__c: ReceiverV2.getElementText(company, 'name'),
+      Email__c: email,
+      VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
+      VAT_Rate__c: parseFloat(ReceiverV2.getElementText(company, 'vat_rate') || 0),
+      User_Type__c: ReceiverV2.getElementText(company, 'user_type') || 'Bedrijf',
+      // Company_ID__c laten we leeg of vullen we met message_id indien nodig
+      Company_ID__c: header.message_id 
+    };
+
+    // 3. Salesforce Upsert
+    // Ik ga er vanuit dat dit op het 'Account' object moet, 
+    // of pas 'Account' aan naar je custom Company object naam.
+    if (this.sf.isConnected) {
+      const result = await this.sf.apiCall((conn) => 
+        conn.sobject('Account').upsert(sfCompanyData, 'Master_UUID__c')
+      );
+      console.log(`[salesforce] Company gesynchroniseerd: ${result.id}`);
+    } else {
+      console.log(`[receiver] DRY RUN: Company data: ${JSON.stringify(sfCompanyData)}`);
+    }
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleCompanyRegistration: ${err.message}`);
+    throw err; // Zorgt voor nack/retry in RabbitMQ
+  }
+}
+
+async handleCompanyUpdate(header, body) {
+  try {
+    const company = body?.company;
+    const companyUuid = header.master_uuid;
+    
+    if (!company || !companyUuid) {
+      console.error('[receiver] Company update ignored: missing company data or master_uuid');
+      return;
+    }
+
+    console.log(`[receiver] Processing company_update for: ${companyUuid}`);
+
+    // 1. Update de bedrijfsgegevens in Salesforce (Account)
+    let accountId = null;
+    if (this.sf.isConnected) {
+      const accountResult = await this.sf.apiCall((conn) => 
+        conn.sobject('Account').upsert({
+          Master_UUID__c: companyUuid, // Jouw External ID
+          Company_Name__c: ReceiverV2.getElementText(company, 'name'),
+          VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
+          Email__c: ReceiverV2.getElementText(company, 'email'),
+          User_Type__c: 'Bedrijf'
+        }, 'Master_UUID__c')
+      );
+      accountId = accountResult.id;
+      console.log(`[receiver] Account upserted/found: ${accountId}`);
+    }
+
+    // 2. Verwerk de leden (toevoegen/verwijderen)
+    const membersNode = company.members?.member;
+    if (membersNode && accountId) {
+      // Zorg dat we altijd een array hebben (ook als er maar 1 lid in de XML staat)
+      const memberList = Array.isArray(membersNode) ? membersNode : [membersNode];
+
+      for (const memberData of memberList) {
+        const userUuid = ReceiverV2.getElementText(memberData, 'master_uuid');
+        // Let op: action komt uit het XML attribuut <member action="add">
+        const action = memberData.action; 
+
+        if (!userUuid) continue;
+
+        // Gebruik je bestaande methode om de Salesforce ID van de persoon te vinden
+        const memberSfId = await this._findUserByMasterUuid(userUuid);
+        
+        if (memberSfId) {
+          console.log(`[receiver] Performing '${action}' for member ${userUuid} on account ${accountId}`);
+          
+          await this.sf.apiCall((conn) => 
+            conn.sobject('Member__c').update({
+              Id: memberSfId,
+              // Bij 'add' vullen we de lookup naar het bedrijf, bij 'remove' maken we hem leeg
+              Account__c: action === 'add' ? accountId : null 
+            })
+          );
+        } else {
+          console.warn(`[receiver] Could not find Member__c with UUID ${userUuid} to perform ${action}`);
+        }
+      }
+    }
+
+    console.log(`[receiver] Company update for ${companyUuid} completed successfully.`);
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleCompanyUpdate: ${err.message}`);
+    throw err;
+  }
+}
+
+async handleCompanyDelete(header, body) {
+  try {
+    const companyUuid = header.master_uuid || ReceiverV2.getElementText(body?.company, 'master_uuid');
+    
+    if (!companyUuid) {
+      console.error('[receiver] company_delete ignored: missing master_uuid');
+      return;
+    }
+
+    console.log(`[receiver] Processing company_delete for UUID: ${companyUuid}`);
+
+    if (this.sf.isConnected) {
+      // 1. Zoek de Salesforce ID (AccountId) op basis van de Master UUID
+      const records = await this.sf.apiCall((conn) => 
+        conn.sobject('Account').find({ Master_UUID__c: companyUuid }, ['Id']).limit(1)
+      );
+
+      const accountId = records && records.length > 0 ? records[0].Id : null;
+
+      if (accountId) {
+        // 2. Verwijder het record uit Salesforce
+        await this.sf.apiCall((conn) => 
+        conn.sobject('Account').update({ Id: accountId, Status__c: 'Inactive' }) //momenteel soft delete, pas aan naar .delete() als je hard delete wilt
+        );
+        console.log(`[salesforce] Account ${accountId} succesvol verwijderd.`);
+      } else {
+        console.warn(`[receiver] Geen Account gevonden in Salesforce voor UUID: ${companyUuid}`);
+      }
+    }
+
+    // 3. Optioneel: Verwijder ook uit je lokale database als je daar een bedrijven-tabel hebt
+    // await this.db.query('DELETE FROM crm_companies WHERE master_uuid = ?', [companyUuid]);
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleCompanyDelete: ${err.message}`);
     throw err;
   }
 }
@@ -511,31 +761,47 @@ class ReceiverV2 {
  */
 async handleSendInvoice(header, body) {
   try {
-    const masterUuid = header.master_uuid;
-    const invoiceUrl = ReceiverV2.getElementText(body, 'pdf_url'); // Bevat de link naar de PDF
-    const dueDate = ReceiverV2.getElementText(body, 'due_date');
-    const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+    const customer = body ? body.customer : null;
+    const invoice = body ? body.invoice : null;
+    const masterUuid = header.master_uuid ||
+      ReceiverV2.getElementText(customer, 'master_uuid') ||
+      ReceiverV2.getElementText(body, 'master_uuid');
+    const email = ReceiverV2.getElementText(customer, 'email');
+    const invoiceUrl = ReceiverV2.getElementText(invoice, 'pdf_url');
+    const dueDate = ReceiverV2.getElementText(invoice, 'due_date');
+    const invoiceNumber = ReceiverV2.getElementText(invoice, 'id');
+    const invoiceStatus = ReceiverV2.getElementText(invoice, 'status');
+    const amountPaid = ReceiverV2.getElementText(invoice, 'amount_paid');
 
-    console.log(`[receiver] Processing send_invoice for ${masterUuid}, invoice: ${invoiceNumber}`);
+    console.log(`[receiver] Processing send_invoice for ${masterUuid || email || 'unknown customer'}, invoice: ${invoiceNumber}, status: ${invoiceStatus}, amount_paid: ${amountPaid}`);
 
-    // 1. Update Salesforce (Member__c) met de PDF-link en vervaldatum
-    if (this.sf.isConnected) {
-      await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').upsert({
-          Master_UUID__c: masterUuid,
-          Last_Invoice_URL__c: invoiceUrl,
-          Last_Invoice_Due_Date__c: dueDate,
-          Last_Invoice_Number__c: invoiceNumber
-        }, 'Master_UUID__c')
-      );
+    if (!this.sf.isConnected) {
+      console.log(`[receiver] DRY RUN: Would update Member__c invoice fields for ${masterUuid || email || 'unknown customer'}`);
+      return;
     }
 
-    // 2. Update lokale DB voor snelle weergave in portaal
-    const [, dbError] = await this.db.query(
-      'UPDATE crm_user_sync SET last_invoice_url = ?, last_invoice_number = ? WHERE master_uuid = ?',
-      [invoiceUrl, invoiceNumber, masterUuid]
+    let memberId = null;
+    if (masterUuid) {
+      memberId = await this._findUserByMasterUuid(masterUuid);
+    }
+    if (!memberId && email) {
+      memberId = await this._findUserByEmail(email);
+    }
+
+    if (!memberId) {
+      const lookupValue = masterUuid ? `master_uuid=${masterUuid}` : `email=${email || 'missing'}`;
+      console.log(`[receiver] No Member__c found for send_invoice (${lookupValue})`);
+      throw new Error(`No Member__c found for send_invoice (${lookupValue})`);
+    }
+
+    await this.sf.apiCall((conn) =>
+      conn.sobject('Member__c').update({
+        Id: memberId,
+        Last_Invoice_URL__c: invoiceUrl,
+        Last_Invoice_Due_Date__c: dueDate,
+        Last_Invoice_Number__c: invoiceNumber
+      })
     );
-    if (dbError) console.error(`[receiver] DB error in handleSendInvoice: ${dbError.message}`);
 
   } catch (err) {
     console.error(`[receiver] Error in handleSendInvoice: ${err}`);
@@ -546,7 +812,7 @@ async handleSendInvoice(header, body) {
 /**
  * Verwerkt invoice_cancelled bericht van FossBilling
  */
-async handleInvoiceCancelled(header, body) {
+async handleReceivedInvoiceCancelled(header, body) {
   try {
     const masterUuid = header.master_uuid;
     const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
@@ -564,7 +830,7 @@ async handleInvoiceCancelled(header, body) {
       );
     }
   } catch (err) {
-    console.error(`[receiver] Error in handleInvoiceCancelled: ${err}`);
+    console.error(`[receiver] Error in handleReceivedInvoiceCancelled: ${err}`);
   }
 }
 
@@ -573,7 +839,8 @@ async handleInvoiceCancelled(header, body) {
       const invoice = body ? body.invoice : null;
       const transaction = body ? body.transaction : null;
       const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
+      const transactionId = ReceiverV2.getElementText(transaction, 'id');
 
       const amountVal = invoice ? invoice.amount_paid : null;
       const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
@@ -583,36 +850,16 @@ async handleInvoiceCancelled(header, body) {
         Description: [
           `Context: ${paymentContext}`,
           `Payment Method: ${ReceiverV2.getElementText(transaction, 'payment_method')}`,
+          transactionId ? `Transaction ID: ${transactionId}` : null,
           `Amount Paid: ${amountPaid}`,
           `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
           `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
-          userId ? `User ID: ${userId}` : null,
+          masterUuid ? `Master UUID: ${masterUuid}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
         Type: 'Payment',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
-
-      // Insert payment into MySQL (always, regardless of SF connection)
-      let eventAttendeeId = null;
-      if (userId) {
-        const personId = await this.db.findPersonByExternalId(userId);
-        if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
-      }
-
-      const paymentPayload = {
-        amount: parseFloat(amountPaid) || 0,
-        payment_type: paymentContext === 'consumption' ? 'consumption' : 'registration',
-        status: 'completed',
-        payment_method: ReceiverV2.getElementText(transaction, 'payment_method') || null,
-        paid_at: new Date().toISOString(),
-      };
-
-      if (eventAttendeeId) paymentPayload.event_attendee_id = eventAttendeeId;
-
-      const dbPaymentId = await this.db.insertPayment(paymentPayload);
-      if (dbPaymentId) console.log(`[mysql] Inserted payment: ${dbPaymentId}`);
-
       if (!this.sf.isConnected) {
         console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
         return;
@@ -622,8 +869,8 @@ async handleInvoiceCancelled(header, body) {
       if (email) {
         const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
-      } else if (userId) {
-        const contactId = await this._findUserById(userId);
+      } else if (masterUuid) {
+        const contactId = await this._findUserByMasterUuid(masterUuid);
         if (contactId) taskData.WhoId = contactId;
       }
 
@@ -667,17 +914,6 @@ async handleInvoiceCancelled(header, body) {
 
       const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       console.log(`[receiver] Created Task for badge scan: ${result?.id}`);
-
-      // Record check-in time in MySQL
-      const scanEmail = ReceiverV2.getElementText(body, 'email');
-      if (scanEmail) {
-        const { personId, error: dbError } = await this.db.findPersonByEmailForCheckIn(scanEmail);
-        if (dbError) {
-          console.log(`[mysql] Error looking up person for badge scan: ${dbError.message}`);
-        } else if (personId) {
-          await this.db.updateEventAttendeeCheckIn(personId);
-        }
-      }
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeScanned: ${err}`);
       throw err;
@@ -687,7 +923,7 @@ async handleInvoiceCancelled(header, body) {
   async handleSessionUpdate(header, body) {
     try {
       if (!body) {
-        console.log('[receiver] Missing body in session_update message');
+        console.log('[receiver] Missing body in session_updated message');
         return;
       }
 
@@ -815,12 +1051,12 @@ async handleInvoiceCancelled(header, body) {
     return String(value);
   }
 
-  async _findUserById(userId) {
-    const records = await this.sf.apiCall(
-      (conn) => conn.sobject('Member__c').find({ User_ID__c: userId }, ['Id']).limit(1)
-    );
-    return records && records.length > 0 ? records[0].Id : null;
-  }
+  async _findUserByMasterUuid(masterUuid) {
+  const records = await this.sf.apiCall(
+    (conn) => conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
+  );
+  return records && records.length > 0 ? records[0].Id : null;
+}
 
   async handleConsumptionOrder(header, body) {
     try {
@@ -836,10 +1072,11 @@ async handleInvoiceCancelled(header, body) {
         let memberId = null;
         if (!isAnonymous && customer) {
           const email = ReceiverV2.getElementText(customer, 'email');
-          const userId = ReceiverV2.getElementText(customer, 'user_id');
+          const masterUuid = ReceiverV2.getElementText(customer, 'master_uuid'); // <--- NIEUWE MANIER
+          
           memberId = email
             ? await this._findUserByEmail(email)
-            : (userId ? await this._findUserById(userId) : null);
+            : (masterUuid ? await this._findUserByMasterUuid(masterUuid) : null); // Update ook de functienaam
         }
 
         for (let i = 0; i < itemList.length; i++) {
@@ -878,36 +1115,6 @@ async handleInvoiceCancelled(header, body) {
       } else {
         console.log(`[receiver] DRY RUN: Would upsert ${itemList.length} Consumption__c record(s)`);
       }
-
-      // Insert each item into MySQL
-      if (!isAnonymous && customer) {
-        const userId = ReceiverV2.getElementText(customer, 'user_id');
-        let eventAttendeeId = null;
-
-        if (userId) {
-          const personId = await this.db.findPersonByExternalId(userId);
-          if (personId) eventAttendeeId = await this.db.findEventAttendeeByPersonId(personId);
-        }
-
-        if (eventAttendeeId) {
-          for (const item of itemList) {
-            const unitPriceVal = item.unit_price;
-            const unitPrice = parseFloat(typeof unitPriceVal === 'object' ? unitPriceVal['#text'] : unitPriceVal) || 0;
-            const qty = parseInt(item.quantity, 10) || 1;
-
-            await this.db.insertConsumption({
-              event_attendee_id: eventAttendeeId,
-              item_name: String(item.description),
-              quantity: qty,
-              unit_price: unitPrice,
-              total_price: unitPrice * qty,
-              paid: false,
-            });
-          }
-
-          console.log(`[mysql] Inserted ${itemList.length} consumption(s) for attendee: ${eventAttendeeId}`);
-        }
-      }
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
       throw err;
@@ -915,47 +1122,96 @@ async handleInvoiceCancelled(header, body) {
   }
 
   async handleDeleteUser(header, body) {
-    try {
-      const userId = ReceiverV2.getElementText(body, 'user_id');
-      const masterUuid = header.master_uuid; // Gebruik de UUID uit de header
+  try {
+    // Check eerst de header, dan de body (user.master_uuid), dan de body (master_uuid)
+    const masterUuid = header.master_uuid || 
+                       ReceiverV2.getElementText(body?.user, 'master_uuid') || 
+                       ReceiverV2.getElementText(body, 'master_uuid');
 
-      if (!userId && !masterUuid) {
-        console.log('[receiver] handleDeleteUser: missing user_id or master_uuid');
-        return;
-      }
+    if (!masterUuid) {
+      console.error('[receiver] Delete request ignored: No master_uuid found in header or body');
+      return;
+    }
 
-      console.log(`[receiver] Processing delete_user for Master UUID: ${masterUuid || userId}`);
+    console.log(`[receiver] Executing delete for UUID: ${masterUuid}`);
 
-      // 1. MySQL Soft Delete — try both userId and masterUuid since softDeletePerson
-      // only searches User_ID__c and a message may carry one or both identifiers
-      if (userId) {
-        await this.db.softDeleteConsumptionsByUserId(userId);
-        await this.db.softDeletePerson(userId);
-      }
-      if (masterUuid && masterUuid !== userId) {
-        await this.db.softDeleteConsumptionsByUserId(masterUuid);
-        await this.db.softDeletePerson(masterUuid);
-      }
+    // 1. MySQL Update
+    if (this.db) {
+      await this.db.query(
+        'UPDATE crm_user_sync SET is_deleted = true, last_sync = NOW() WHERE master_uuid = ?',
+        [masterUuid]
+      );
+    }
 
-      // 2. Salesforce Update (indien verbonden)
-      if (this.sf.isConnected) {
-        // We zoeken de member en zetten een 'Deleted' vlag of verwijderen het record
-        // Meestal is een 'Is_Deleted__c' vlag veiliger in Salesforce
-        const searchCriteria = masterUuid ? { Master_UUID__c: masterUuid } : { User_ID__c: userId };
-        
-        await this.sf.apiCall((conn) =>
-          conn.sobject('Member__c').find(searchCriteria).update({ Is_Deleted__c: true })
+    // 2. Salesforce Update
+    if (this.sf.isConnected) {
+      const contactId = await this._findUserByMasterUuid(masterUuid);
+      if (contactId) {
+        await this.sf.apiCall((conn) => 
+          conn.sobject('Member__c').update({ 
+            Id: contactId, 
+            Is_Deleted__c: true,
+            Status__c: 'Deleted' 
+          })
         );
       }
-
-      console.log(`[receiver] User ${masterUuid || userId} marked as deleted.`);
-    } catch (err) {
-      console.error(`[receiver] Error in handleDeleteUser: ${err}`);
-      throw err;
     }
-  }
 
-  async handleInvoiceCancellationRequest(header, body) {
+    console.log(`[receiver] Successfully processed delete for ${masterUuid}`);
+  } catch (err) {
+    console.error(`[receiver] Error in handleDeleteUser: ${err}`);
+    throw err;
+  }
+}
+
+async handleUserUpdated(header, body) {
+  try {
+    const masterUuid = header.master_uuid || ReceiverV2.getElementText(body?.user, 'master_uuid');
+    const user = body?.user;
+
+    if (!masterUuid) {
+      console.error('[receiver] user.updated ignored: missing master_uuid');
+      return;
+    }
+
+    const firstName = ReceiverV2.getElementText(user, 'first_name');
+    const lastName = ReceiverV2.getElementText(user, 'last_name');
+    const email = ReceiverV2.getElementText(user, 'email');
+
+    console.log(`[receiver] Updating user for UUID: ${masterUuid}`);
+
+    // 1. Update MySQL (zodat je lokale kopie synchroon blijft)
+    await this.db.query(
+      'UPDATE crm_user_sync SET first_name = ?, last_name = ?, email = ?, last_sync = NOW() WHERE master_uuid = ?',
+      [firstName, lastName, email, masterUuid]
+    );
+
+    // 2. Update Salesforce
+    if (this.sf.isConnected) {
+      const sfMemberId = await this._findUserByMasterUuid(masterUuid);
+      
+      if (sfMemberId) {
+        await this.sf.apiCall((conn) => 
+          conn.sobject('Member__c').update({
+            Id: sfMemberId,
+            First_Name__c: firstName,
+            Last_Name__c: lastName,
+            Email__c: email,
+            // Voeg hier eventueel Is_Company__c etc. toe
+          })
+        );
+        console.log(`[receiver] Salesforce Member ${sfMemberId} succesvol bijgewerkt.`);
+      } else {
+        console.warn(`[receiver] Geen Salesforce record gevonden voor UUID ${masterUuid} om bij te werken.`);
+      }
+    }
+  } catch (err) {
+    console.error(`[receiver] Error in handleUserUpdated: ${err.message}`);
+    throw err;
+  }
+}
+
+  async forwardInvoiceCancelledToFacturatie(header, body) {
     try {
       const masterUuid = header.master_uuid;
       const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
@@ -974,48 +1230,41 @@ async handleInvoiceCancelled(header, body) {
         reason: ReceiverV2.getElementText(body, 'reason') || 'Cancelled by user via frontend'
       });
 
-      // Optioneel: Update ook je eigen DB of Salesforce status
-      const [, dbError] = await this.db.query(
-        'UPDATE crm_user_sync SET last_payment_status = "cancelled" WHERE master_uuid = ?',
-        [masterUuid]
-      );
-      if (dbError) console.error(`[receiver] DB error in handleInvoiceCancellationRequest: ${dbError.message}`);
-
     } catch (err) {
-      console.error(`[receiver] Error in handleInvoiceCancellationRequest: ${err}`);
+      console.error(`[receiver] Error in forwardInvoiceCancelledToFacturatie: ${err.message}`);
       throw err;
     }
   }
 
   async handleBadgeAssigned(header, body) {
-    try {
-      const badgeId = ReceiverV2.getElementText(body, 'badge_id');
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+  try {
+    const badgeId = ReceiverV2.getElementText(body, 'badge_id');
+    const masterUuid = ReceiverV2.getElementText(body, 'master_uuid') || header.master_uuid;
 
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would update Member__c Badge_ID__c=${badgeId} for User_ID__c=${userId}`);
-        return;
-      }
-
-      const sfUserId = userId ? await this._findUserById(userId) : null;
-      if (sfUserId) {
-        await this.sf.apiCall((conn) => conn.sobject('Member__c').update({
-          Id: sfUserId,
-          Badge_ID__c: badgeId,
-        }));
-        console.log(`[receiver] Updated Member__c ${sfUserId} Badge_ID__c: ${badgeId}`);
-      } else {
-        console.log(`[receiver] Badge assigned but no Member__c found for User_ID__c: ${userId}`);
-      }
-    } catch (err) {
-      console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);
-      throw err;
+    if (!this.sf.isConnected) {
+      console.log(`[receiver] DRY RUN: Update Badge_ID__c=${badgeId} for UUID=${masterUuid}`); 
+      return;
     }
+
+    // Gebruik de nieuwe helperfunctie die we eerder hebben gedefinieerd
+    const sfMemberId = masterUuid ? await this._findUserByMasterUuid(masterUuid) : null;
+    
+    if (sfMemberId) {
+      await this.sf.apiCall((conn) => conn.sobject('Member__c').update({
+        Id: sfMemberId,
+        Badge_ID__c: badgeId,
+      }));
+      console.log(`[receiver] Updated Member__c ${sfMemberId} Badge_ID__c: ${badgeId}`);
+    }
+  } catch (err) {
+    console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);
+    throw err;
   }
+}
 
   async handleRefundProcessed(header, body) {
     try {
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const masterUuid = header ? header.master_uuid : null;
       const refund = body ? body.refund : null;
       const refundType = ReceiverV2.getElementText(body, 'refund_type');
       const originalTxId = ReceiverV2.getElementText(body, 'original_transaction_id');
@@ -1034,98 +1283,116 @@ async handleInvoiceCancelled(header, body) {
           `Amount: ${amount} ${currency}`,
           `Method: ${ReceiverV2.getElementText(refund, 'method')}`,
           `Reason: ${ReceiverV2.getElementText(refund, 'reason')}`,
+          masterUuid ? `Master UUID: ${masterUuid}` : null,
           originalTxId ? `Original Transaction ID: ${originalTxId}` : null,
           newWallet ? `New Wallet Balance: ${newWallet}` : null,
-          userId ? `User ID: ${userId}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
         Type: 'Other',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
 
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
-        return;
-      }
-
-      const email = ReceiverV2.getElementText(body, 'email');
-      if (email) {
-        const contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
-      } else if (userId) {
-        const contactId = await this._findUserById(userId);
-        if (contactId) taskData.WhoId = contactId;
-      }
-
-      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-      console.log(`[receiver] Created Task for refund_processed: ${result?.id}`);
-    } catch (err) {
-      console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
-      throw err;
+    // 4. De juiste persoon zoeken in Salesforce
+    const email = ReceiverV2.getElementText(body, 'email');
+    
+    if (masterUuid) {
+      // Prioriteit 1: Zoeken op de nieuwe Master UUID
+      const contactId = await this._findUserByMasterUuid(masterUuid);
+      if (contactId) taskData.WhoId = contactId;
+    } 
+    
+    if (!taskData.WhoId && email) {
+      // Prioriteit 2: Fallback op email als de UUID nog niet gekoppeld is
+      const contactId = await this._findUserByEmail(email);
+      if (contactId) taskData.WhoId = contactId;
     }
+
+    // 5. Task aanmaken
+    const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+    console.log(`[receiver] Created Task for refund_processed: ${result?.id}`);
+
+  } catch (err) {
+    console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
+    throw err;
   }
+}
 
   async handleInvoiceRequestFromKassa(header, body) {
-    try {
-      const invoice = body ? body.invoice : null;
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+  try {
+    const invoice = body ? body.invoice_data : null;
 
-      const taskData = {
-        Subject: `Invoice request [Kassa]: ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
-        Description: [
-          `Invoice ID: ${ReceiverV2.getElementText(invoice, 'id')}`,
-          `Amount Paid: ${ReceiverV2.getElementText(invoice, 'amount_paid')}`,
-          `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
-          `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
-          userId ? `User ID: ${userId}` : null,
-        ].filter(Boolean).join('\n'),
-        Status: 'Completed',
-        Type: 'Other',
-        ActivityDate: new Date().toISOString().split('T')[0],
-      };
+    // 1. Identificatie: Pak de UUID uit de header of de body
+    const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
 
-      const email = ReceiverV2.getElementText(body, 'email');
-      const amountPaidVal = invoice ? invoice.amount_paid : null;
-      const amountPaid = amountPaidVal !== null && typeof amountPaidVal === 'object' ? amountPaidVal['#text'] : amountPaidVal;
-      const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';
+    const taskData = {
+      Subject: `Invoice request [Kassa]: ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
+      Description: [
+        `Invoice ID: ${ReceiverV2.getElementText(invoice, 'id')}`,
+        `Amount Paid: ${ReceiverV2.getElementText(invoice, 'amount_paid')}`,
+        `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
+        `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
+        masterUuid ? `Master UUID: ${masterUuid}` : null,
+      ].filter(Boolean).join('\n'),
+      Status: 'Completed',
+      Type: 'Other',
+      ActivityDate: new Date().toISOString().split('T')[0],
+    };
 
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
-      } else {
-        if (email) {
-          const contactId = await this._findUserByEmail(email);
-          if (contactId) taskData.WhoId = contactId;
-        } else if (userId) {
-          const contactId = await this._findUserById(userId);
-          if (contactId) taskData.WhoId = contactId;
-        }
+    const email = ReceiverV2.getElementText(body, 'email');
+    const amountPaidVal = invoice ? invoice.amount_paid : null;
+    const amountPaid = amountPaidVal !== null && typeof amountPaidVal === 'object' ? amountPaidVal['#text'] : amountPaidVal;
+    const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';
 
-        const sfResult = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-        console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
+    // 2. Salesforce koppeling
+    if (!this.sf.isConnected) {
+      console.log(`[receiver] DRY RUN: Would create Task for UUID: ${masterUuid}`);
+    } else {
+      let contactId = null;
+
+      if (masterUuid) {
+        // Zoek eerst op de nieuwe UUID
+        contactId = await this._findUserByMasterUuid(masterUuid);
+      } 
+      
+      if (!contactId && email) {
+        // Fallback op email
+        contactId = await this._findUserByEmail(email);
       }
 
-      await this.sender.sendInvoiceRequest({
-        correlation_id: header.message_id,
-        customer: {
-          email: email || '',
-          first_name: ReceiverV2.getElementText(body, 'first_name') || '',
-          last_name: ReceiverV2.getElementText(body, 'last_name') || '',
-        },
-        invoice: {
-          description: `Invoice ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
-          amount: parseFloat(amountPaid) || 0,
-          currency,
-          due_date: ReceiverV2.getElementText(invoice, 'due_date') || new Date().toISOString().split('T')[0],
-          invoice_number: ReceiverV2.getElementText(invoice, 'id') || undefined,
-        },
-        items: [],
-      });
-      console.log('[receiver] Forwarded invoice_request to facturatie');
-    } catch (err) {
-      console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
-      throw err;
+      if (contactId) {
+        taskData.WhoId = contactId;
+      }
+
+      const sfResult = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+      console.log(`[receiver] Created Task for invoice_request: ${sfResult?.id}`);
     }
+
+    // 3. Doorsturen naar Facturatie (Sender)
+    // BELANGRIJK: We voegen master_uuid toe aan de payload voor de Facturatie-module
+    await this.sender.sendInvoiceRequest({
+      correlation_id: header.message_id,
+      master_uuid: masterUuid, // De lijm voor FossBilling
+      customer: {
+        email: email || '',
+        first_name: ReceiverV2.getElementText(body, 'first_name') || '',
+        last_name: ReceiverV2.getElementText(body, 'last_name') || '',
+      },
+      invoice: {
+        description: `Invoice ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
+        amount: parseFloat(amountPaid) || 0,
+        currency,
+        due_date: ReceiverV2.getElementText(invoice, 'due_date') || new Date().toISOString().split('T')[0],
+        invoice_number: ReceiverV2.getElementText(invoice, 'id') || undefined,
+      },
+      items: [],
+    });
+    
+    console.log(`[receiver] Forwarded invoice_request to facturatie for UUID: ${masterUuid}`);
+  } catch (err) {
+    console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
+    throw err;
   }
+}
 
   async shutdown() {
     console.log('[receiver] Signal received, shutting down gracefully...');

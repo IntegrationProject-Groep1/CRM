@@ -1,5 +1,10 @@
 'use strict';
 
+if (process.env.NODE_ENV === 'production') {
+  console.error('[test-send] ERROR: Cannot run test script in production environment.');
+  process.exit(1);
+}
+
 require('dotenv').config();
 const amqp = require('amqplib');
 const { create } = require('xmlbuilder2');
