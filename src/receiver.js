@@ -39,6 +39,7 @@ const MESSAGE_TYPES = {
   COMPANY_REGISTRATION: 'company_registration',
   COMPANY_UPDATE: 'company_update',
   COMPANY_DELETE: 'company_delete',
+  CANCEL_REGISTRATION: 'cancel_registration',
 };
 
 const parser = new XMLParser({
@@ -306,6 +307,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.COMPANY_REGISTRATION]: () => this.handleCompanyRegistration(header, body),
       [MESSAGE_TYPES.COMPANY_UPDATE]: () => this.handleCompanyUpdate(header, body),
       [MESSAGE_TYPES.COMPANY_DELETE]: () => this.handleCompanyDelete(header, body),
+      [MESSAGE_TYPES.CANCEL_REGISTRATION]: () => this.handleCancelRegistration(header, body),
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -1392,6 +1394,33 @@ async handleUserUpdated(header, body) {
     throw err;
   }
 }
+
+  async handleCancelRegistration(header, body) {
+    try {
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const sessionId = ReceiverV2.getElementText(body, 'session_id');
+      const reason = ReceiverV2.getElementText(body, 'reason');
+
+      if (!userId || !sessionId) {
+        console.log('[receiver] cancel_registration ignored: missing user_id or session_id');
+        return;
+      }
+
+      console.log(`[receiver] Processing cancel_registration for user=${userId}, session=${sessionId}`);
+
+      const payload = { user_id: userId, session_id: sessionId, reason };
+
+      await Promise.all([
+        this.sender.sendCancelRegistrationToKassa(payload),
+        this.sender.sendCancelRegistrationToPlanning(payload),
+      ]);
+
+      console.log(`[receiver] cancel_registration forwarded to Kassa and Planning for user=${userId}`);
+    } catch (err) {
+      console.error(`[receiver] Error in handleCancelRegistration: ${err}`);
+      throw err;
+    }
+  }
 
   async shutdown() {
     console.log('[receiver] Signal received, shutting down gracefully...');
