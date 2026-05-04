@@ -640,3 +640,67 @@ describe('handleUserUnregistered', () => {
     expect(receiver.channel.nack).not.toHaveBeenCalled();
   });
 });
+
+describe('handleIdentityUserEvent', () => {
+  let receiver;
+
+  function buildIdentityEvent(overrides = {}) {
+    return Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+<user_event>
+  <event>${overrides.event || 'UserCreated'}</event>
+  <master_uuid>${overrides.master_uuid || 'identity-uuid-001'}</master_uuid>
+  <email>${overrides.email || 'jan.peeters@ehb.be'}</email>
+  <source_system>${overrides.source_system || 'frontend'}</source_system>
+  <timestamp>2026-05-04T10:00:00Z</timestamp>
+</user_event>`);
+  }
+
+  function buildIdentityMsg(overrides = {}) {
+    return { content: buildIdentityEvent(overrides), fields: { deliveryTag: 99 } };
+  }
+
+  beforeEach(() => { receiver = makeReceiver(); });
+
+  test('upsert Member__c in Salesforce bij UserCreated als verbonden', async () => {
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({ id: 'sf-001', success: true });
+
+    await receiver.handleIdentityUserEvent(buildIdentityMsg());
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+    expect(receiver.channel.ack).toHaveBeenCalled();
+  });
+
+  test('ack zonder SF update in DRY RUN mode', async () => {
+    receiver.sf.isConnected = false;
+
+    await receiver.handleIdentityUserEvent(buildIdentityMsg());
+
+    expect(receiver.sf.apiCall).not.toHaveBeenCalled();
+    expect(receiver.channel.ack).toHaveBeenCalled();
+  });
+
+  test('nack bij onbekend event type', async () => {
+    await receiver.handleIdentityUserEvent(buildIdentityMsg({ event: 'UserUpdated' }));
+
+    expect(receiver.channel.ack).toHaveBeenCalled();
+    expect(receiver.channel.nack).not.toHaveBeenCalled();
+  });
+
+  test('nack bij ontbrekende master_uuid', async () => {
+    const msg = { content: Buffer.from('<user_event><event>UserCreated</event><email>x@x.com</email></user_event>'), fields: { deliveryTag: 99 } };
+
+    await receiver.handleIdentityUserEvent(msg);
+
+    expect(receiver.channel.nack).toHaveBeenCalled();
+    expect(receiver.channel.ack).not.toHaveBeenCalled();
+  });
+
+  test('nack bij ongeldige XML', async () => {
+    const msg = { content: Buffer.from('dit is geen xml'), fields: { deliveryTag: 99 } };
+
+    await receiver.handleIdentityUserEvent(msg);
+
+    expect(receiver.channel.nack).toHaveBeenCalled();
+  });
+});

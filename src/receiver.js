@@ -15,6 +15,8 @@ const KASSA_QUEUE = 'kassa.payments';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
 const USER_REGISTERED_QUEUE = 'user.registered';
 const USER_CREATED_QUEUE = 'user.created';
+const IDENTITY_EVENTS_EXCHANGE = 'user.events';
+const IDENTITY_EVENTS_QUEUE = 'crm.identity.user.events';
 
 const MESSAGE_TYPES = {
   USER_CREATED: 'user.created',
@@ -93,6 +95,12 @@ class ReceiverV2 {
           durable: true,
           arguments: { 'x-dead-letter-exchange': '' },
         });
+
+        // Bind to Identity Service fanout exchange (§15.5)
+        await this.channel.assertExchange(IDENTITY_EVENTS_EXCHANGE, 'fanout', { durable: true });
+        await this.channel.assertQueue(IDENTITY_EVENTS_QUEUE, { durable: true });
+        await this.channel.bindQueue(IDENTITY_EVENTS_QUEUE, IDENTITY_EVENTS_EXCHANGE, '');
+
         await this.channel.prefetch(1);
 
         const consume = async (msg) => {
@@ -109,8 +117,9 @@ class ReceiverV2 {
         this.channel.consume(KASSA_QUEUE, consume, { noAck: false });
         this.channel.consume(USER_CREATED_QUEUE, consume, { noAck: false });
         this.channel.consume(USER_REGISTERED_QUEUE, consume, { noAck: false });
+        this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => this.handleIdentityUserEvent(msg), { noAck: false });
 
-        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}`);
+        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
 
         await new Promise((resolve, reject) => {
           this.connection.on('error', reject);
@@ -1432,6 +1441,57 @@ async handleUserUpdated(header, body) {
     } catch (err) {
       console.error(`[receiver] Error in handleCancelRegistration: ${err}`);
       throw err;
+    }
+  }
+
+  async handleIdentityUserEvent(msg) {
+    if (!msg) return;
+    try {
+      const xml = msg.content.toString('utf8');
+      const parsed = parser.parse(xml);
+      const event = parsed.user_event;
+
+      if (!event) {
+        console.log('[receiver] identity user.events: unexpected format, skipping');
+        this.channel.nack(msg, false, false);
+        return;
+      }
+
+      const eventType = event.event;
+      const masterUuid = event.master_uuid ? String(event.master_uuid) : null;
+      const email = event.email ? String(event.email).toLowerCase().trim() : null;
+      const sourceSystem = event.source_system ? String(event.source_system) : 'unknown';
+
+      if (eventType !== 'UserCreated') {
+        console.log(`[receiver] identity user.events: unhandled event type "${eventType}", acking`);
+        this.channel.ack(msg);
+        return;
+      }
+
+      if (!masterUuid || !email) {
+        console.log('[receiver] identity UserCreated: missing master_uuid or email, skipping');
+        this.channel.nack(msg, false, false);
+        return;
+      }
+
+      console.log(`[receiver] identity UserCreated: uuid=${masterUuid}, email=${email}, source=${sourceSystem}`);
+
+      if (this.sf.isConnected) {
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert(
+            { Master_UUID__c: masterUuid, Email__c: email },
+            'Master_UUID__c'
+          )
+        );
+        console.log(`[receiver] identity UserCreated: upserted Member__c for ${masterUuid}`);
+      } else {
+        console.log(`[receiver] DRY RUN: Would upsert Member__c Master_UUID__c=${masterUuid}, Email__c=${email}`);
+      }
+
+      this.channel.ack(msg);
+    } catch (err) {
+      console.error(`[receiver] Error in handleIdentityUserEvent: ${err}`);
+      this.channel.nack(msg, false, false);
     }
   }
 
