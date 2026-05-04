@@ -1453,14 +1453,15 @@ async handleUserUpdated(header, body) {
 
       if (!event) {
         console.log('[receiver] identity user.events: unexpected format, skipping');
+        this.sendToDeadLetter(msg.content, 'IDENTITY_EVENT_FORMAT_ERROR');
         this.channel.nack(msg, false, false);
         return;
       }
 
-      const eventType = event.event;
-      const masterUuid = event.master_uuid ? String(event.master_uuid) : null;
-      const email = event.email ? String(event.email).toLowerCase().trim() : null;
-      const sourceSystem = event.source_system ? String(event.source_system) : 'unknown';
+      const eventType = ReceiverV2.getElementText(event, 'event');
+      const masterUuid = ReceiverV2.getElementText(event, 'master_uuid');
+      const email = (ReceiverV2.getElementText(event, 'email') || '').toLowerCase().trim();
+      const sourceSystem = ReceiverV2.getElementText(event, 'source_system') || 'unknown';
 
       if (eventType !== 'UserCreated') {
         console.log(`[receiver] identity user.events: unhandled event type "${eventType}", acking`);
@@ -1470,6 +1471,7 @@ async handleUserUpdated(header, body) {
 
       if (!masterUuid || !email) {
         console.log('[receiver] identity UserCreated: missing master_uuid or email, skipping');
+        this.sendToDeadLetter(msg.content, 'IDENTITY_EVENT_VALIDATION_ERROR');
         this.channel.nack(msg, false, false);
         return;
       }
@@ -1491,6 +1493,7 @@ async handleUserUpdated(header, body) {
       this.channel.ack(msg);
     } catch (err) {
       console.error(`[receiver] Error in handleIdentityUserEvent: ${err}`);
+      this.sendToDeadLetter(msg.content, `IDENTITY_EVENT_PROCESSING_ERROR: ${err.message}`);
       this.channel.nack(msg, false, false);
     }
   }
