@@ -41,6 +41,24 @@ const MESSAGE_TYPES = {
   COMPANY_DELETE: 'company_delete',
 };
 
+const LAZY_MASTER_UUID_TYPES = new Set([
+  MESSAGE_TYPES.USER_CREATED,
+  MESSAGE_TYPES.USER_REGISTERED,
+  MESSAGE_TYPES.NEW_REGISTRATION,
+  MESSAGE_TYPES.PAYMENT_REGISTERED,
+  MESSAGE_TYPES.BADGE_SCANNED,
+  MESSAGE_TYPES.INVOICE_STATUS,
+  MESSAGE_TYPES.SEND_INVOICE,
+  MESSAGE_TYPES.CONSUMPTION_ORDER,
+  MESSAGE_TYPES.BADGE_ASSIGNED,
+  MESSAGE_TYPES.REFUND_PROCESSED,
+  MESSAGE_TYPES.INVOICE_REQUEST,
+  MESSAGE_TYPES.INVOICE_CANCELLED,
+  MESSAGE_TYPES.USER_UPDATED,
+  MESSAGE_TYPES.DELETE_USER,
+  MESSAGE_TYPES.USER_DELETED,
+]);
+
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '',
@@ -142,11 +160,14 @@ class ReceiverV2 {
     const messageType = header.type;
     const isFrontendUnregistered = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
     const isSendInvoice = messageType === MESSAGE_TYPES.SEND_INVOICE;
+    const canResolveMasterUuidLazily = LAZY_MASTER_UUID_TYPES.has(messageType);
     const requiredFields = isFrontendUnregistered
       ? ['message_id', 'version', 'type', 'timestamp', 'source', 'receiver']
       : isSendInvoice
         ? ['message_id', 'version', 'type', 'timestamp', 'source']
-      : ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
+      : canResolveMasterUuidLazily
+        ? ['message_id', 'version', 'type', 'timestamp', 'source']
+        : ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
     const missingFields = requiredFields.filter((f) => header[f] === undefined || header[f] === null);
     if (missingFields.length > 0) {
       return [false, `Missing required header fields: ${missingFields.join(', ')}`];
@@ -320,6 +341,35 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       (conn) => conn.sobject('Member__c').find({ Email__c: email }, ['Id']).limit(1)
     );
     return records && records.length > 0 ? records[0].Id : null;
+  }
+
+  _getExistingMasterUuid(header, body) {
+    return (header && header.master_uuid) ||
+      ReceiverV2.getElementText(body, 'master_uuid') ||
+      ReceiverV2.getElementText(body?.user, 'master_uuid') ||
+      ReceiverV2.getElementText(body?.customer, 'master_uuid') ||
+      ReceiverV2.getElementText(body?.company, 'master_uuid') ||
+      null;
+  }
+
+  _getFallbackEmail(body, explicitEmail = null) {
+    return explicitEmail ||
+      ReceiverV2.getElementText(body, 'email') ||
+      ReceiverV2.getElementText(body?.user, 'email') ||
+      ReceiverV2.getElementText(body?.customer, 'email') ||
+      null;
+  }
+
+  async resolveMasterUuid(header, body, options = {}) {
+    const existingMasterUuid = this._getExistingMasterUuid(header, body);
+    if (existingMasterUuid) return existingMasterUuid;
+
+    const email = (this._getFallbackEmail(body, options.email) || '').toLowerCase().trim();
+    if (!email) return null;
+
+    const sourceSystem = options.sourceSystem || (header && header.source) || 'crm';
+    console.log(`[receiver] Lazy Master UUID lookup for ${email} via ${sourceSystem}`);
+    return this.getOrCreateMasterUuid(email, sourceSystem);
   }
 
   async handleUserUnregistered(header, body) {
@@ -762,10 +812,8 @@ async handleSendInvoice(header, body) {
   try {
     const customer = body ? body.customer : null;
     const invoice = body ? body.invoice : null;
-    const masterUuid = header.master_uuid ||
-      ReceiverV2.getElementText(customer, 'master_uuid') ||
-      ReceiverV2.getElementText(body, 'master_uuid');
     const email = ReceiverV2.getElementText(customer, 'email');
+    const masterUuid = await this.resolveMasterUuid(header, body, { email, sourceSystem: 'facturatie' });
     const invoiceUrl = ReceiverV2.getElementText(invoice, 'pdf_url');
     const dueDate = ReceiverV2.getElementText(invoice, 'due_date');
     const invoiceNumber = ReceiverV2.getElementText(invoice, 'id');
@@ -813,7 +861,7 @@ async handleSendInvoice(header, body) {
  */
 async handleReceivedInvoiceCancelled(header, body) {
   try {
-    const masterUuid = header.master_uuid;
+    const masterUuid = await this.resolveMasterUuid(header, body);
     const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
 
     console.log(`[receiver] Processing invoice_cancelled for ${masterUuid}, invoice: ${invoiceNumber}`);
@@ -838,7 +886,8 @@ async handleReceivedInvoiceCancelled(header, body) {
       const invoice = body ? body.invoice : null;
       const transaction = body ? body.transaction : null;
       const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
-      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
+      const email = ReceiverV2.getElementText(body, 'email');
+      const masterUuid = await this.resolveMasterUuid(header, body, { email });
       const transactionId = ReceiverV2.getElementText(transaction, 'id');
 
       const amountVal = invoice ? invoice.amount_paid : null;
@@ -864,12 +913,12 @@ async handleReceivedInvoiceCancelled(header, body) {
         return;
       }
 
-      const email = ReceiverV2.getElementText(body, 'email');
-      if (email) {
-        const contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
-      } else if (masterUuid) {
+      if (masterUuid) {
         const contactId = await this._findUserByMasterUuid(masterUuid);
+        if (contactId) taskData.WhoId = contactId;
+      }
+      if (!taskData.WhoId && email) {
+        const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
       }
 
@@ -888,13 +937,17 @@ async handleReceivedInvoiceCancelled(header, body) {
         return;
       }
 
+      const email = ReceiverV2.getElementText(body, 'email');
+      const masterUuid = await this.resolveMasterUuid(header, body, { email });
+
       const taskData = {
         Subject: `Badge scanned: ${ReceiverV2.getElementText(body, 'badge_id')}`,
         Description: [
           `Scan Type: ${ReceiverV2.getElementText(body, 'scan_type')}`,
           `Location: ${ReceiverV2.getElementText(body, 'location')}`,
-          `Email: ${ReceiverV2.getElementText(body, 'email')}`,
-        ].join('\n'),
+          `Email: ${email}`,
+          masterUuid ? `Master UUID: ${masterUuid}` : null,
+        ].filter(Boolean).join('\n'),
         Status: 'Completed',
         Type: 'Other',
         ActivityDate: new Date().toISOString().split('T')[0],
@@ -905,8 +958,11 @@ async handleReceivedInvoiceCancelled(header, body) {
         return;
       }
 
-      const email = ReceiverV2.getElementText(body, 'email');
-      if (email) {
+      if (masterUuid) {
+        const contactId = await this._findUserByMasterUuid(masterUuid);
+        if (contactId) taskData.WhoId = contactId;
+      }
+      if (!taskData.WhoId && email) {
         const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
       }
@@ -973,7 +1029,12 @@ async handleReceivedInvoiceCancelled(header, body) {
       }
 
       const email = ReceiverV2.getElementText(body, 'email');
-      if (email) {
+      const masterUuid = await this.resolveMasterUuid(header, body, { email });
+      if (masterUuid) {
+        const contactId = await this._findUserByMasterUuid(masterUuid);
+        if (contactId) taskData.WhoId = contactId;
+      }
+      if (!taskData.WhoId && email) {
         const contactId = await this._findUserByEmail(email);
         if (contactId) taskData.WhoId = contactId;
       }
@@ -1071,11 +1132,12 @@ async handleReceivedInvoiceCancelled(header, body) {
         let memberId = null;
         if (!isAnonymous && customer) {
           const email = ReceiverV2.getElementText(customer, 'email');
-          const masterUuid = ReceiverV2.getElementText(customer, 'master_uuid'); // <--- NIEUWE MANIER
+          const masterUuid = await this.resolveMasterUuid(header, body, { email });
           
-          memberId = email
-            ? await this._findUserByEmail(email)
-            : (masterUuid ? await this._findUserByMasterUuid(masterUuid) : null); // Update ook de functienaam
+          memberId = masterUuid ? await this._findUserByMasterUuid(masterUuid) : null;
+          if (!memberId && email) {
+            memberId = await this._findUserByEmail(email);
+          }
         }
 
         for (let i = 0; i < itemList.length; i++) {
@@ -1123,9 +1185,7 @@ async handleReceivedInvoiceCancelled(header, body) {
   async handleDeleteUser(header, body) {
   try {
     // Check eerst de header, dan de body (user.master_uuid), dan de body (master_uuid)
-    const masterUuid = header.master_uuid || 
-                       ReceiverV2.getElementText(body?.user, 'master_uuid') || 
-                       ReceiverV2.getElementText(body, 'master_uuid');
+    const masterUuid = await this.resolveMasterUuid(header, body);
 
     if (!masterUuid) {
       console.error('[receiver] Delete request ignored: No master_uuid found in header or body');
@@ -1165,8 +1225,9 @@ async handleReceivedInvoiceCancelled(header, body) {
 
 async handleUserUpdated(header, body) {
   try {
-    const masterUuid = header.master_uuid || ReceiverV2.getElementText(body?.user, 'master_uuid');
     const user = body?.user;
+    const email = ReceiverV2.getElementText(user, 'email');
+    const masterUuid = await this.resolveMasterUuid(header, body, { email });
 
     if (!masterUuid) {
       console.error('[receiver] user.updated ignored: missing master_uuid');
@@ -1175,15 +1236,16 @@ async handleUserUpdated(header, body) {
 
     const firstName = ReceiverV2.getElementText(user, 'first_name');
     const lastName = ReceiverV2.getElementText(user, 'last_name');
-    const email = ReceiverV2.getElementText(user, 'email');
 
     console.log(`[receiver] Updating user for UUID: ${masterUuid}`);
 
     // 1. Update MySQL (zodat je lokale kopie synchroon blijft)
-    await this.db.query(
-      'UPDATE crm_user_sync SET first_name = ?, last_name = ?, email = ?, last_sync = NOW() WHERE master_uuid = ?',
-      [firstName, lastName, email, masterUuid]
-    );
+    if (this.db) {
+      await this.db.query(
+        'UPDATE crm_user_sync SET first_name = ?, last_name = ?, email = ?, last_sync = NOW() WHERE master_uuid = ?',
+        [firstName, lastName, email, masterUuid]
+      );
+    }
 
     // 2. Update Salesforce
     if (this.sf.isConnected) {
@@ -1238,7 +1300,8 @@ async handleUserUpdated(header, body) {
   async handleBadgeAssigned(header, body) {
   try {
     const badgeId = ReceiverV2.getElementText(body, 'badge_id');
-    const masterUuid = ReceiverV2.getElementText(body, 'master_uuid') || header.master_uuid;
+    const email = ReceiverV2.getElementText(body, 'email');
+    const masterUuid = await this.resolveMasterUuid(header, body, { email });
 
     if (!this.sf.isConnected) {
       console.log(`[receiver] DRY RUN: Update Badge_ID__c=${badgeId} for UUID=${masterUuid}`); 
@@ -1263,7 +1326,8 @@ async handleUserUpdated(header, body) {
 
   async handleRefundProcessed(header, body) {
     try {
-      const masterUuid = header ? header.master_uuid : null;
+      const email = ReceiverV2.getElementText(body, 'email');
+      const masterUuid = await this.resolveMasterUuid(header, body, { email });
       const refund = body ? body.refund : null;
       const refundType = ReceiverV2.getElementText(body, 'refund_type');
       const originalTxId = ReceiverV2.getElementText(body, 'original_transaction_id');
@@ -1292,8 +1356,6 @@ async handleUserUpdated(header, body) {
       };
 
     // 4. De juiste persoon zoeken in Salesforce
-    const email = ReceiverV2.getElementText(body, 'email');
-    
     if (masterUuid) {
       // Prioriteit 1: Zoeken op de nieuwe Master UUID
       const contactId = await this._findUserByMasterUuid(masterUuid);
@@ -1321,7 +1383,8 @@ async handleUserUpdated(header, body) {
     const invoice = body ? body.invoice_data : null;
 
     // 1. Identificatie: Pak de UUID uit de header of de body
-    const masterUuid = header.master_uuid || ReceiverV2.getElementText(body, 'master_uuid');
+    const email = ReceiverV2.getElementText(body, 'email');
+    const masterUuid = await this.resolveMasterUuid(header, body, { email });
 
     const taskData = {
       Subject: `Invoice request [Kassa]: ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
@@ -1337,7 +1400,6 @@ async handleUserUpdated(header, body) {
       ActivityDate: new Date().toISOString().split('T')[0],
     };
 
-    const email = ReceiverV2.getElementText(body, 'email');
     const amountPaidVal = invoice ? invoice.amount_paid : null;
     const amountPaid = amountPaidVal !== null && typeof amountPaidVal === 'object' ? amountPaidVal['#text'] : amountPaidVal;
     const currency = amountPaidVal !== null && typeof amountPaidVal === 'object' ? (amountPaidVal.currency || 'eur') : 'eur';

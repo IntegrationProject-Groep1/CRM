@@ -55,6 +55,10 @@ function buildXml(type, bodyXml = '', extra = {}) {
 </message>`;
 }
 
+function withoutMasterUuid(xmlString) {
+  return xmlString.replace(/\s*<master_uuid>test-master-uuid-1234<\/master_uuid>/, '');
+}
+
 function buildMsg(xmlString) {
   return {
     content: Buffer.from(xmlString, 'utf8'),
@@ -231,6 +235,27 @@ describe('validateXmlMessage', () => {
     expect(err).toBeNull();
   });
 
+  test('lazy types zonder master_uuid zijn geldig', () => {
+    const lazyTypes = [
+      'new_registration',
+      'payment_registered',
+      'badge_scanned',
+      'consumption_order',
+      'invoice_request',
+      'user.updated',
+    ];
+
+    for (const type of lazyTypes) {
+      const parsed = validParsed({ type });
+      delete parsed.message.header.master_uuid;
+
+      const [valid, err] = receiver.validateXmlMessage(parsed);
+
+      expect(valid).toBe(true);
+      expect(err).toBeNull();
+    }
+  });
+
   test('frontend user.unregistered met version 1.0 en zonder master_uuid is geldig', () => {
     const parsed = {
       message: {
@@ -319,7 +344,7 @@ describe('handleSendInvoice', () => {
     expect(receiver.channel.ack).toHaveBeenCalled();
   });
 
-  test('valt terug op customer.email wanneer master_uuid ontbreekt', async () => {
+  test('vraagt lazy master_uuid op via customer.email wanneer master_uuid ontbreekt', async () => {
     const receiver = makeReceiver();
     const update = jest.fn().mockResolvedValue({ id: 'sf-member-2' });
     receiver.sf.isConnected = true;
@@ -331,7 +356,8 @@ describe('handleSendInvoice', () => {
 
     await receiver.handleMessage(buildMsg(buildSendInvoiceXml()));
 
-    expect(receiver._findUserByMasterUuid).not.toHaveBeenCalled();
+    expect(receiver.getOrCreateMasterUuid).toHaveBeenCalledWith('info@bedrijf.be', 'facturatie');
+    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('test-master-uuid-1234');
     expect(receiver._findUserByEmail).toHaveBeenCalledWith('info@bedrijf.be');
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ Id: 'sf-member-2' }));
     expect(receiver.channel.ack).toHaveBeenCalled();
@@ -416,6 +442,7 @@ describe('handlePaymentRegistered', () => {
   test('maakt Task aan in Salesforce en neemt payment_context en transaction_id mee', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
+    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue(null);
     receiver._findUserByEmail = jest.fn().mockResolvedValue('member-1');
     const createTask = jest.fn().mockResolvedValue({ id: 'task-1' });
     receiver.sf.apiCall.mockImplementation(async (callback) => callback({
@@ -482,6 +509,21 @@ describe('handleConsumptionOrder', () => {
 });
 
 describe('handleBadgeScanned', () => {
+  test('maakt lazy master_uuid aan wanneer alleen email aanwezig is', async () => {
+    const receiver = makeReceiver();
+    const xml = withoutMasterUuid(buildXml('badge_scanned', `
+      <badge_id>BADGE-99</badge_id>
+      <scan_type>entry</scan_type>
+      <location>Main Hall</location>
+      <email>badge@example.com</email>
+    `));
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.getOrCreateMasterUuid).toHaveBeenCalledWith('badge@example.com', 'test');
+    expect(receiver.channel.ack).toHaveBeenCalled();
+  });
+
   test('maakt badge-scan task aan in Salesforce', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
@@ -515,6 +557,26 @@ describe('handleDeleteUser', () => {
 });
 
 describe('handleInvoiceRequestFromKassa', () => {
+  test('stuurt lazy master_uuid door naar facturatie als header master_uuid ontbreekt', async () => {
+    const receiver = makeReceiver();
+    const xml = withoutMasterUuid(buildXml('invoice_request', `
+      <email>kassa@example.com</email>
+      <invoice_data>
+        <id>KINV-001</id>
+        <amount_paid currency="eur">150.00</amount_paid>
+        <status>pending</status>
+        <due_date>2026-06-01</due_date>
+      </invoice_data>
+    `));
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.getOrCreateMasterUuid).toHaveBeenCalledWith('kassa@example.com', 'test');
+    expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ master_uuid: 'test-master-uuid-1234' }),
+    );
+  });
+
   test('stuurt factuurverzoek door via sender', async () => {
     const receiver = makeReceiver();
     const xml = buildXml('invoice_request', `
