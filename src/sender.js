@@ -110,43 +110,79 @@ class CRMSender {
   }
 
   buildMailingSendXml(data) {
-    const messageId = `mail-crm-${uuidv4()}`;
+    const messageId = data.message_id || uuidv4();
     const timestamp = new Date().toISOString();
+    const mailing = data.mailing || data;
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('type').txt('send_mailing');
-    header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
+    header.ele('source').txt('crm');
+    header.ele('type').txt('send_mailing');
     header.ele('version').txt('2.0');
-    if (data.correlation_id) {
-      header.ele('correlation_id').txt(data.correlation_id);
-    }
+    header.ele('correlation_id').txt(data.correlation_id || uuidv4());
 
     const body = root.ele('body');
-
-    const mailing = body.ele('mailing');
-    mailing.ele('subject').txt(data.mailing.subject);
-    mailing.ele('template_id').txt(data.mailing.template_id);
-    if (data.mailing.from_address) {
-      mailing.ele('from_address').txt(data.mailing.from_address);
-    }
-    if (data.mailing.reply_to) {
-      mailing.ele('reply_to').txt(data.mailing.reply_to);
-    }
+    body.ele('campaign_id').txt(mailing.campaign_id || data.campaign_id || '');
+    body.ele('subject').txt(mailing.subject);
+    body.ele('template_id').txt(mailing.template_id);
+    body.ele('mail_type').txt(mailing.mail_type || data.mail_type || 'general_announcement');
 
     const recipients = body.ele('recipients');
     for (const recipient of data.recipients) {
       const recipientElem = recipients.ele('recipient');
       recipientElem.ele('email').txt(recipient.email);
-      recipientElem.ele('first_name').txt(recipient.first_name);
-      recipientElem.ele('last_name').txt(recipient.last_name);
-      if (recipient.language) {
-        recipientElem.ele('language').txt(recipient.language);
-      }
+      recipientElem.ele('user_id').txt(recipient.user_id || recipient.master_uuid || '');
+
+      const contact = recipientElem.ele('contact');
+      contact.ele('first_name').txt(recipient.first_name);
+      contact.ele('last_name').txt(recipient.last_name);
     }
+
+    if (data.template_data !== undefined) {
+      const templateData = typeof data.template_data === 'string'
+        ? data.template_data
+        : JSON.stringify(data.template_data);
+      body.ele('template_data').txt(templateData);
+    }
+    if (data.body_html) {
+      body.ele('body_html').txt(data.body_html);
+    }
+    if (data.attachment) {
+      const attachment = body.ele('attachment');
+      attachment.ele('filename').txt(data.attachment.filename);
+      attachment.ele('content_type').txt(data.attachment.content_type);
+      attachment.ele('base64_data').txt(data.attachment.base64_data);
+    }
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  buildLogXml({ level, action, message }) {
+    const validLevels = new Set(['info', 'warning', 'error']);
+    const validActions = new Set([
+      'registration', 'user', 'payment', 'invoice', 'session', 'calendar',
+      'email', 'wallet', 'refund', 'identity', 'xml_validation', 'system_error', 'badge',
+    ]);
+
+    if (!validLevels.has(level)) throw new Error(`Invalid log level: ${level}`);
+    if (!validActions.has(action)) throw new Error(`Invalid log action: ${action}`);
+
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(uuidv4());
+    header.ele('timestamp').txt(new Date().toISOString());
+    header.ele('source').txt('crm');
+    header.ele('type').txt('log');
+    header.ele('version').txt('2.0');
+
+    const body = root.ele('body');
+    body.ele('level').txt(level);
+    body.ele('action').txt(action);
+    body.ele('message').txt(message);
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }
@@ -189,6 +225,26 @@ class CRMSender {
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send mailing send request: ${error}`);
+      throw error;
+    }
+  }
+
+  async sendLog(data) {
+    if (!this.channel) {
+      throw new Error('CRM Sender not initialized. Call init() first.');
+    }
+    try {
+      const xmlPayload = this.buildLogXml(data);
+      const queue = 'logs';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send log message: ${error}`);
       throw error;
     }
   }
