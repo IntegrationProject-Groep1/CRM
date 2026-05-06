@@ -35,9 +35,9 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('type').txt('invoice_cancelled');
-    header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
+    header.ele('source').txt('crm');
+    header.ele('type').txt('invoice_cancelled');
     header.ele('version').txt('2.0');
 
     const body = root.ele('body');
@@ -76,9 +76,9 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('type').txt('event_ended');
-    header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
+    header.ele('source').txt('crm');
+    header.ele('type').txt('event_ended');
     header.ele('version').txt('2.0');
 
     const body = root.ele('body');
@@ -114,9 +114,9 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('type').txt('invoice_request');
-    header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
+    header.ele('source').txt('crm');
+    header.ele('type').txt('invoice_request');
     header.ele('version').txt('2.0');
     header.ele('correlation_id').txt(data.correlation_id || data.message_id || uuidv4());
 
@@ -413,9 +413,9 @@ class CRMSender {
 
      const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('type').txt('new_registration');
-    header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
+    header.ele('source').txt('crm');
+    header.ele('type').txt('new_registration');
     header.ele('version').txt('2.0');
 
     const body = root.ele('body');
@@ -499,9 +499,9 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('type').txt('profile_update');
-    header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
+    header.ele('source').txt('crm');
+    header.ele('type').txt('profile_update');
     header.ele('version').txt('2.0');
 
     const body = root.ele('body');
