@@ -54,7 +54,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized');
     try {
       const xmlPayload = this.buildInvoiceCancelledXml(data);
-      const queue = 'crm.to.facturatie';
+      const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
@@ -92,7 +92,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized');
     try {
       const xmlPayload = this.buildEventEndedXml(data);
-      const queue = 'crm.to.facturatie';
+      const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
@@ -229,7 +229,7 @@ class CRMSender {
     }
     try {
       const xmlPayload = this.buildInvoiceRequestXml(data);
-      const queue = 'crm.to.facturatie';
+      const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
@@ -249,7 +249,7 @@ class CRMSender {
       throw new Error('CRM Sender not initialized. Call init() first.');
     }
     try {
-      const queue = 'crm.to.facturatie';
+      const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
@@ -269,7 +269,7 @@ class CRMSender {
       throw new Error('CRM Sender not initialized. Call init() first.');
     }
     try {
-      const queue = 'crm.to.facturatie';
+      const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
@@ -477,7 +477,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized.');
     try {
       const xmlPayload = this.buildNewRegistrationForFacturatieXml(data);
-      const queue = 'crm.to.facturatie';
+      const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
