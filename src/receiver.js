@@ -144,7 +144,10 @@ class ReceiverV2 {
         await this.channel.bindQueue(IDENTITY_EVENTS_QUEUE, IDENTITY_EVENTS_EXCHANGE, '');
 
         await this.channel.assertExchange(PLANNING_EXCHANGE, 'topic', { durable: true });
-        await this.channel.assertQueue(PLANNING_SESSION_QUEUE, { durable: true });
+        await this.channel.assertQueue(PLANNING_SESSION_QUEUE, {
+          durable: true,
+          arguments: { 'x-dead-letter-exchange': 'planning.dlx' },
+        });
         for (const routingKey of PLANNING_SESSION_ROUTING_KEYS) {
           await this.channel.bindQueue(PLANNING_SESSION_QUEUE, PLANNING_EXCHANGE, routingKey);
         }
