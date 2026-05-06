@@ -144,17 +144,17 @@ describe('Betaling flow - sendConsumptionOrderToFacturatie', () => {
 
   const xml = '<message><header><type>consumption_order</type></header></message>';
 
-  test('stuurt raw XML naar facturatie.incoming', async () => {
+  test('stuurt raw XML naar crm.to.facturatie', async () => {
     const ch = attachMockChannel(sender);
     const result = await sender.sendConsumptionOrderToFacturatie(xml);
 
-    expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
+    expect(ch.assertQueue).toHaveBeenCalledWith('crm.to.facturatie', { durable: true });
     expect(ch.sendToQueue).toHaveBeenCalledWith(
-      'facturatie.incoming',
+      'crm.to.facturatie',
       Buffer.from(xml),
       expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
     );
-    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming', payload: xml });
+    expect(result).toMatchObject({ success: true, queue: 'crm.to.facturatie', payload: xml });
   });
 });
 
@@ -165,17 +165,17 @@ describe('Betaling flow - payment_registered forwarding', () => {
 
   const xml = '<message><header><type>payment_registered</type></header></message>';
 
-  test('stuurt raw payment_registered XML naar facturatie.incoming', async () => {
+  test('stuurt raw payment_registered XML naar crm.to.facturatie', async () => {
     const ch = attachMockChannel(sender);
     const result = await sender.sendPaymentRegisteredToFacturatie(xml);
 
-    expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
+    expect(ch.assertQueue).toHaveBeenCalledWith('crm.to.facturatie', { durable: true });
     expect(ch.sendToQueue).toHaveBeenCalledWith(
-      'facturatie.incoming',
+      'crm.to.facturatie',
       Buffer.from(xml),
       expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
     );
-    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming', payload: xml });
+    expect(result).toMatchObject({ success: true, queue: 'crm.to.facturatie', payload: xml });
   });
 
   test('stuurt raw payment_registered XML naar frontend.incoming', async () => {
@@ -583,17 +583,17 @@ describe('Betaling flow — sendInvoiceRequest', () => {
     await expect(sender.sendInvoiceRequest(data)).rejects.toThrow('not initialized');
   });
 
-  test('assertQueue is called with "facturatie.incoming"', async () => {
+  test('assertQueue is called with "crm.to.facturatie"', async () => {
     const ch = attachMockChannel(sender);
     await sender.sendInvoiceRequest(data);
-    expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
+    expect(ch.assertQueue).toHaveBeenCalledWith('crm.to.facturatie', { durable: true });
   });
 
-  test('sendToQueue sends to "facturatie.incoming" with XML and correct options', async () => {
+  test('sendToQueue sends to "crm.to.facturatie" with XML and correct options', async () => {
     const ch = attachMockChannel(sender);
     await sender.sendInvoiceRequest(data);
     expect(ch.sendToQueue).toHaveBeenCalledWith(
-      'facturatie.incoming',
+      'crm.to.facturatie',
       expect.any(Buffer),
       expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
     );
@@ -606,10 +606,10 @@ describe('Betaling flow — sendInvoiceRequest', () => {
     expect(root.header.type).toBe('invoice_request');
   });
 
-  test('returns { success: true, queue: "facturatie.incoming", payload }', async () => {
+  test('returns { success: true, queue: "crm.to.facturatie", payload }', async () => {
     attachMockChannel(sender);
     const result = await sender.sendInvoiceRequest(data);
-    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming' });
+    expect(result).toMatchObject({ success: true, queue: 'crm.to.facturatie' });
     expect(typeof result.payload).toBe('string');
   });
 });
