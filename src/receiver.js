@@ -637,7 +637,7 @@ async handleUserCreated(header, body) {
         First_Name__c: firstName,
         Last_Name__c: lastName,
         Email__c: email,
-        User_Type__c: isCompany ? 'Bedrijf' : 'Particulier'
+        User_Type__c: isCompany
       };
 
       await this.sf.apiCall((conn) => 
@@ -726,7 +726,7 @@ async handleCompanyRegistration(header, body) {
     // of pas 'Account' aan naar je custom Company object naam.
     if (this.sf.isConnected) {
       const result = await this.sf.apiCall((conn) => 
-        conn.sobject('Account').upsert(sfCompanyData, 'Master_UUID__c')
+        conn.sobject('Member__c').upsert(sfCompanyData, 'Master_UUID__c')
       );
       console.log(`[salesforce] Company gesynchroniseerd: ${result.id}`);
     } else {
