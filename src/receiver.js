@@ -141,19 +141,29 @@ class ReceiverV2 {
     }
 
     const messageType = header.type;
-    const isFrontendUnregistered = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
-    const isSendInvoice = messageType === MESSAGE_TYPES.SEND_INVOICE;
-    const requiredFields = isFrontendUnregistered
-      ? ['message_id', 'version', 'type', 'timestamp', 'source', 'receiver']
-      : isSendInvoice
-        ? ['message_id', 'version', 'type', 'timestamp', 'source']
-      : ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
+    const typesWithoutMasterUuid = new Set([
+      MESSAGE_TYPES.USER_UNREGISTERED,
+      MESSAGE_TYPES.USER_CREATED,
+      MESSAGE_TYPES.USER_REGISTERED,
+      MESSAGE_TYPES.SEND_INVOICE,
+    ]);
+    const typesAcceptingV1 = new Set([
+      MESSAGE_TYPES.USER_UNREGISTERED,
+      MESSAGE_TYPES.USER_CREATED,
+      MESSAGE_TYPES.USER_REGISTERED,
+    ]);
+    const needsReceiver = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
+    const baseFields = ['message_id', 'version', 'type', 'timestamp', 'source'];
+    const requiredFields = needsReceiver
+      ? [...baseFields, 'receiver']
+      : typesWithoutMasterUuid.has(messageType)
+        ? baseFields
+        : [...baseFields, 'master_uuid'];
     const missingFields = requiredFields.filter((f) => header[f] === undefined || header[f] === null);
     if (missingFields.length > 0) {
       return [false, `Missing required header fields: ${missingFields.join(', ')}`];
     }
-
-    const validVersions = isFrontendUnregistered ? ['1.0', '2.0'] : ['2.0'];
+    const validVersions = typesAcceptingV1.has(messageType) ? ['1.0', '2.0'] : ['2.0'];
     if (!validVersions.includes(String(header.version))) {
       return [false, `Invalid version: expected 2.0, got ${header.version}`];
     }

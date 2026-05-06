@@ -249,6 +249,42 @@ describe('validateXmlMessage', () => {
     expect(valid).toBe(true);
     expect(err).toBeNull();
   });
+
+  test('user.created zonder master_uuid en version 1.0 is geldig', () => {
+    const parsed = {
+      message: {
+        header: {
+          message_id: 'id-uc-1',
+          version: '1.0',
+          type: 'user.created',
+          timestamp: new Date().toISOString(),
+          source: 'frontend.drupal',
+        },
+      },
+    };
+
+    const [valid, err] = receiver.validateXmlMessage(parsed);
+    expect(valid).toBe(true);
+    expect(err).toBeNull();
+  });
+
+  test('user.registered zonder master_uuid en version 1.0 is geldig', () => {
+    const parsed = {
+      message: {
+        header: {
+          message_id: 'id-ur-1',
+          version: '1.0',
+          type: 'user.registered',
+          timestamp: new Date().toISOString(),
+          source: 'frontend.drupal',
+        },
+      },
+    };
+
+    const [valid, err] = receiver.validateXmlMessage(parsed);
+    expect(valid).toBe(true);
+    expect(err).toBeNull();
+  });
 });
 
 describe('handleMessage', () => {
