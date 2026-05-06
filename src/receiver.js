@@ -1347,7 +1347,7 @@ async handleUserUpdated(header, body) {
   async handleBadgeAssigned(header, body) {
   try {
     const badgeId = ReceiverV2.getElementText(body, 'badge_id');
-    const email = ReceiverV2.getElementText(body, 'email') || ReceiverV2.getElementText(invoice, 'email');
+    const email = ReceiverV2.getElementText(body, 'email');
     const masterUuid = await this.resolveMasterUuid(header, body, { email });
 
     if (!this.sf.isConnected) {
