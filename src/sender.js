@@ -80,9 +80,7 @@ class CRMSender {
     header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
     header.ele('version').txt('2.0');
-    if (data.correlation_id) {
-      header.ele('correlation_id').txt(data.correlation_id);
-    }
+    header.ele('correlation_id').txt(data.correlation_id || data.message_id || uuidv4());
 
     const body = root.ele('body');
     body.ele('user_id').txt(data.user_id || data.customer?.user_id || data.master_uuid || '');
@@ -204,6 +202,26 @@ class CRMSender {
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send invoice request: ${error}`);
+      throw error;
+    }
+  }
+
+  async sendConsumptionOrderToFacturatie(xmlPayload) {
+    if (!this.channel) {
+      throw new Error('CRM Sender not initialized. Call init() first.');
+    }
+    try {
+      const queue = 'facturatie.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Consumption order forwarded unchanged to queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to forward consumption order to Facturatie: ${error}`);
       throw error;
     }
   }
@@ -339,9 +357,19 @@ class CRMSender {
     if (data.customer.vat_number) {
       customer.ele('vat_number').txt(data.customer.vat_number);
     }
+    if (data.customer.company_id) {
+      customer.ele('company_id').txt(data.customer.company_id);
+    }
+    if (data.customer.badge_id) {
+      customer.ele('badge_id').txt(data.customer.badge_id);
+    }
+    customer.ele('session_id').txt(data.customer.session_id || data.session_id || '');
+    if (data.customer.session_title || data.session_title) {
+      customer.ele('session_title').txt(data.customer.session_title || data.session_title);
+    }
 
-    const paymentDue = body.ele('payment_due');
-    paymentDue.ele('amount').txt(String(data.payment_due.amount));
+    const paymentDue = customer.ele('payment_due');
+    paymentDue.ele('amount', { currency: 'eur' }).txt(String(data.payment_due.amount));
     const normalizedStatus = data.payment_due.status === 'paid' ? 'paid' : 'unpaid';
     paymentDue.ele('status').txt(normalizedStatus);
 
@@ -439,41 +467,7 @@ class CRMSender {
   }
 
   buildNewRegistrationForFacturatieXml(data) {
-    const messageId = `reg-foss-${uuidv4()}`;
-    const timestamp = new Date().toISOString();
-
-    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
-
-    const header = root.ele('header');
-    header.ele('message_id').txt(messageId);
-    header.ele('master_uuid').txt(data.master_uuid); // De nieuwe standaard
-    header.ele('type').txt('new_registration');
-    header.ele('source').txt('crm');
-    header.ele('timestamp').txt(timestamp);
-    header.ele('version').txt('2.0');
-
-    const body = root.ele('body');
-    const customer = body.ele('customer');
-    customer.ele('first_name').txt(data.customer.first_name);
-    customer.ele('last_name').txt(data.customer.last_name);
-    customer.ele('email').txt(data.customer.email);
-    customer.ele('type').txt(data.customer.type);
-    if (data.customer.company_name) customer.ele('company_name').txt(data.customer.company_name);
-    if (data.customer.vat_number) customer.ele('vat_number').txt(data.customer.vat_number);
-
-    const address = body.ele('address');
-    address.ele('street').txt(data.address.street || '');
-    address.ele('number').txt(data.address.number || '');
-    address.ele('postal_code').txt(data.address.postal_code || '');
-    address.ele('city').txt(data.address.city || '');
-    address.ele('country').txt(data.address.country || 'BE');
-
-    const fee = body.ele('registration_fee');
-    fee.ele('amount').txt(String(data.registration_fee.amount));
-    fee.ele('status').txt(data.registration_fee.status);
-    fee.ele('trigger_invoice').txt(String(data.registration_fee.trigger_invoice));
-
-    return root.doc().end({ prettyPrint: true, indent: '  ' });
+    return this.buildNewRegistrationForKassaXml(data);
   }
 
   buildCancelRegistrationXml(data) {

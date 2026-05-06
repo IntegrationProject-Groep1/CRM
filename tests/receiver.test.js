@@ -16,6 +16,7 @@ jest.mock('../src/sender', () => {
     sendNewRegistrationToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendInvoiceCancelledToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendInvoiceRequest: jest.fn().mockResolvedValue({ success: true }),
+    sendConsumptionOrderToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
   }));
 });
@@ -491,6 +492,62 @@ describe('handlePaymentRegistered', () => {
       Description: expect.stringContaining('Transaction ID: TX-12345'),
     }));
   });
+
+  test('verwerkt Facturatie payment_registered v2.0 zonder master_uuid header', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('member-1');
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-1' });
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({ create: createTask }),
+    }));
+
+    const xml = withoutMasterUuid(buildXml('payment_registered', `
+      <invoice_id>foss-inv-00142</invoice_id>
+      <user_id>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</user_id>
+      <amount_paid currency="eur">150.00</amount_paid>
+      <payment_method>cash</payment_method>
+      <paid_at>2026-05-15T18:29:00Z</paid_at>
+    `));
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      Subject: expect.stringContaining('foss-inv-00142'),
+      Description: expect.stringContaining('Payment Method: cash'),
+    }));
+    expect(receiver.channel.ack).toHaveBeenCalled();
+  });
+});
+
+describe('handleInvoiceStatus', () => {
+  test('verwerkt Facturatie invoice_status v2.0 zonder master_uuid header', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('member-1');
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-1' });
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({ create: createTask }),
+    }));
+
+    const xml = withoutMasterUuid(buildXml('invoice_status', `
+      <invoice_id>foss-inv-00142</invoice_id>
+      <user_id>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</user_id>
+      <status>paid</status>
+      <amount currency="eur">150.00</amount>
+      <due_date>2026-06-15</due_date>
+    `));
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      Subject: expect.stringContaining('foss-inv-00142'),
+      Description: expect.stringContaining('Status: paid'),
+    }));
+    expect(receiver.channel.ack).toHaveBeenCalled();
+  });
 });
 
 describe('handleConsumptionOrder', () => {
@@ -518,6 +575,7 @@ describe('handleConsumptionOrder', () => {
     await receiver.handleMessage(buildMsg(xml));
 
     expect(receiver.sf.apiCall).toHaveBeenCalledWith(expect.any(Function));
+    expect(receiver.sender.sendConsumptionOrderToFacturatie).toHaveBeenCalledWith(expect.stringContaining('<type>consumption_order</type>'));
   });
 });
 

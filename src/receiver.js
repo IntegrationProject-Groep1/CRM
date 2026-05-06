@@ -12,6 +12,7 @@ const CRMSender = require('./sender');
 const { create } = require('xmlbuilder2');
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
+const FACTURATIE_TO_CRM_QUEUE = 'facturatie.to.crm';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
 const USER_REGISTERED_QUEUE = 'user.registered';
 const USER_CREATED_QUEUE = 'user.created';
@@ -122,6 +123,7 @@ class ReceiverV2 {
 
         await this.channel.assertQueue(QUEUE_NAME, { durable: true });
         await this.channel.assertQueue(KASSA_QUEUE, { durable: true });
+        await this.channel.assertQueue(FACTURATIE_TO_CRM_QUEUE, { durable: true });
         await this.channel.assertQueue(USER_REGISTERED_QUEUE, { durable: true });
         await this.channel.assertQueue(USER_CREATED_QUEUE, { durable: true });
         await this.channel.assertQueue(DEAD_LETTER_QUEUE, {
@@ -154,12 +156,13 @@ class ReceiverV2 {
 
         this.channel.consume(QUEUE_NAME, consume, { noAck: false });
         this.channel.consume(KASSA_QUEUE, consume, { noAck: false });
+        this.channel.consume(FACTURATIE_TO_CRM_QUEUE, consume, { noAck: false });
         this.channel.consume(USER_CREATED_QUEUE, consume, { noAck: false });
         this.channel.consume(USER_REGISTERED_QUEUE, consume, { noAck: false });
         this.channel.consume(PLANNING_SESSION_QUEUE, consume, { noAck: false });
         this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => this.handleIdentityUserEvent(msg), { noAck: false });
 
-        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${PLANNING_SESSION_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
+        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${FACTURATIE_TO_CRM_QUEUE}, ${PLANNING_SESSION_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
 
         await new Promise((resolve, reject) => {
           this.connection.on('error', reject);
@@ -328,7 +331,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       const messageType = header.type;
 
       console.log(`[receiver] Processing message type: ${messageType}, ID: ${messageId}`);
-      await this.routeMessage(header, body);
+      await this.routeMessage(header, body, xmlContent);
 
       this.channel.ack(msg);
       console.log(`[receiver] Message processed successfully: ${messageId}`);
@@ -338,7 +341,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     }
   }
 
-  async routeMessage(header, body) {
+  async routeMessage(header, body, rawXml = null) {
     const msgType = header.type;
     const handlers = {
       [MESSAGE_TYPES.USER_CREATED]: () => this.handleUserCreated(header, body),
@@ -353,7 +356,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.INVOICE_STATUS]: () => this.handleInvoiceStatus(header, body),
       [MESSAGE_TYPES.SEND_INVOICE]: () => this.handleSendInvoice(header, body),
       [MESSAGE_TYPES.MAILING_STATUS]: () => this.handleMailingStatus(header, body),
-      [MESSAGE_TYPES.CONSUMPTION_ORDER]: () => this.handleConsumptionOrder(header, body),
+      [MESSAGE_TYPES.CONSUMPTION_ORDER]: () => this.handleConsumptionOrder(header, body, rawXml),
       [MESSAGE_TYPES.BADGE_ASSIGNED]: () => this.handleBadgeAssigned(header, body),
       [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body),
       [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
@@ -925,21 +928,26 @@ async handleReceivedInvoiceCancelled(header, body) {
       const transaction = body ? body.transaction : null;
       const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
       const email = ReceiverV2.getElementText(body, 'email');
-      const masterUuid = await this.resolveMasterUuid(header, body, { email });
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const masterUuid = userId || await this.resolveMasterUuid(header, body, { email });
+      const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(invoice, 'id');
+      const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') || ReceiverV2.getElementText(transaction, 'payment_method');
+      const paidAt = ReceiverV2.getElementText(body, 'paid_at');
       const transactionId = ReceiverV2.getElementText(transaction, 'id');
 
-      const amountVal = invoice ? invoice.amount_paid : null;
+      const amountVal = body?.amount_paid || (invoice ? invoice.amount_paid : null);
       const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : amountVal;
 
       const taskData = {
-        Subject: `Payment registered [${paymentContext}] invoice: ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
+        Subject: `Payment registered [${paymentContext}] invoice: ${invoiceId || 'N/A'}`,
         Description: [
           `Context: ${paymentContext}`,
-          `Payment Method: ${ReceiverV2.getElementText(transaction, 'payment_method')}`,
+          `Payment Method: ${paymentMethod}`,
           transactionId ? `Transaction ID: ${transactionId}` : null,
           `Amount Paid: ${amountPaid}`,
-          `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}`,
-          `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
+          paidAt ? `Paid At: ${paidAt}` : null,
+          ReceiverV2.getElementText(invoice, 'due_date') ? `Due Date: ${ReceiverV2.getElementText(invoice, 'due_date')}` : null,
+          ReceiverV2.getElementText(invoice, 'status') ? `Status: ${ReceiverV2.getElementText(invoice, 'status')}` : null,
           masterUuid ? `Master UUID: ${masterUuid}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
@@ -1038,13 +1046,20 @@ async handleReceivedInvoiceCancelled(header, body) {
   async handleInvoiceStatus(header, body) {
     try {
       const invoice = body ? body.invoice : null;
+      const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(invoice, 'id');
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const status = ReceiverV2.getElementText(body, 'status') || ReceiverV2.getElementText(invoice, 'status');
+      const amount = ReceiverV2.getElementText(body, 'amount') || ReceiverV2.getElementText(invoice, 'amount_paid');
+      const dueDate = ReceiverV2.getElementText(body, 'due_date') || ReceiverV2.getElementText(invoice, 'due_date');
 
       const taskData = {
-        Subject: `Invoice status update: ${ReceiverV2.getElementText(invoice, 'id')}`,
+        Subject: `Invoice status update: ${invoiceId}`,
         Description: [
-          `Status: ${ReceiverV2.getElementText(invoice, 'status')}`,
-          `Amount Paid: ${ReceiverV2.getElementText(invoice, 'amount_paid')}`,
-        ].join('\n'),
+          `Status: ${status}`,
+          `Amount: ${amount}`,
+          dueDate ? `Due Date: ${dueDate}` : null,
+          userId ? `User ID: ${userId}` : null,
+        ].filter(Boolean).join('\n'),
         Status: 'Completed',
         Type: 'Other',
         ActivityDate: new Date().toISOString().split('T')[0],
@@ -1056,7 +1071,7 @@ async handleReceivedInvoiceCancelled(header, body) {
       }
 
       const email = ReceiverV2.getElementText(body, 'email');
-      const masterUuid = await this.resolveMasterUuid(header, body, { email });
+      const masterUuid = userId || await this.resolveMasterUuid(header, body, { email });
       if (masterUuid) {
         const contactId = await this._findUserByMasterUuid(masterUuid);
         if (contactId) taskData.WhoId = contactId;
@@ -1145,7 +1160,7 @@ async handleReceivedInvoiceCancelled(header, body) {
   return records && records.length > 0 ? records[0].Id : null;
 }
 
-  async handleConsumptionOrder(header, body) {
+  async handleConsumptionOrder(header, body, rawXml = null) {
     try {
       const isAnonymous = ReceiverV2.getElementText(body, 'is_anonymous') === 'true';
       const customer = body ? body.customer : null;
@@ -1202,6 +1217,11 @@ async handleReceivedInvoiceCancelled(header, body) {
         }
       } else {
         console.log(`[receiver] DRY RUN: Would upsert ${itemList.length} Consumption__c record(s)`);
+      }
+
+      if (rawXml) {
+        await this.sender.sendConsumptionOrderToFacturatie(rawXml);
+        console.log(`[receiver] Forwarded consumption_order unchanged to Facturatie: ${header.message_id}`);
       }
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
@@ -1327,7 +1347,7 @@ async handleUserUpdated(header, body) {
   async handleBadgeAssigned(header, body) {
   try {
     const badgeId = ReceiverV2.getElementText(body, 'badge_id');
-    const email = ReceiverV2.getElementText(body, 'email');
+    const email = ReceiverV2.getElementText(body, 'email') || ReceiverV2.getElementText(invoice, 'email');
     const masterUuid = await this.resolveMasterUuid(header, body, { email });
 
     if (!this.sf.isConnected) {
@@ -1458,13 +1478,16 @@ async handleUserUpdated(header, body) {
     // 3. Doorsturen naar Facturatie (Sender)
     // BELANGRIJK: We voegen master_uuid toe aan de payload voor de Facturatie-module
     await this.sender.sendInvoiceRequest({
-      correlation_id: header.message_id,
+      correlation_id: ReceiverV2.getElementText(header, 'correlation_id') || header.message_id,
       master_uuid: masterUuid, // De lijm voor FossBilling
       customer: {
         email: email || '',
-        first_name: ReceiverV2.getElementText(body, 'first_name') || '',
-        last_name: ReceiverV2.getElementText(body, 'last_name') || '',
+        first_name: ReceiverV2.getElementText(invoice, 'first_name') || ReceiverV2.getElementText(body, 'first_name') || '',
+        last_name: ReceiverV2.getElementText(invoice, 'last_name') || ReceiverV2.getElementText(body, 'last_name') || '',
+        company_name: ReceiverV2.getElementText(invoice, 'company_name') || undefined,
+        vat_number: ReceiverV2.getElementText(invoice, 'vat_number') || undefined,
       },
+      address: invoice?.address || {},
       invoice: {
         description: `Invoice ${ReceiverV2.getElementText(invoice, 'id') || 'N/A'}`,
         amount: parseFloat(amountPaid) || 0,

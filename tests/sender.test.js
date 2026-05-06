@@ -73,10 +73,10 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
     expect(String(root.header.version)).toBe('2.0');
   });
 
-  test('correlation_id en session_id worden NIET meegestuurd (kassa XSD)', () => {
+  test('correlation_id wordt niet meegestuurd en session_id staat in customer', () => {
     const root = parser.parse(sender.buildNewRegistrationForKassaXml(baseData())).message;
     expect(root.header.correlation_id).toBeUndefined();
-    expect(root.body.session_id).toBeUndefined();
+    expect(root.body.customer.session_id).toBe('sess-xyz');
   });
 
   test('klantgegevens staan correct in body', () => {
@@ -90,14 +90,16 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
 
   test('payment_due status "pending" wordt genormaliseerd naar "unpaid"', () => {
     const root = parser.parse(sender.buildNewRegistrationForKassaXml(baseData())).message;
-    expect(root.body.payment_due.status).toBe('unpaid');
+    expect(root.body.customer.payment_due.status).toBe('unpaid');
+    expect(root.body.customer.payment_due.amount['#text']).toBe('25.00');
+    expect(root.body.customer.payment_due.amount.currency).toBe('eur');
   });
 
   test('payment_due status "paid" blijft "paid"', () => {
     const data = baseData();
     data.payment_due.status = 'paid';
     const root = parser.parse(sender.buildNewRegistrationForKassaXml(data)).message;
-    expect(root.body.payment_due.status).toBe('paid');
+    expect(root.body.customer.payment_due.status).toBe('paid');
   });
 
   test('customer type valt terug op "private" als niet opgegeven', () => {
@@ -132,6 +134,27 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
     expect(xml).not.toContain('<Co>');
     expect(xml).toContain('&lt;Co&gt;');
     expect(xml).toContain('&amp;');
+  });
+});
+
+describe('Betaling flow - sendConsumptionOrderToFacturatie', () => {
+  let sender;
+
+  beforeEach(() => { sender = new CRMSender(); });
+
+  const xml = '<message><header><type>consumption_order</type></header></message>';
+
+  test('stuurt raw XML naar facturatie.incoming', async () => {
+    const ch = attachMockChannel(sender);
+    const result = await sender.sendConsumptionOrderToFacturatie(xml);
+
+    expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
+    expect(ch.sendToQueue).toHaveBeenCalledWith(
+      'facturatie.incoming',
+      Buffer.from(xml),
+      expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
+    );
+    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming', payload: xml });
   });
 });
 
@@ -494,6 +517,13 @@ describe('Betaling flow — buildInvoiceRequestXml', () => {
   test('correlation_id in header is included when present', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
     expect(root.header.correlation_id).toBe('corr-inv-1');
+  });
+
+  test('correlation_id wordt altijd meegestuurd volgens 11.1', () => {
+    const data = baseData();
+    delete data.correlation_id;
+    const root = parser.parse(sender.buildInvoiceRequestXml(data)).message;
+    expect(root.header.correlation_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   test('message_id starts with "inv-crm-"', () => {
