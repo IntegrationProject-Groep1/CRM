@@ -86,6 +86,13 @@ const parser = new XMLParser({
   parseAttributeValue: false,
 });
 
+const TYPES_ACCEPTING_V1 = new Set([
+  'user.unregistered',
+  'user.created',
+  'user.registered',
+]);
+const BASE_HEADER_FIELDS = ['message_id', 'version', 'type', 'timestamp', 'source'];
+
 class ReceiverV2 {
   constructor() {
     this.connection = null;
@@ -193,27 +200,20 @@ class ReceiverV2 {
     }
 
     const messageType = header.type;
-    const isFrontendUnregistered = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
-    const isSendInvoice = messageType === MESSAGE_TYPES.SEND_INVOICE;
-    const isPlanningSessionEvent = PLANNING_SESSION_TYPES.has(messageType);
-    const canResolveMasterUuidLazily = LAZY_MASTER_UUID_TYPES.has(messageType);
-    const requiredFields = isFrontendUnregistered
-      ? ['message_id', 'version', 'type', 'timestamp', 'source', 'receiver']
-      : isSendInvoice
-        ? ['message_id', 'version', 'type', 'timestamp', 'source']
-      : isPlanningSessionEvent
-        ? ['message_id', 'version', 'type', 'timestamp', 'source']
-      : canResolveMasterUuidLazily
-        ? ['message_id', 'version', 'type', 'timestamp', 'source']
-        : ['message_id', 'version', 'type', 'timestamp', 'source', 'master_uuid'];
+    const needsReceiver = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
+    const skipMasterUuid = needsReceiver || LAZY_MASTER_UUID_TYPES.has(messageType) || PLANNING_SESSION_TYPES.has(messageType);
+    const requiredFields = needsReceiver
+      ? [...BASE_HEADER_FIELDS, 'receiver']
+      : skipMasterUuid
+        ? BASE_HEADER_FIELDS
+        : [...BASE_HEADER_FIELDS, 'master_uuid'];
     const missingFields = requiredFields.filter((f) => header[f] === undefined || header[f] === null);
     if (missingFields.length > 0) {
       return [false, `Missing required header fields: ${missingFields.join(', ')}`];
     }
-
-    const validVersions = isFrontendUnregistered ? ['1.0', '2.0'] : ['2.0'];
+    const validVersions = TYPES_ACCEPTING_V1.has(messageType) ? ['1.0', '2.0'] : ['2.0'];
     if (!validVersions.includes(String(header.version))) {
-      return [false, `Invalid version: expected 2.0, got ${header.version}`];
+      return [false, `Invalid version: expected ${validVersions.join(' or ')}, got ${header.version}`];
     }
 
     const validTypes = Object.values(MESSAGE_TYPES); 
