@@ -215,7 +215,8 @@ describe('validateXmlMessage', () => {
     // user.unregistered and send_invoice have different required fields and are covered by dedicated tests below.
     const validTypes = [
       'user.created', 'user.registered', 'new_registration', 'payment_registered',
-      'badge_scanned', 'session_updated', 'invoice_status', 'mailing_status',
+      'badge_scanned', 'session_created', 'session_updated', 'session_deleted',
+      'invoice_status', 'mailing_status',
       'consumption_order', 'badge_assigned', 'refund_processed', 'invoice_request',
       'invoice_cancelled', 'user.updated', 'delete_user', 'user_deleted',
     ];
@@ -233,6 +234,18 @@ describe('validateXmlMessage', () => {
 
     expect(valid).toBe(true);
     expect(err).toBeNull();
+  });
+
+  test('planning session events zonder master_uuid zijn geldig', () => {
+    for (const type of ['session_created', 'session_updated', 'session_deleted']) {
+      const parsed = validParsed({ type, source: 'planning' });
+      delete parsed.message.header.master_uuid;
+
+      const [valid, err] = receiver.validateXmlMessage(parsed);
+
+      expect(valid).toBe(true);
+      expect(err).toBeNull();
+    }
   });
 
   test('lazy types zonder master_uuid zijn geldig', () => {
@@ -539,6 +552,45 @@ describe('handleBadgeScanned', () => {
     await receiver.handleMessage(buildMsg(xml));
 
     expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+});
+
+describe('handlePlanningSessionEvent', () => {
+  test.each(['session_created', 'session_updated', 'session_deleted'])(
+    'acknowledges %s zonder Salesforce side effects',
+    async (type) => {
+      const receiver = makeReceiver();
+      receiver.sf.isConnected = true;
+      const xml = withoutMasterUuid(buildXml(type, `
+        <session_id>sess-keynote-001</session_id>
+        <title>Keynote: AI in Healthcare</title>
+        <start_datetime>2026-05-15T14:00:00Z</start_datetime>
+        <end_datetime>2026-05-15T15:00:00Z</end_datetime>
+        <location>Aula A - Campus Jette</location>
+        <session_type>keynote</session_type>
+        <status>published</status>
+        <max_attendees>120</max_attendees>
+        <current_attendees>0</current_attendees>
+      `, { correlation_id: 'session-master-uuid-001' }));
+
+      await receiver.handleMessage(buildMsg(xml));
+
+      expect(receiver.channel.ack).toHaveBeenCalled();
+      expect(receiver.channel.nack).not.toHaveBeenCalled();
+      expect(receiver.sf.apiCall).not.toHaveBeenCalled();
+    }
+  );
+
+  test('negeert session event zonder session_id maar acked bericht', async () => {
+    const receiver = makeReceiver();
+    const xml = withoutMasterUuid(buildXml('session_updated', `
+      <title>Keynote: AI in Healthcare</title>
+    `));
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.channel.ack).toHaveBeenCalled();
+    expect(receiver.sf.apiCall).not.toHaveBeenCalled();
   });
 });
 

@@ -17,6 +17,13 @@ const USER_REGISTERED_QUEUE = 'user.registered';
 const USER_CREATED_QUEUE = 'user.created';
 const IDENTITY_EVENTS_EXCHANGE = 'user.events';
 const IDENTITY_EVENTS_QUEUE = 'crm.identity.user.events';
+const PLANNING_EXCHANGE = 'planning.exchange';
+const PLANNING_SESSION_QUEUE = 'planning.session.events';
+const PLANNING_SESSION_ROUTING_KEYS = [
+  'planning.session.created',
+  'planning.session.updated',
+  'planning.session.deleted',
+];
 
 const MESSAGE_TYPES = {
   USER_CREATED: 'user.created',
@@ -25,7 +32,9 @@ const MESSAGE_TYPES = {
   USER_UNREGISTERED: 'user.unregistered',
   PAYMENT_REGISTERED: 'payment_registered',
   BADGE_SCANNED: 'badge_scanned',
+  SESSION_CREATED: 'session_created',
   SESSION_UPDATED: 'session_updated',
+  SESSION_DELETED: 'session_deleted',
   INVOICE_STATUS: 'invoice_status',
   SEND_INVOICE: 'send_invoice',
   MAILING_STATUS: 'mailing_status',
@@ -60,6 +69,12 @@ const LAZY_MASTER_UUID_TYPES = new Set([
   MESSAGE_TYPES.USER_UPDATED,
   MESSAGE_TYPES.DELETE_USER,
   MESSAGE_TYPES.USER_DELETED,
+]);
+
+const PLANNING_SESSION_TYPES = new Set([
+  MESSAGE_TYPES.SESSION_CREATED,
+  MESSAGE_TYPES.SESSION_UPDATED,
+  MESSAGE_TYPES.SESSION_DELETED,
 ]);
 
 const parser = new XMLParser({
@@ -119,6 +134,12 @@ class ReceiverV2 {
         await this.channel.assertQueue(IDENTITY_EVENTS_QUEUE, { durable: true });
         await this.channel.bindQueue(IDENTITY_EVENTS_QUEUE, IDENTITY_EVENTS_EXCHANGE, '');
 
+        await this.channel.assertExchange(PLANNING_EXCHANGE, 'topic', { durable: true });
+        await this.channel.assertQueue(PLANNING_SESSION_QUEUE, { durable: true });
+        for (const routingKey of PLANNING_SESSION_ROUTING_KEYS) {
+          await this.channel.bindQueue(PLANNING_SESSION_QUEUE, PLANNING_EXCHANGE, routingKey);
+        }
+
         await this.channel.prefetch(1);
 
         const consume = async (msg) => {
@@ -135,9 +156,10 @@ class ReceiverV2 {
         this.channel.consume(KASSA_QUEUE, consume, { noAck: false });
         this.channel.consume(USER_CREATED_QUEUE, consume, { noAck: false });
         this.channel.consume(USER_REGISTERED_QUEUE, consume, { noAck: false });
+        this.channel.consume(PLANNING_SESSION_QUEUE, consume, { noAck: false });
         this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => this.handleIdentityUserEvent(msg), { noAck: false });
 
-        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
+        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${PLANNING_SESSION_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
 
         await new Promise((resolve, reject) => {
           this.connection.on('error', reject);
@@ -170,10 +192,13 @@ class ReceiverV2 {
     const messageType = header.type;
     const isFrontendUnregistered = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
     const isSendInvoice = messageType === MESSAGE_TYPES.SEND_INVOICE;
+    const isPlanningSessionEvent = PLANNING_SESSION_TYPES.has(messageType);
     const canResolveMasterUuidLazily = LAZY_MASTER_UUID_TYPES.has(messageType);
     const requiredFields = isFrontendUnregistered
       ? ['message_id', 'version', 'type', 'timestamp', 'source', 'receiver']
       : isSendInvoice
+        ? ['message_id', 'version', 'type', 'timestamp', 'source']
+      : isPlanningSessionEvent
         ? ['message_id', 'version', 'type', 'timestamp', 'source']
       : canResolveMasterUuidLazily
         ? ['message_id', 'version', 'type', 'timestamp', 'source']
@@ -322,7 +347,9 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body),
       [MESSAGE_TYPES.BADGE_SCANNED]: () => this.handleBadgeScanned(header, body),
-      [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handleSessionUpdate(header, body),
+      [MESSAGE_TYPES.SESSION_CREATED]: () => this.handlePlanningSessionEvent(header, body),
+      [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handlePlanningSessionEvent(header, body),
+      [MESSAGE_TYPES.SESSION_DELETED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.INVOICE_STATUS]: () => this.handleInvoiceStatus(header, body),
       [MESSAGE_TYPES.SEND_INVOICE]: () => this.handleSendInvoice(header, body),
       [MESSAGE_TYPES.MAILING_STATUS]: () => this.handleMailingStatus(header, body),
@@ -986,35 +1013,24 @@ async handleReceivedInvoiceCancelled(header, body) {
     }
   }
 
-  async handleSessionUpdate(header, body) {
+  async handlePlanningSessionEvent(header, body) {
     try {
       if (!body) {
-        console.log('[receiver] Missing body in session_updated message');
+        console.log(`[receiver] Missing body in ${header.type} message`);
         return;
       }
 
-      const taskData = {
-        Subject: `Session update: ${ReceiverV2.getElementText(body, 'session_name')}`,
-        Description: [
-          `Speaker: ${ReceiverV2.getElementText(body, 'speaker')}`,
-          `Start Time: ${ReceiverV2.getElementText(body, 'start_time')}`,
-          `End Time: ${ReceiverV2.getElementText(body, 'end_time')}`,
-          `Status: ${ReceiverV2.getElementText(body, 'status')}`,
-        ].join('\n'),
-        Status: 'Completed',
-        Type: 'Other',
-        ActivityDate: new Date().toISOString().split('T')[0],
-      };
-
-      if (!this.sf.isConnected) {
-        console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
+      const sessionId = ReceiverV2.getElementText(body, 'session_id');
+      if (!sessionId) {
+        console.log(`[receiver] ${header.type} ignored: missing session_id`);
         return;
       }
 
-      const result = await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-      console.log(`[receiver] Created Task for session update: ${result?.id}`);
+      const title = ReceiverV2.getElementText(body, 'title') || '';
+      const correlationId = ReceiverV2.getElementText(header, 'correlation_id') || '';
+      console.log(`[receiver] Planning ${header.type} received for session_id=${sessionId}, title=${title}, correlation_id=${correlationId}`);
     } catch (err) {
-      console.log(`[receiver] Error in handleSessionUpdate: ${err}`);
+      console.log(`[receiver] Error in handlePlanningSessionEvent: ${err}`);
       throw err;
     }
   }
