@@ -484,19 +484,15 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('master_uuid').txt(data.master_uuid);
-    header.ele('type').txt('cancel_registration');
-    header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
+    header.ele('source').txt('crm');
+    header.ele('type').txt('cancel_registration');
     header.ele('version').txt('2.0');
-    if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
 
     const body = root.ele('body');
-    body.ele('master_uuid').txt(data.master_uuid);
-    if (data.user_id) {
-      body.ele('user_id').txt(data.user_id);
-    }
+    body.ele('user_id').txt(data.user_id || '');
     body.ele('session_id').txt(data.session_id || '');
+    if (data.reason) body.ele('reason').txt(data.reason);
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }
@@ -534,7 +530,7 @@ class CRMSender {
       // Publiceer naar de exchange met de juiste routing key
       this.channel.publish(
         exchange,
-        'registration.cancelled',
+        'crm.to.planning.cancel_registration',
         Buffer.from(xmlPayload),
         {
           contentType: 'application/xml',

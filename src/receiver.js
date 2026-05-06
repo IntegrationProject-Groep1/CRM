@@ -15,6 +15,8 @@ const KASSA_QUEUE = 'kassa.payments';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
 const USER_REGISTERED_QUEUE = 'user.registered';
 const USER_CREATED_QUEUE = 'user.created';
+const IDENTITY_EVENTS_EXCHANGE = 'user.events';
+const IDENTITY_EVENTS_QUEUE = 'crm.identity.user.events';
 
 const MESSAGE_TYPES = {
   USER_CREATED: 'user.created',
@@ -39,6 +41,7 @@ const MESSAGE_TYPES = {
   COMPANY_REGISTRATION: 'company_registration',
   COMPANY_UPDATE: 'company_update',
   COMPANY_DELETE: 'company_delete',
+  CANCEL_REGISTRATION: 'cancel_registration',
 };
 
 const LAZY_MASTER_UUID_TYPES = new Set([
@@ -110,6 +113,12 @@ class ReceiverV2 {
           durable: true,
           arguments: { 'x-dead-letter-exchange': '' },
         });
+
+        // Bind to Identity Service fanout exchange (§15.5)
+        await this.channel.assertExchange(IDENTITY_EVENTS_EXCHANGE, 'fanout', { durable: true });
+        await this.channel.assertQueue(IDENTITY_EVENTS_QUEUE, { durable: true });
+        await this.channel.bindQueue(IDENTITY_EVENTS_QUEUE, IDENTITY_EVENTS_EXCHANGE, '');
+
         await this.channel.prefetch(1);
 
         const consume = async (msg) => {
@@ -126,8 +135,9 @@ class ReceiverV2 {
         this.channel.consume(KASSA_QUEUE, consume, { noAck: false });
         this.channel.consume(USER_CREATED_QUEUE, consume, { noAck: false });
         this.channel.consume(USER_REGISTERED_QUEUE, consume, { noAck: false });
+        this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => this.handleIdentityUserEvent(msg), { noAck: false });
 
-        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}`);
+        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
 
         await new Promise((resolve, reject) => {
           this.connection.on('error', reject);
@@ -327,6 +337,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.COMPANY_REGISTRATION]: () => this.handleCompanyRegistration(header, body),
       [MESSAGE_TYPES.COMPANY_UPDATE]: () => this.handleCompanyUpdate(header, body),
       [MESSAGE_TYPES.COMPANY_DELETE]: () => this.handleCompanyDelete(header, body),
+      [MESSAGE_TYPES.CANCEL_REGISTRATION]: () => this.handleCancelRegistration(header, body),
     };
     const handler = handlers[msgType];
     if (handler) {
@@ -1454,6 +1465,100 @@ async handleUserUpdated(header, body) {
     throw err;
   }
 }
+
+  async handleCancelRegistration(header, body) {
+    try {
+      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const sessionId = ReceiverV2.getElementText(body, 'session_id');
+      const reason = ReceiverV2.getElementText(body, 'reason');
+
+      if (!userId || !sessionId) {
+        console.log('[receiver] cancel_registration ignored: missing user_id or session_id');
+        return;
+      }
+
+      console.log(`[receiver] Processing cancel_registration for user=${userId}, session=${sessionId}`);
+
+      if (this.sf.isConnected) {
+        const memberId = await this._findUserByMasterUuid(userId);
+        if (memberId) {
+          await this.sf.apiCall((conn) =>
+            conn.sobject('Member__c').update({ Id: memberId, Status__c: 'Cancelled' })
+          );
+        } else {
+          console.log(`[receiver] No Member__c found for cancel_registration user=${userId}`);
+        }
+      } else {
+        console.log(`[receiver] DRY RUN: Would update Member__c Status__c=Cancelled for user=${userId}`);
+      }
+
+      const payload = { user_id: userId, session_id: sessionId, reason };
+
+      await Promise.all([
+        this.sender.sendCancelRegistrationToKassa(payload),
+        this.sender.sendCancelRegistrationToPlanning(payload),
+      ]);
+
+      console.log(`[receiver] cancel_registration forwarded to Kassa and Planning for user=${userId}`);
+    } catch (err) {
+      console.error(`[receiver] Error in handleCancelRegistration: ${err}`);
+      throw err;
+    }
+  }
+
+  async handleIdentityUserEvent(msg) {
+    if (!msg) return;
+    try {
+      const xml = msg.content.toString('utf8');
+      const parsed = parser.parse(xml);
+      const event = parsed.user_event;
+
+      if (!event) {
+        console.log('[receiver] identity user.events: unexpected format, skipping');
+        this.sendToDeadLetter(msg.content, 'IDENTITY_EVENT_FORMAT_ERROR');
+        this.channel.nack(msg, false, false);
+        return;
+      }
+
+      const eventType = ReceiverV2.getElementText(event, 'event');
+      const masterUuid = ReceiverV2.getElementText(event, 'master_uuid');
+      const email = (ReceiverV2.getElementText(event, 'email') || '').toLowerCase().trim();
+      const sourceSystem = ReceiverV2.getElementText(event, 'source_system') || 'unknown';
+
+      if (eventType !== 'UserCreated') {
+        console.log(`[receiver] identity user.events: unhandled event type "${eventType}", acking`);
+        this.channel.ack(msg);
+        return;
+      }
+
+      if (!masterUuid || !email) {
+        console.log('[receiver] identity UserCreated: missing master_uuid or email, skipping');
+        this.sendToDeadLetter(msg.content, 'IDENTITY_EVENT_VALIDATION_ERROR');
+        this.channel.nack(msg, false, false);
+        return;
+      }
+
+      console.log(`[receiver] identity UserCreated: uuid=${masterUuid}, email=${email}, source=${sourceSystem}`);
+
+      if (this.sf.isConnected) {
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert(
+            { Master_UUID__c: masterUuid, Email__c: email },
+            'Master_UUID__c'
+          )
+        );
+        console.log(`[receiver] identity UserCreated: upserted Member__c for ${masterUuid}`);
+      } else {
+        console.log(`[receiver] DRY RUN: Would upsert Member__c Master_UUID__c=${masterUuid}, Email__c=${email}`);
+      }
+
+      this.channel.ack(msg);
+    } catch (err) {
+      console.error(`[receiver] Error in handleIdentityUserEvent: ${err}`);
+      this.sendToDeadLetter(msg.content, `IDENTITY_EVENT_PROCESSING_ERROR: ${err.message}`);
+      this.channel.nack(msg, false, false);
+    }
+  }
 
   async shutdown() {
     console.log('[receiver] Signal received, shutting down gracefully...');

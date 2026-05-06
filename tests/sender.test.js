@@ -338,15 +338,8 @@ describe('Consumptie flow — buildCancelRegistrationXml', () => {
     expect(root.body.session_id).toBe('sess-cancel-1');
   });
 
-  test('correlation_id wordt in header opgenomen als aanwezig', () => {
+  test('correlation_id staat niet in header (niet in contract §10.3)', () => {
     const root = parser.parse(sender.buildCancelRegistrationXml(baseData())).message;
-    expect(root.header.correlation_id).toBe('corr-cancel-1');
-  });
-
-  test('correlation_id wordt weggelaten als niet opgegeven', () => {
-    const data = baseData();
-    delete data.correlation_id;
-    const root = parser.parse(sender.buildCancelRegistrationXml(data)).message;
     expect(root.header.correlation_id).toBeUndefined();
   });
 
@@ -417,7 +410,7 @@ describe('Consumptie flow — sendCancelRegistrationToPlanning', () => {
     await sender.sendCancelRegistrationToPlanning(data);
     expect(ch.publish).toHaveBeenCalledWith(
       'calendar.exchange',
-      'registration.cancelled',
+      'crm.to.planning.cancel_registration',
       expect.any(Buffer),
       expect.objectContaining({ 
         contentType: 'application/xml', 
