@@ -421,7 +421,7 @@ class CRMSender {
     try {
       const xmlPayload = this.buildNewRegistrationForKassaXml(data);
       const queue = 'kassa.incoming';
-      await this.channel.assertQueue(queue, { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx' } });
+      await this.channel.assertQueue(queue, { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx', 'x-dead-letter-routing-key': 'kassa.incoming.dlq' } });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
         deliveryMode: 2,
@@ -495,7 +495,7 @@ class CRMSender {
     try {
       const xmlPayload = this.buildProfileUpdateXml(data);
       const queue = 'kassa.incoming';
-      await this.channel.assertQueue(queue, { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx' } });
+      await this.channel.assertQueue(queue, { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx', 'x-dead-letter-routing-key': 'kassa.incoming.dlq' } });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
         deliveryMode: 2,
@@ -539,7 +539,7 @@ class CRMSender {
     try {
       const xmlPayload = this.buildCancelRegistrationXml(data);
       const queue = 'kassa.incoming';
-      await this.channel.assertQueue(queue, { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx' } });
+      await this.channel.assertQueue(queue, { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx', 'x-dead-letter-routing-key': 'kassa.incoming.dlq' } });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
         contentType: 'application/xml',
         deliveryMode: 2,

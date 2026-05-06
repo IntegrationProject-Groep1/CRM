@@ -250,7 +250,7 @@ describe('Registratie flow — sendNewRegistrationToKassa', () => {
   test('assertQueue wordt aangeroepen met "kassa.incoming"', async () => {
     const ch = attachMockChannel(sender);
     await sender.sendNewRegistrationToKassa(data);
-    expect(ch.assertQueue).toHaveBeenCalledWith('kassa.incoming', { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx' } });
+    expect(ch.assertQueue).toHaveBeenCalledWith('kassa.incoming', { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx', 'x-dead-letter-routing-key': 'kassa.incoming.dlq' } });
   });
 
   test('sendToQueue wordt aangeroepen met XML buffer en correcte opties', async () => {
@@ -358,7 +358,7 @@ describe('Consumptie flow — sendProfileUpdateToKassa', () => {
   test('verstuurt naar "kassa.incoming"', async () => {
     const ch = attachMockChannel(sender);
     await sender.sendProfileUpdateToKassa(data);
-    expect(ch.assertQueue).toHaveBeenCalledWith('kassa.incoming', { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx' } });
+    expect(ch.assertQueue).toHaveBeenCalledWith('kassa.incoming', { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx', 'x-dead-letter-routing-key': 'kassa.incoming.dlq' } });
     expect(ch.sendToQueue.mock.calls[0][0]).toBe('kassa.incoming');
   });
 
@@ -428,7 +428,7 @@ describe('Consumptie flow — sendCancelRegistrationToKassa', () => {
   test('verstuurt naar "kassa.incoming"', async () => {
     const ch = attachMockChannel(sender);
     await sender.sendCancelRegistrationToKassa(data);
-    expect(ch.assertQueue).toHaveBeenCalledWith('kassa.incoming', { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx' } });
+    expect(ch.assertQueue).toHaveBeenCalledWith('kassa.incoming', { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx', 'x-dead-letter-routing-key': 'kassa.incoming.dlq' } });
     expect(ch.sendToQueue.mock.calls[0][0]).toBe('kassa.incoming');
   });
 
