@@ -35,14 +35,14 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('master_uuid').txt(data.master_uuid);
     header.ele('type').txt('invoice_cancelled');
     header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
     header.ele('version').txt('2.0');
 
     const body = root.ele('body');
-    body.ele('invoice_number').txt(data.invoice_number);
+    body.ele('invoice_id').txt(data.invoice_id);
+    body.ele('customer_id').txt(data.customer_id || '');
     if (data.reason) {
       body.ele('reason').txt(data.reason);
     }
@@ -60,10 +60,48 @@ class CRMSender {
         contentType: 'application/xml',
         deliveryMode: 2,
       });
-      console.log(`Invoice cancellation sent to Facturatie for invoice: ${data.invoice_number}`);
+      console.log(`Invoice cancellation sent to Facturatie for invoice: ${data.invoice_id}`);
       return { success: true, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send invoice cancellation: ${error}`);
+      throw error;
+    }
+  }
+
+  buildEventEndedXml(data) {
+    const messageId = `evt-end-${uuidv4()}`;
+    const timestamp = new Date().toISOString();
+
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(messageId);
+    header.ele('type').txt('event_ended');
+    header.ele('source').txt('crm');
+    header.ele('timestamp').txt(timestamp);
+    header.ele('version').txt('2.0');
+
+    const body = root.ele('body');
+    body.ele('session_id').txt(data.session_id);
+    body.ele('ended_at').txt(data.ended_at || timestamp);
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendEventEndedToFacturatie(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized');
+    try {
+      const xmlPayload = this.buildEventEndedXml(data);
+      const queue = 'crm.to.facturatie';
+      await this.channel.assertQueue(queue, { durable: true });
+      this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      console.log(`[sender] event_ended sent to Facturatie for session_id=${data.session_id}`);
+      return { success: true, payload: xmlPayload };
+    } catch (error) {
+      console.log(`[sender] Failed to send event_ended: ${error}`);
       throw error;
     }
   }

@@ -906,17 +906,15 @@ async handleSendInvoice(header, body) {
 async handleReceivedInvoiceCancelled(header, body) {
   try {
     const masterUuid = await this.resolveMasterUuid(header, body);
-    const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+    const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(body, 'invoice_number');
 
-    console.log(`[receiver] Processing invoice_cancelled for ${masterUuid}, invoice: ${invoiceNumber}`);
+    console.log(`[receiver] Processing invoice_cancelled for ${masterUuid}, invoice: ${invoiceId}`);
 
-    // Update Salesforce status naar 'Cancelled'
     if (this.sf.isConnected) {
-      // We zoeken de consumptie op basis van het factuurnummer en de UUID
       await this.sf.apiCall((conn) =>
-        conn.sobject('Consumption__c').find({ 
-          Invoice_Number__c: invoiceNumber,
-          Master_UUID__c: masterUuid 
+        conn.sobject('Consumption__c').find({
+          Invoice_Number__c: invoiceId,
+          Master_UUID__c: masterUuid,
         }).update({ Status__c: 'Cancelled' })
       );
     }
@@ -1045,6 +1043,14 @@ async handleReceivedInvoiceCancelled(header, body) {
       const title = ReceiverV2.getElementText(body, 'title') || '';
       const correlationId = ReceiverV2.getElementText(header, 'correlation_id') || '';
       console.log(`[receiver] Planning ${header.type} received for session_id=${sessionId}, title=${title}, correlation_id=${correlationId}`);
+
+      if (header.type === MESSAGE_TYPES.SESSION_DELETED) {
+        await this.sender.sendEventEndedToFacturatie({
+          session_id: sessionId,
+          ended_at: ReceiverV2.getElementText(body, 'end_time') || header.timestamp,
+        });
+        console.log(`[receiver] event_ended forwarded to Facturatie for session_id=${sessionId}`);
+      }
     } catch (err) {
       console.log(`[receiver] Error in handlePlanningSessionEvent: ${err}`);
       throw err;
@@ -1328,19 +1334,18 @@ async handleUserUpdated(header, body) {
   async forwardInvoiceCancelledToFacturatie(header, body) {
     try {
       const masterUuid = header.master_uuid;
-      const invoiceNumber = ReceiverV2.getElementText(body, 'invoice_number');
+      const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(body, 'invoice_number');
 
-      if (!invoiceNumber || !masterUuid) {
+      if (!invoiceId || !masterUuid) {
         console.log('[receiver] Missing data for invoice cancellation');
         return;
       }
 
       console.log(`[receiver] Forwarding invoice_cancelled to Facturatie for UUID: ${masterUuid}`);
 
-      // Stuur door naar Facturatie via de Sender
       await this.sender.sendInvoiceCancelledToFacturatie({
-        master_uuid: masterUuid,
-        invoice_number: invoiceNumber,
+        invoice_id: invoiceId,
+        customer_id: masterUuid,
         reason: ReceiverV2.getElementText(body, 'reason') || 'Cancelled by user via frontend'
       });
 

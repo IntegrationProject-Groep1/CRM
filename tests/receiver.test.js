@@ -20,6 +20,7 @@ jest.mock('../src/sender', () => {
     sendPaymentRegisteredToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendPaymentRegisteredToFrontend: jest.fn().mockResolvedValue({ success: true }),
     sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
+    sendEventEndedToFacturatie: jest.fn().mockResolvedValue({ success: true }),
   }));
 });
 
