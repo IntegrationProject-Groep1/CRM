@@ -607,10 +607,9 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
         city: address ? ReceiverV2.getElementText(address, 'city') : null,
         country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() : null,
       },
-      registration_fee: {
+      payment_due: {
         amount: registrationAmount ? parseFloat(registrationAmount) : 0,
         status: paymentStatus,
-        trigger_invoice: true  
       }
     };
 
