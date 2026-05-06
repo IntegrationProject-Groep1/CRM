@@ -598,9 +598,13 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
         first_name: firstName,
         last_name: lastName,
         email: emailForIdentity,
+        date_of_birth: getCustomerText('date_of_birth') || null,
         type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
         vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+        company_id: getCustomerText('company_id') || null,
+        session_id: getCustomerText('session_id') || null,
+        session_title: getCustomerText('session_title') || null,
       },
       address: {
         street: address ? ReceiverV2.getElementText(address, 'street') : null,
