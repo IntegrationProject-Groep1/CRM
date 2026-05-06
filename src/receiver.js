@@ -954,7 +954,6 @@ async handleReceivedInvoiceCancelled(header, body) {
           masterUuid ? `Master UUID: ${masterUuid}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
-        Type: 'Payment',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
 
@@ -1005,7 +1004,6 @@ async handleReceivedInvoiceCancelled(header, body) {
           masterUuid ? `Master UUID: ${masterUuid}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
-        Type: 'Other',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
 
@@ -1071,7 +1069,6 @@ async handleReceivedInvoiceCancelled(header, body) {
           userId ? `User ID: ${userId}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
-        Type: 'Other',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
 
@@ -1114,7 +1111,6 @@ async handleReceivedInvoiceCancelled(header, body) {
           `Bounced: ${ReceiverV2.getElementText(body, 'bounced')}`,
         ].join('\n'),
         Status: 'Completed',
-        Type: 'Other',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
 
@@ -1408,7 +1404,6 @@ async handleUserUpdated(header, body) {
           newWallet ? `New Wallet Balance: ${newWallet}` : null,
         ].filter(Boolean).join('\n'),
         Status: 'Completed',
-        Type: 'Other',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
 
@@ -1453,7 +1448,6 @@ async handleUserUpdated(header, body) {
         masterUuid ? `Master UUID: ${masterUuid}` : null,
       ].filter(Boolean).join('\n'),
       Status: 'Completed',
-      Type: 'Other',
       ActivityDate: new Date().toISOString().split('T')[0],
     };
 
