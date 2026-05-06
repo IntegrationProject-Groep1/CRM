@@ -738,6 +738,24 @@ describe('handleDeleteUser', () => {
 
     expect(receiver.sf.apiCall).toHaveBeenCalled();
   });
+
+  test('gebruikt user_id als master_uuid bij user_deleted berichten', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('sf-member-1');
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = withoutMasterUuid(buildXml('user_deleted', `
+      <user_id>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</user_id>
+      <email>jan.depeet@mail.com</email>
+      <reason>Account op verzoek van gebruiker verwijderd</reason>
+    `));
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
 });
 
 describe('handleInvoiceRequestFromKassa', () => {

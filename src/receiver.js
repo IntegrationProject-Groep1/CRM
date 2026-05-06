@@ -390,7 +390,9 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
   _getExistingMasterUuid(header, body) {
     return (header && header.master_uuid) ||
       ReceiverV2.getElementText(body, 'master_uuid') ||
+      ReceiverV2.getElementText(body, 'user_id') ||
       ReceiverV2.getElementText(body?.user, 'master_uuid') ||
+      ReceiverV2.getElementText(body?.user, 'user_id') ||
       ReceiverV2.getElementText(body?.customer, 'master_uuid') ||
       ReceiverV2.getElementText(body?.company, 'master_uuid') ||
       null;
