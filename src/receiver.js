@@ -1214,7 +1214,7 @@ async handleReceivedInvoiceCancelled(header, body) {
             Quantity__c: qty,
             Total_Amount__c: finalTotalAmount,
             Price_Per_Unit__c: unitPrice,
-            SKU__c: sku,
+            Product_SKU__c: sku,
             VAT_Rate__c: vatRate,
           };
 
