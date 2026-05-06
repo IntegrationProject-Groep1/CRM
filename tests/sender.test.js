@@ -135,6 +135,47 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
   });
 });
 
+describe('Monitoring flow - sendLog', () => {
+  let sender;
+
+  beforeEach(() => { sender = new CRMSender(); });
+
+  const data = {
+    level: 'info',
+    action: 'email',
+    message: 'Mailing request sent for campaign sg-campaign-0089',
+  };
+
+  test('buildLogXml bouwt 3.5 log XML', () => {
+    const root = parser.parse(sender.buildLogXml(data)).message;
+    expect(root.header.message_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(root.header.source).toBe('crm');
+    expect(root.header.type).toBe('log');
+    expect(String(root.header.version)).toBe('2.0');
+    expect(root.body.level).toBe('info');
+    expect(root.body.action).toBe('email');
+    expect(root.body.message).toBe('Mailing request sent for campaign sg-campaign-0089');
+  });
+
+  test('weigert onbekende level en action waarden', () => {
+    expect(() => sender.buildLogXml({ ...data, level: 'debug' })).toThrow('Invalid log level');
+    expect(() => sender.buildLogXml({ ...data, action: 'unknown' })).toThrow('Invalid log action');
+  });
+
+  test('sendLog stuurt naar queue "logs"', async () => {
+    const ch = attachMockChannel(sender);
+    const result = await sender.sendLog(data);
+
+    expect(ch.assertQueue).toHaveBeenCalledWith('logs', { durable: true });
+    expect(ch.sendToQueue).toHaveBeenCalledWith(
+      'logs',
+      expect.any(Buffer),
+      expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
+    );
+    expect(result).toMatchObject({ success: true, queue: 'logs' });
+  });
+});
+
 describe('Registratie flow — sendNewRegistrationToKassa', () => {
   let sender;
 
@@ -517,60 +558,91 @@ describe('Mailing flow — buildMailingSendXml', () => {
   beforeEach(() => { sender = new CRMSender(); });
 
   const baseData = () => ({
-    mailing: { subject: 'Nieuwsbrief april', template_id: 'TPL-NL-001' },
+    correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
+    mailing: {
+      campaign_id: 'sg-campaign-0089',
+      subject: 'Nieuwsbrief april',
+      template_id: 'TPL-NL-001',
+      mail_type: 'registration_confirmation',
+    },
     recipients: [
-      { email: 'a@example.com', first_name: 'An', last_name: 'De Smedt' },
+      {
+        email: 'a@example.com',
+        user_id: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+        first_name: 'An',
+        last_name: 'De Smedt',
+      },
     ],
   });
 
-  test('header contains type "send_mailing" and source "crm"', () => {
+  test('header bevat verplichte 12.1 velden', () => {
     const root = parser.parse(sender.buildMailingSendXml(baseData())).message;
     expect(root.header.type).toBe('send_mailing');
     expect(root.header.source).toBe('crm');
+    expect(String(root.header.version)).toBe('2.0');
+    expect(root.header.correlation_id).toBe('c3d4e5f6-a7b8-9012-cdef-012345678902');
   });
 
-  test('mailing subject en template_id worden opgenomen', () => {
+  test('mailing velden staan direct onder body volgens 12.1', () => {
     const root = parser.parse(sender.buildMailingSendXml(baseData())).message;
-    expect(root.body.mailing.subject).toBe('Nieuwsbrief april');
-    expect(root.body.mailing.template_id).toBe('TPL-NL-001');
+    expect(root.body.campaign_id).toBe('sg-campaign-0089');
+    expect(root.body.subject).toBe('Nieuwsbrief april');
+    expect(root.body.template_id).toBe('TPL-NL-001');
+    expect(root.body.mail_type).toBe('registration_confirmation');
+    expect(root.body.mailing).toBeUndefined();
   });
 
-  test('optionele from_address en reply_to worden opgenomen', () => {
+  test('correlation_id wordt gegenereerd als caller er geen meegeeft', () => {
     const data = baseData();
-    data.mailing.from_address = 'no-reply@example.com';
-    data.mailing.reply_to = 'support@example.com';
+    delete data.correlation_id;
     const root = parser.parse(sender.buildMailingSendXml(data)).message;
-    expect(root.body.mailing.from_address).toBe('no-reply@example.com');
-    expect(root.body.mailing.reply_to).toBe('support@example.com');
+    expect(root.header.correlation_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  test('ontvanger wordt correct opgenomen', () => {
+  test('ontvanger wordt correct opgenomen met user_id en contact element', () => {
     const root = parser.parse(sender.buildMailingSendXml(baseData())).message;
     const recipient = root.body.recipients.recipient;
     expect(recipient.email).toBe('a@example.com');
-    expect(recipient.first_name).toBe('An');
-    expect(recipient.last_name).toBe('De Smedt');
+    expect(recipient.user_id).toBe('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
+    expect(recipient.contact.first_name).toBe('An');
+    expect(recipient.contact.last_name).toBe('De Smedt');
+    expect(recipient.first_name).toBeUndefined();
   });
 
   test('meerdere ontvangers worden allemaal opgenomen', () => {
     const data = baseData();
-    data.recipients.push({ email: 'b@example.com', first_name: 'Bob', last_name: 'Janssen' });
+    data.recipients.push({
+      email: 'b@example.com',
+      user_id: 'user-2',
+      first_name: 'Bob',
+      last_name: 'Janssen',
+    });
     const root = parser.parse(sender.buildMailingSendXml(data)).message;
     const recipients = root.body.recipients.recipient;
     expect(Array.isArray(recipients)).toBe(true);
     expect(recipients).toHaveLength(2);
   });
 
-  test('optionele language per ontvanger wordt opgenomen', () => {
+  test('optionele template_data, body_html en attachment worden opgenomen', () => {
     const data = baseData();
-    data.recipients[0].language = 'nl';
+    data.template_data = { session_title: 'Keynote' };
+    data.body_html = '<p>Hallo</p>';
+    data.attachment = {
+      filename: 'invoice.pdf',
+      content_type: 'application/pdf',
+      base64_data: 'ZmFrZQ==',
+    };
     const root = parser.parse(sender.buildMailingSendXml(data)).message;
-    expect(root.body.recipients.recipient.language).toBe('nl');
+    expect(root.body.template_data).toBe('{"session_title":"Keynote"}');
+    expect(root.body.body_html).toBe('<p>Hallo</p>');
+    expect(root.body.attachment.filename).toBe('invoice.pdf');
+    expect(root.body.attachment.content_type).toBe('application/pdf');
+    expect(root.body.attachment.base64_data).toBe('ZmFrZQ==');
   });
 
-  test('message_id start met "mail-crm-"', () => {
+  test('message_id is een UUID', () => {
     const root = parser.parse(sender.buildMailingSendXml(baseData())).message;
-    expect(root.header.message_id).toMatch(/^mail-crm-/);
+    expect(root.header.message_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 });
 
@@ -580,8 +652,14 @@ describe('Mailing flow — sendMailingSend', () => {
   beforeEach(() => { sender = new CRMSender(); });
 
   const data = {
-    mailing: { subject: 'Test', template_id: 'TPL-001' },
-    recipients: [{ email: 'r@example.com', first_name: 'R', last_name: 'S' }],
+    correlation_id: 'corr-1',
+    mailing: {
+      campaign_id: 'camp-1',
+      subject: 'Test',
+      template_id: 'TPL-001',
+      mail_type: 'general_announcement',
+    },
+    recipients: [{ email: 'r@example.com', user_id: 'u-1', first_name: 'R', last_name: 'S' }],
   };
 
   test('gooit error als channel niet geïnitialiseerd is', async () => {
