@@ -348,7 +348,7 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       [MESSAGE_TYPES.USER_REGISTERED]: () => this.handleUserRegistered(header, body),
       [MESSAGE_TYPES.NEW_REGISTRATION]: () => this.handleNewRegistration(header, body),
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
-      [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body),
+      [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body, rawXml),
       [MESSAGE_TYPES.BADGE_SCANNED]: () => this.handleBadgeScanned(header, body),
       [MESSAGE_TYPES.SESSION_CREATED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handlePlanningSessionEvent(header, body),
@@ -922,7 +922,7 @@ async handleReceivedInvoiceCancelled(header, body) {
   }
 }
 
-  async handlePaymentRegistered(header, body) {
+  async handlePaymentRegistered(header, body, rawXml = null) {
     try {
       const invoice = body ? body.invoice : null;
       const transaction = body ? body.transaction : null;
@@ -954,6 +954,13 @@ async handleReceivedInvoiceCancelled(header, body) {
         Type: 'Payment',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
+
+      if (header.source === 'kassa' && rawXml) {
+        await this.sender.sendPaymentRegisteredToFrontend(rawXml);
+        await this.sender.sendPaymentRegisteredToFacturatie(rawXml);
+        console.log(`[receiver] Forwarded Kassa payment_registered to Frontend and Facturatie: ${header.message_id}`);
+      }
+
       if (!this.sf.isConnected) {
         console.log(`[receiver] DRY RUN: Would create Task: ${JSON.stringify(taskData)}`);
         return;

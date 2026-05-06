@@ -17,6 +17,8 @@ jest.mock('../src/sender', () => {
     sendInvoiceCancelledToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendInvoiceRequest: jest.fn().mockResolvedValue({ success: true }),
     sendConsumptionOrderToFacturatie: jest.fn().mockResolvedValue({ success: true }),
+    sendPaymentRegisteredToFacturatie: jest.fn().mockResolvedValue({ success: true }),
+    sendPaymentRegisteredToFrontend: jest.fn().mockResolvedValue({ success: true }),
     sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
   }));
 });
@@ -491,6 +493,29 @@ describe('handlePaymentRegistered', () => {
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
       Description: expect.stringContaining('Transaction ID: TX-12345'),
     }));
+  });
+
+  test('forwardt Kassa payment_registered naar Frontend en Facturatie', async () => {
+    const receiver = makeReceiver();
+    const xml = buildXml('payment_registered', `
+      <payment_context>registration</payment_context>
+      <user_id>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</user_id>
+      <invoice>
+        <status>paid</status>
+        <amount_paid currency="eur">50.00</amount_paid>
+        <due_date>2026-05-15</due_date>
+      </invoice>
+      <transaction>
+        <id>TRX-2026-04150001</id>
+        <payment_method>on_site</payment_method>
+      </transaction>
+    `).replace('<source>test</source>', '<source>kassa</source>');
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendPaymentRegisteredToFrontend).toHaveBeenCalledWith(expect.stringContaining('<source>kassa</source>'));
+    expect(receiver.sender.sendPaymentRegisteredToFacturatie).toHaveBeenCalledWith(expect.stringContaining('<type>payment_registered</type>'));
+    expect(receiver.channel.ack).toHaveBeenCalled();
   });
 
   test('verwerkt Facturatie payment_registered v2.0 zonder master_uuid header', async () => {

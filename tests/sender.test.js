@@ -158,6 +158,40 @@ describe('Betaling flow - sendConsumptionOrderToFacturatie', () => {
   });
 });
 
+describe('Betaling flow - payment_registered forwarding', () => {
+  let sender;
+
+  beforeEach(() => { sender = new CRMSender(); });
+
+  const xml = '<message><header><type>payment_registered</type></header></message>';
+
+  test('stuurt raw payment_registered XML naar facturatie.incoming', async () => {
+    const ch = attachMockChannel(sender);
+    const result = await sender.sendPaymentRegisteredToFacturatie(xml);
+
+    expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
+    expect(ch.sendToQueue).toHaveBeenCalledWith(
+      'facturatie.incoming',
+      Buffer.from(xml),
+      expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
+    );
+    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming', payload: xml });
+  });
+
+  test('stuurt raw payment_registered XML naar frontend.incoming', async () => {
+    const ch = attachMockChannel(sender);
+    const result = await sender.sendPaymentRegisteredToFrontend(xml);
+
+    expect(ch.assertQueue).toHaveBeenCalledWith('frontend.incoming', { durable: true });
+    expect(ch.sendToQueue).toHaveBeenCalledWith(
+      'frontend.incoming',
+      Buffer.from(xml),
+      expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
+    );
+    expect(result).toMatchObject({ success: true, queue: 'frontend.incoming', payload: xml });
+  });
+});
+
 describe('Monitoring flow - sendLog', () => {
   let sender;
 
@@ -252,9 +286,8 @@ describe('Consumptie flow — buildProfileUpdateXml', () => {
     email: 'update@example.com',
     first_name: 'Sofie',
     last_name: 'Claes',
-    age: 35,
+    date_of_birth: '1991-04-12',
     type: 'private',
-    correlation_id: 'corr-upd-1',
   });
 
   test('header bevat type "profile_update" en source "crm"', () => {
@@ -263,15 +296,9 @@ describe('Consumptie flow — buildProfileUpdateXml', () => {
     expect(root.header.source).toBe('crm');
   });
 
-  test('correlation_id wordt in header opgenomen als aanwezig', () => {
+  test('header bevat geen oude master_uuid of correlation_id velden', () => {
     const root = parser.parse(sender.buildProfileUpdateXml(baseData())).message;
-    expect(root.header.correlation_id).toBe('corr-upd-1');
-  });
-
-  test('correlation_id wordt weggelaten als niet opgegeven', () => {
-    const data = baseData();
-    delete data.correlation_id;
-    const root = parser.parse(sender.buildProfileUpdateXml(data)).message;
+    expect(root.header.master_uuid).toBeUndefined();
     expect(root.header.correlation_id).toBeUndefined();
   });
 
@@ -288,18 +315,27 @@ describe('Consumptie flow — buildProfileUpdateXml', () => {
     expect(root.body.contact.last_name).toBe('Claes');
   });
 
-  test('type valt terug op "private" als niet opgegeven', () => {
+  test('type wordt weggelaten als niet opgegeven', () => {
     const data = baseData();
     delete data.type;
     const root = parser.parse(sender.buildProfileUpdateXml(data)).message;
-    expect(root.body.type).toBe('private');
+    expect(root.body.type).toBeUndefined();
   });
 
-  test('optionele velden company_name en vat_number worden opgenomen', () => {
-    const data = { ...baseData(), company_name: 'Test BV', vat_number: 'BE0987654321' };
+  test('optionele velden company_name, vat_number en company_id worden opgenomen', () => {
+    const data = { ...baseData(), company_name: 'Test BV', vat_number: 'BE0987654321', company_id: 'comp-1' };
     const root = parser.parse(sender.buildProfileUpdateXml(data)).message;
     expect(root.body.company_name).toBe('Test BV');
     expect(root.body.vat_number).toBe('BE0987654321');
+    expect(root.body.company_id).toBe('comp-1');
+  });
+
+  test('optionele payment_due gebruikt amount met currency eur', () => {
+    const data = { ...baseData(), payment_due: { amount: '50.00', status: 'paid' } };
+    const root = parser.parse(sender.buildProfileUpdateXml(data)).message;
+    expect(root.body.payment_due.amount['#text']).toBe('50.00');
+    expect(root.body.payment_due.amount.currency).toBe('eur');
+    expect(root.body.payment_due.status).toBe('paid');
   });
 
   test('message_id start met "prof-crm-"', () => {

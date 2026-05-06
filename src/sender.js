@@ -226,6 +226,46 @@ class CRMSender {
     }
   }
 
+  async sendPaymentRegisteredToFacturatie(xmlPayload) {
+    if (!this.channel) {
+      throw new Error('CRM Sender not initialized. Call init() first.');
+    }
+    try {
+      const queue = 'facturatie.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Payment registered forwarded unchanged to queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to forward payment_registered to Facturatie: ${error}`);
+      throw error;
+    }
+  }
+
+  async sendPaymentRegisteredToFrontend(xmlPayload) {
+    if (!this.channel) {
+      throw new Error('CRM Sender not initialized. Call init() first.');
+    }
+    try {
+      const queue = 'frontend.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Payment registered forwarded unchanged to queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to forward payment_registered to Frontend: ${error}`);
+      throw error;
+    }
+  }
+
   async sendMailingSend(data) {
     if (!this.channel) {
       throw new Error('CRM Sender not initialized. Call init() first.');
@@ -421,28 +461,31 @@ class CRMSender {
 
     const header = root.ele('header');
     header.ele('message_id').txt(messageId);
-    header.ele('master_uuid').txt(data.master_uuid);
     header.ele('type').txt('profile_update');
     header.ele('source').txt('crm');
     header.ele('timestamp').txt(timestamp);
     header.ele('version').txt('2.0');
-    if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
 
     const body = root.ele('body');
-    body.ele('master_uuid').txt(data.master_uuid);
-    if (data.user_id) {
-      body.ele('user_id').txt(data.user_id);
-    }
+    body.ele('user_id').txt(data.user_id || data.master_uuid || '');
     body.ele('email').txt(data.email);
-    body.ele('date_of_birth').txt(data.date_of_birth);
-    body.ele('type').txt(data.type || 'private');
+    if (data.date_of_birth) {
+      body.ele('date_of_birth').txt(data.date_of_birth);
+    }
 
     const contact = body.ele('contact');
     contact.ele('first_name').txt(data.first_name || '');
     contact.ele('last_name').txt(data.last_name || '');
 
+    if (data.type) body.ele('type').txt(data.type);
     if (data.company_name) body.ele('company_name').txt(data.company_name);
     if (data.vat_number) body.ele('vat_number').txt(data.vat_number);
+    if (data.company_id) body.ele('company_id').txt(data.company_id);
+    if (data.payment_due) {
+      const paymentDue = body.ele('payment_due');
+      paymentDue.ele('amount', { currency: 'eur' }).txt(String(data.payment_due.amount));
+      paymentDue.ele('status').txt(data.payment_due.status === 'paid' ? 'paid' : 'unpaid');
+    }
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }
