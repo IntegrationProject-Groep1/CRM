@@ -473,6 +473,15 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     const getCustomerText = (key) =>
       ReceiverV2.getElementText(customer, key) ||
       ReceiverV2.getElementText(contact, key);
+    const getCustomerTextAny = (...keys) => {
+      for (const key of keys) {
+        const value = getCustomerText(key);
+        if (value) return value;
+      }
+      return null;
+    };
+    const firstName = getCustomerTextAny('first_name', 'firstName', 'firstname', 'voornaam');
+    const lastName = getCustomerTextAny('last_name', 'lastName', 'lastname', 'achternaam');
 
     const address = customer.address || null;
     const regFee = customer.registration_fee || (body ? body.payment_due : null) || null;
@@ -492,8 +501,8 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     // Jouw volledige rawUserData (aangepast om de officiële masterUuid te gebruiken)
     const rawUserData = {
       Master_UUID__c: masterUuid, // Officiële UUID
-      First_Name__c: getCustomerText('first_name'),
-      Last_Name__c: getCustomerText('last_name'),
+      First_Name__c: firstName,
+      Last_Name__c: lastName,
       Email__c: emailForIdentity, // Gebruik de genormaliseerde email
       Birthdate__c: getCustomerText('date_of_birth'),
       User_Type__c: userType,
@@ -562,8 +571,8 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
       header: { master_uuid: masterUuid }, // Officiële UUID
       customer: {
         email: emailForIdentity,
-        first_name: getCustomerText('first_name'),
-        last_name: getCustomerText('last_name'),
+        first_name: firstName,
+        last_name: lastName,
         master_uuid: masterUuid,
         type: (isCompanyLinked || rawType === 'company') ? 'company' : (rawType || 'private'),
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
@@ -584,8 +593,8 @@ getOrCreateMasterUuid(email, sourceSystem = 'crm') {
     const fossPayload = {
       master_uuid: masterUuid, // Officiële UUID
       customer: {
-        first_name: getCustomerText('first_name'),
-        last_name: getCustomerText('last_name'),
+        first_name: firstName,
+        last_name: lastName,
         email: emailForIdentity,
         type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
         company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,

@@ -471,7 +471,10 @@ describe('handleNewRegistration', () => {
   test('maakt Salesforce upsert als verbonden', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
-    receiver.sf.apiCall.mockResolvedValue({ id: 'sf-member-1' });
+    const upsert = jest.fn().mockResolvedValue({ id: 'sf-member-1' });
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({ upsert }),
+    }));
 
     const xml = buildXml('new_registration', `
       <customer>
@@ -488,6 +491,15 @@ describe('handleNewRegistration', () => {
     await receiver.handleMessage(buildMsg(xml));
 
     expect(receiver.sf.apiCall).toHaveBeenCalled();
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        Master_UUID__c: 'test-master-uuid-1234',
+        First_Name__c: 'Jan',
+        Last_Name__c: 'Peeters',
+        Email__c: 'jan@example.com',
+      }),
+      'Master_UUID__c',
+    );
   });
 });
 
