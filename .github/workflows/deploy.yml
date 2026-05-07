@@ -13,9 +13,11 @@ jobs:
   build-and-push:
     name: Build and Push Docker Image
     if: >
-      (github.event_name == 'push') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
       (github.event_name == 'workflow_dispatch') ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,17 +33,10 @@ jobs:
         id: vars
         run: |
           if [[ "${{ github.event_name }}" == "push" ]]; then
-            BRANCH="${GITHUB_REF#refs/heads/}"
-          else
-            BRANCH="${{ github.event.workflow_run.head_branch }}"
-          fi
-
-          if [[ "$BRANCH" == "main" ]]; then
-            echo "tag=prod" >> $GITHUB_OUTPUT
-          elif [[ "$BRANCH" == "dev" ]]; then
             echo "tag=dev" >> $GITHUB_OUTPUT
           else
-            echo "tag=$BRANCH" >> $GITHUB_OUTPUT
+            # workflow_run triggered by a tag (e.g. v1.2.3) → prod
+            echo "tag=prod" >> $GITHUB_OUTPUT
           fi
 
       - name: Lowercase repo name
