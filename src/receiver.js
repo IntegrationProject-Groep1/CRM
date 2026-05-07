@@ -922,8 +922,8 @@ async handleReceivedInvoiceCancelled(header, body) {
 
     if (this.sf.isConnected) {
       await this.sf.apiCall((conn) =>
-        conn.sobject('Consumption__c').find({
-          Invoice_Number__c: invoiceId,
+        conn.sobject('Member__c').find({
+          Last_Invoice_Number__c: invoiceId,
           Master_UUID__c: masterUuid,
         }).update({ Status__c: 'Cancelled' })
       );
