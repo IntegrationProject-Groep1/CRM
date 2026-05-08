@@ -85,7 +85,7 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
     expect(c.email).toBe('jan@example.com');
     expect(c.contact.first_name).toBe('Jan');
     expect(c.contact.last_name).toBe('Peeters');
-    expect(c.user_id).toBe('u-42');
+    expect(c.identity_uuid).toBe('u-42');
   });
 
   test('payment_due status "pending" wordt genormaliseerd naar "unpaid"', () => {
@@ -302,9 +302,9 @@ describe('Consumptie flow — buildProfileUpdateXml', () => {
     expect(root.header.correlation_id).toBeUndefined();
   });
 
-  test('body bevat user_id, email en type', () => {
+  test('body bevat identity_uuid, email en type', () => {
     const root = parser.parse(sender.buildProfileUpdateXml(baseData())).message;
-    expect(root.body.user_id).toBe('u-99');
+    expect(root.body.identity_uuid).toBe('u-99');
     expect(root.body.email).toBe('update@example.com');
     expect(root.body.type).toBe('private');
   });
@@ -391,9 +391,9 @@ describe('Consumptie flow — buildCancelRegistrationXml', () => {
     expect(String(root.header.version)).toBe('2.0');
   });
 
-  test('body bevat user_id en session_id', () => {
+  test('body bevat identity_uuid en session_id', () => {
     const root = parser.parse(sender.buildCancelRegistrationXml(baseData())).message;
-    expect(root.body.user_id).toBe('u-55');
+    expect(root.body.identity_uuid).toBe('u-55');
     expect(root.body.session_id).toBe('sess-cancel-1');
   });
 
@@ -514,9 +514,9 @@ describe('Betaling flow — buildInvoiceRequestXml', () => {
     expect(root.header.master_uuid).toBeUndefined();
   });
 
-  test('body contains user_id at top level', () => {
+  test('body contains identity_uuid at top level', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
-    expect(root.body.user_id).toBe('u-invoice-001');
+    expect(root.body.identity_uuid).toBe('u-invoice-001');
   });
 
   test('invoice_data contains first_name, last_name and email', () => {
@@ -665,11 +665,11 @@ describe('Mailing flow — buildMailingSendXml', () => {
     expect(root.header.correlation_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  test('ontvanger wordt correct opgenomen met user_id en contact element', () => {
+  test('ontvanger wordt correct opgenomen met identity_uuid en contact element', () => {
     const root = parser.parse(sender.buildMailingSendXml(baseData())).message;
     const recipient = root.body.recipients.recipient;
     expect(recipient.email).toBe('a@example.com');
-    expect(recipient.user_id).toBe('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
+    expect(recipient.identity_uuid).toBe('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
     expect(recipient.contact.first_name).toBe('An');
     expect(recipient.contact.last_name).toBe('De Smedt');
     expect(recipient.first_name).toBeUndefined();
@@ -776,7 +776,7 @@ describe('Frontend flow — buildUserUnregisteredXml', () => {
     expect(root.header.version).toBe('1.0');
     expect(root.header.source).toBe('frontend.drupal');
     expect(root.header.receiver).toBe('crm.salesforce planning.outlook mailing.sendgrid');
-    expect(root.body.user_id).toBe('user-001');
+    expect(root.body.master_uuid).toBe('user-001');
     expect(root.body.session_id).toBe('sess-42');
   });
 });
