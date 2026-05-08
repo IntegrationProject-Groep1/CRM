@@ -7,7 +7,6 @@ const { create } = require('xmlbuilder2');
 const { v4: uuidv4 } = require('uuid');
 
 const USER_UNREGISTERED_EXCHANGE = 'frontend.user.unregistered';
-const USER_UNREGISTERED_QUEUES = ['crm.salesforce', 'planning.outlook', 'mailing.sendgrid'];
 
 class CRMSender {
   constructor() {
@@ -72,7 +71,6 @@ class CRMSender {
   buildMailingSendXml(data) {
     const messageId = uuidv4();
     const timestamp = new Date().toISOString();
-    const mailing = data.mailing || data;
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 

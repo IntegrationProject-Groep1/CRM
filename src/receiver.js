@@ -770,7 +770,6 @@ class ReceiverV2 {
   async handleReceivedInvoiceCancelled(header, body) {
     try {
       const masterUuid = await this.resolveMasterUuid(header, body);
-      const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(body, 'invoice_number');
 
       if (this.sf.isConnected) {
         const memberId = await this._findUserByMasterUuid(masterUuid);
@@ -937,7 +936,7 @@ class ReceiverV2 {
     }
   }
 
-  async handleConsumptionOrder(header, body, rawXml = null) {
+  async handleConsumptionOrder(header, body) {
     try {
       const isAnonymous = ReceiverV2.getElementText(body, 'is_anonymous') === 'true';
       const customer = body ? body.customer : null;
@@ -1065,9 +1064,9 @@ class ReceiverV2 {
     }
   }
 
-  async handleUserUpdated(header, body) { console.log('[receiver] user.updated received'); }
-  async handleDeleteUser(header, body) { console.log('[receiver] delete_user received'); }
-  async handleCancelRegistration(header, body) { console.log('[receiver] cancel_registration received'); }
+  async handleUserUpdated() { console.log('[receiver] user.updated received'); }
+  async handleDeleteUser() { console.log('[receiver] delete_user received'); }
+  async handleCancelRegistration() { console.log('[receiver] cancel_registration received'); }
   async handleIdentityUserEvent(msg) {
     try {
       const content = msg.content.toString();
@@ -1103,9 +1102,9 @@ class ReceiverV2 {
 
   async shutdown() {
     this.running = false;
-    try { if (this.channel) await this.channel.close(); } catch (err) {}
-    try { if (this.connection) await this.connection.close(); } catch (err) {}
-    try { await this.sender.close(); } catch (err) {}
+    try { if (this.channel) await this.channel.close(); } catch (_err) { /* already closed */ }
+    try { if (this.connection) await this.connection.close(); } catch (_err) { /* already closed */ }
+    try { await this.sender.close(); } catch (_err) { /* already closed */ }
     process.exit(0);
   }
 }
