@@ -343,6 +343,125 @@ class CRMSender {
     }
   }
 
+  // ── payment_registered (CRM → Frontend/Facturatie passthrough) ──────────────
+  async sendPaymentRegisteredToFrontend(xml) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const queue = 'frontend.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xml), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Payment registered forwarded to Frontend queue "${queue}"`);
+    } catch (error) {
+      console.log(`Failed to forward payment to Frontend: ${error}`);
+    }
+  }
+
+  async sendPaymentRegisteredToFacturatie(xml) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const queue = 'facturatie.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xml), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Payment registered forwarded to Facturatie queue "${queue}"`);
+    } catch (error) {
+      console.log(`Failed to forward payment to Facturatie: ${error}`);
+    }
+  }
+
+  // ── new_registration (CRM → Facturatie, section 10.1 passthrough/enrichment) ─
+  async sendNewRegistrationToFacturatie(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const messageId = uuidv4();
+      const timestamp = new Date().toISOString();
+
+      const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+      const header = root.ele('header');
+      header.ele('message_id').txt(messageId);
+      header.ele('timestamp').txt(timestamp);
+      header.ele('source').txt('crm');
+      header.ele('type').txt('new_registration');
+      header.ele('version').txt('2.0');
+      if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+
+      const body = root.ele('body');
+      body.ele('master_uuid').txt(data.master_uuid);
+      
+      const customer = body.ele('customer');
+      customer.ele('first_name').txt(data.customer.first_name);
+      customer.ele('last_name').txt(data.customer.last_name);
+      customer.ele('email').txt(data.customer.email);
+      customer.ele('type').txt(data.customer.type || 'private');
+      if (data.customer.company_name) customer.ele('company_name').txt(data.customer.company_name);
+      if (data.customer.vat_number)   customer.ele('vat_number').txt(data.customer.vat_number);
+
+      const address = body.ele('address');
+      address.ele('street').txt(data.address.street || '');
+      address.ele('number').txt(data.address.number || '');
+      address.ele('postal_code').txt(data.address.postal_code || '');
+      address.ele('city').txt(data.address.city || '');
+      address.ele('country').txt(data.address.country || 'BE');
+
+      const paymentDue = body.ele('payment_due');
+      paymentDue.ele('amount').txt(String(data.payment_due.amount || '0.00'));
+      paymentDue.ele('status').txt(data.payment_due.status || 'unpaid');
+
+      const xmlPayload = root.doc().end({ prettyPrint: true, indent: '  ' });
+      const queue = 'facturatie.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`New registration forwarded to Facturatie queue "${queue}"`);
+    } catch (error) {
+      console.log(`Failed to forward registration to Facturatie: ${error}`);
+    }
+  }
+
+  // ── user_unregistered (CRM → Fanout, section 5.2) ──────────────────────────
+  async sendUserUnregisteredFanout(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const exchange = USER_UNREGISTERED_EXCHANGE;
+      await this.channel.assertExchange(exchange, 'fanout', { durable: true });
+
+      const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+      const header = root.ele('header');
+      header.ele('message_id').txt(data.message_id || uuidv4());
+      header.ele('timestamp').txt(data.timestamp || new Date().toISOString());
+      header.ele('source').txt(data.source || 'crm');
+      header.ele('type').txt('user.unregistered');
+      header.ele('version').txt('1.0');
+      header.ele('receiver').txt(data.receiver || '');
+      if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+
+      const body = root.ele('body');
+      body.ele('master_uuid').txt(data.master_uuid);
+      body.ele('session_id').txt(data.session_id);
+      body.ele('timestamp').txt(data.body_timestamp || data.timestamp || new Date().toISOString());
+
+      const xmlPayload = root.doc().end({ prettyPrint: true, indent: '  ' });
+      const ok = this.channel.publish(exchange, '', Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for exchange "${exchange}"`);
+      console.log(`User unregistered broadcast via exchange "${exchange}"`);
+    } catch (error) {
+      console.log(`Failed to broadcast user unregistered: ${error}`);
+    }
+  }
+
   async close() {
     try {
       if (this.connection) await this.connection.close();
