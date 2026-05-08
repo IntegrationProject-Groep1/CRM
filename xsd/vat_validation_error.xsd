@@ -37,9 +37,10 @@
         <xs:element name="body">
           <xs:complexType>
             <xs:sequence>
-              <xs:element name="identity_uuid"  type="UUIDType"/>
-              <xs:element name="vat_number"    type="xs:string"/>
+              <xs:element name="identity_uuid" type="UUIDType" minOccurs="0"/>
+              <xs:element name="vat_number" type="xs:string"/>
               <xs:element name="error_message" type="xs:string" minOccurs="0"/>
+              <xs:element name="timestamp" type="xs:dateTime" minOccurs="0"/>
             </xs:sequence>
           </xs:complexType>
         </xs:element>
