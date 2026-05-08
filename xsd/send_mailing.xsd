@@ -67,6 +67,15 @@
               </xs:element>
               <xs:element name="template_data" type="xs:string" minOccurs="0"/>
               <xs:element name="body_html"     type="xs:string" minOccurs="0"/>
+              <xs:element name="attachment" minOccurs="0">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="filename"     type="xs:string"/>
+                    <xs:element name="content_type" type="xs:string"/>
+                    <xs:element name="base64_data"  type="xs:string"/>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
             </xs:sequence>
           </xs:complexType>
         </xs:element>
