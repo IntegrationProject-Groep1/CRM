@@ -770,7 +770,6 @@ class ReceiverV2 {
   async handleReceivedInvoiceCancelled(header, body) {
     try {
       const masterUuid = await this.resolveMasterUuid(header, body);
-      const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(body, 'invoice_number');
 
       if (this.sf.isConnected) {
         const memberId = await this._findUserByMasterUuid(masterUuid);
@@ -937,7 +936,7 @@ class ReceiverV2 {
     }
   }
 
-  async handleConsumptionOrder(header, body, rawXml = null) {
+  async handleConsumptionOrder(header, body) {
     try {
       const isAnonymous = ReceiverV2.getElementText(body, 'is_anonymous') === 'true';
       const customer = body ? body.customer : null;
@@ -1065,9 +1064,41 @@ class ReceiverV2 {
     }
   }
 
-  async handleUserUpdated(header, body) { console.log('[receiver] user.updated received'); }
-  async handleDeleteUser(header, body) { console.log('[receiver] delete_user received'); }
-  async handleCancelRegistration(header, body) { console.log('[receiver] cancel_registration received'); }
+  async handleUserUpdated() { console.log('[receiver] user.updated received'); }
+  async handleDeleteUser() { console.log('[receiver] delete_user received'); }
+  async handleCancelRegistration(header, body) {
+    try {
+      const userId    = ReceiverV2.getElementText(body, 'user_id') || ReceiverV2.getElementText(body, 'identity_uuid');
+      const sessionId = ReceiverV2.getElementText(body, 'session_id');
+      const reason    = ReceiverV2.getElementText(body, 'reason');
+
+      if (!userId || !sessionId) {
+        console.log('[receiver] cancel_registration missing user_id or session_id, skipping');
+        return;
+      }
+
+      console.log(`[receiver] cancel_registration received for user_id=${userId}`);
+
+      await this.sender.sendCancelRegistrationToKassa({ user_id: userId, session_id: sessionId });
+      await this.sender.sendCancelRegistrationToPlanning({ user_id: userId, session_id: sessionId });
+      await this.sender.sendInvoiceCancelledToFacturatie({
+        invoice_id:    sessionId,
+        identity_uuid: userId,
+        reason:        reason || undefined,
+      });
+
+      if (this.sf.isConnected) {
+        const memberId = await this._findUserByMasterUuid(userId);
+        if (memberId) {
+          await this.sf.apiCall((conn) =>
+            conn.sobject('Member__c').update({ Id: memberId, Status__c: 'Cancelled' })
+          );
+        }
+      }
+    } catch (err) {
+      console.error(`[receiver] Error in handleCancelRegistration: ${err}`);
+    }
+  }
   async handleIdentityUserEvent(msg) {
     try {
       const content = msg.content.toString();
@@ -1103,9 +1134,9 @@ class ReceiverV2 {
 
   async shutdown() {
     this.running = false;
-    try { if (this.channel) await this.channel.close(); } catch (err) {}
-    try { if (this.connection) await this.connection.close(); } catch (err) {}
-    try { await this.sender.close(); } catch (err) {}
+    try { if (this.channel) await this.channel.close(); } catch { /* ignore */ }
+    try { if (this.connection) await this.connection.close(); } catch { /* ignore */ }
+    try { await this.sender.close(); } catch { /* ignore */ }
     process.exit(0);
   }
 }

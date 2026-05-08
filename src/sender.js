@@ -7,7 +7,6 @@ const { create } = require('xmlbuilder2');
 const { v4: uuidv4 } = require('uuid');
 
 const USER_UNREGISTERED_EXCHANGE = 'frontend.user.unregistered';
-const USER_UNREGISTERED_QUEUES = ['crm.salesforce', 'planning.outlook', 'mailing.sendgrid'];
 
 class CRMSender {
   constructor() {
@@ -66,14 +65,36 @@ class CRMSender {
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }
 
+  // ── invoice_cancelled (CRM → Facturatie, section 11.2) ───────────────────────
+  // Body: invoice_id, identity_uuid, reason?
+  buildInvoiceCancelledXml(data) {
+    const messageId = uuidv4();
+    const timestamp = new Date().toISOString();
+
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(messageId);
+    header.ele('timestamp').txt(timestamp);
+    header.ele('source').txt('crm');
+    header.ele('type').txt('invoice_cancelled');
+    header.ele('version').txt('2.0');
+    if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+
+    const body = root.ele('body');
+    body.ele('invoice_id').txt(data.invoice_id || '');
+    body.ele('identity_uuid').txt(data.identity_uuid || '');
+    if (data.reason) body.ele('reason').txt(data.reason);
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
   // ── send_mailing (CRM → Mailing, section 12.1) ──────────────────────────────
   // Body: campaign_id, subject, mail_type, recipients[]{email, identity_uuid, contact}
   // correlation_id is REQUIRED per contract XSD
   buildMailingSendXml(data) {
     const messageId = uuidv4();
     const timestamp = new Date().toISOString();
-    const mailing = data.mailing || data;
-
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
     const header = root.ele('header');
@@ -262,7 +283,7 @@ class CRMSender {
   // ── cancel_registration (CRM → Kassa & Planning, section 10.3) ──────────────
   // Body: identity_uuid, session_id, reason?
   buildCancelRegistrationXml(data) {
-    const messageId = uuidv4();
+    const messageId = `cancel-crm-${uuidv4()}`;
     const timestamp = new Date().toISOString();
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
@@ -273,11 +294,10 @@ class CRMSender {
     header.ele('source').txt('crm');
     header.ele('type').txt('cancel_registration');
     header.ele('version').txt('2.0');
-    if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
 
     const body = root.ele('body');
-    body.ele('identity_uuid').txt(data.identity_uuid);
-    body.ele('session_id').txt(data.session_id);
+    body.ele('user_id').txt(data.user_id || data.identity_uuid || '');
+    body.ele('session_id').txt(data.session_id || '');
     if (data.reason) body.ele('reason').txt(data.reason);
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
@@ -295,21 +315,30 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Cancel registration forwarded to queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send cancel registration to Kassa: ${error}`);
+      throw error;
+    }
+  }
 
-      // Also notify Planning via calendar.exchange (section 10.3)
-      await this.channel.assertExchange('calendar.exchange', 'topic', { durable: true });
-      const planningOk = this.channel.publish(
-        'calendar.exchange',
+  async sendCancelRegistrationToPlanning(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildCancelRegistrationXml(data);
+      const exchange = 'calendar.exchange';
+      await this.channel.assertExchange(exchange, 'topic', { durable: true });
+      const ok = this.channel.publish(
+        exchange,
         'crm.to.planning.cancel_registration',
         Buffer.from(xmlPayload),
         { contentType: 'application/xml', deliveryMode: 2 }
       );
-      if (!planningOk) console.log('[sender] Warning: write buffer full for calendar.exchange');
-      console.log('Cancel registration also forwarded to calendar.exchange (Planning)');
-
-      return { success: true, queue, payload: xmlPayload };
+      if (!ok) console.log(`[sender] Warning: write buffer full for ${exchange}`);
+      console.log(`Cancel registration forwarded to exchange "${exchange}" (Planning)`);
+      return { success: true, exchange, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send cancel registration to Kassa: ${error}`);
+      console.log(`Failed to send cancel registration to Planning: ${error}`);
       throw error;
     }
   }
@@ -331,6 +360,25 @@ class CRMSender {
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send invoice request: ${error}`);
+      throw error;
+    }
+  }
+
+  async sendInvoiceCancelledToFacturatie(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildInvoiceCancelledXml(data);
+      const queue = 'facturatie.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Invoice cancelled sent to queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send invoice cancelled: ${error}`);
       throw error;
     }
   }
