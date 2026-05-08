@@ -822,6 +822,18 @@ class ReceiverV2 {
         await this.sender.sendPaymentRegisteredToFacturatie(rawXml);
       }
 
+      // If this was a registration payment, notify Planning (section 21.1)
+      if (paymentContext === 'registration' || paymentContext === 'session_registration') {
+        const sessionId = ReceiverV2.getElementText(body, 'session_id') || (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
+        if (sessionId && masterUuid) {
+          await this.sender.sendSessionRegistrationConfirmed({
+            session_id: sessionId,
+            identity_uuid: masterUuid,
+            correlation_id: header.message_id
+          });
+        }
+      }
+
       if (this.sf.isConnected) {
         let contactId = await this._findUserByMasterUuid(masterUuid);
         if (!contactId && email) contactId = await this._findUserByEmail(email);

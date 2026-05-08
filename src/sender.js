@@ -428,6 +428,41 @@ class CRMSender {
     }
   }
 
+  async sendSessionRegistrationConfirmed(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const messageId = uuidv4();
+      const timestamp = new Date().toISOString();
+
+      const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+      const header = root.ele('header');
+      header.ele('message_id').txt(messageId);
+      header.ele('timestamp').txt(timestamp);
+      header.ele('source').txt('crm');
+      header.ele('type').txt('session_registration_confirmed');
+      header.ele('version').txt('2.0');
+      if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+
+      const body = root.ele('body');
+      body.ele('session_id').txt(data.session_id);
+      body.ele('identity_uuid').txt(data.identity_uuid);
+
+      const xmlPayload = root.doc().end({ prettyPrint: true, indent: '  ' });
+      const exchange = 'calendar.exchange';
+      const routingKey = 'crm.to.planning.session_registration_confirmed';
+      
+      await this.channel.assertExchange(exchange, 'topic', { durable: true });
+      const ok = this.channel.publish(exchange, routingKey, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for exchange "${exchange}"`);
+      console.log(`Session registration confirmation sent to Planning via "${exchange}" [${routingKey}]`);
+    } catch (error) {
+      console.log(`Failed to send session registration confirmation: ${error}`);
+    }
+  }
+
   // ── user_unregistered (CRM → Fanout, section 5.2) ──────────────────────────
   async sendUserUnregisteredFanout(data) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
