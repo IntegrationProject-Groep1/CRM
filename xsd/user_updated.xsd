@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="UUIDType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="message">
+    <xs:complexType><xs:sequence>
+      <xs:element name="header">
+        <xs:complexType><xs:sequence>
+          <xs:element name="message_id"     type="UUIDType"/>
+          <xs:element name="timestamp"      type="xs:dateTime"/>
+          <xs:element name="source"><xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="frontend"/></xs:restriction></xs:simpleType></xs:element>
+          <xs:element name="type"><xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="user_updated"/></xs:restriction></xs:simpleType></xs:element>
+          <xs:element name="version"><xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="2.0"/></xs:restriction></xs:simpleType></xs:element>
+          <xs:element name="correlation_id" type="UUIDType" minOccurs="0"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="body">
+        <xs:complexType><xs:sequence>
+          <xs:element name="customer">
+            <xs:complexType><xs:sequence>
+              <xs:element name="identity_uuid" type="UUIDType"/>
+              <xs:element name="email"         type="xs:string"/>
+              <xs:element name="date_of_birth" type="xs:date" minOccurs="0"/>
+              <xs:element name="contact">
+                <xs:complexType><xs:sequence>
+                  <xs:element name="first_name" type="xs:string"/>
+                  <xs:element name="last_name"  type="xs:string"/>
+                </xs:sequence></xs:complexType>
+              </xs:element>
+              <xs:element name="type">
+                <xs:simpleType><xs:restriction base="xs:string">
+                  <xs:enumeration value="private"/>
+                  <xs:enumeration value="company"/>
+                </xs:restriction></xs:simpleType>
+              </xs:element>
+              <xs:element name="company_name" type="xs:string" minOccurs="0"/>
+              <xs:element name="vat_number"   type="xs:string" minOccurs="0"/>
+              <xs:element name="company_id"   type="xs:string" minOccurs="0"/>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
