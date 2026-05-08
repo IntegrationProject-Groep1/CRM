@@ -44,7 +44,7 @@ class CRMSender {
     header.ele('correlation_id').txt(data.correlation_id || uuidv4());
 
     const body = root.ele('body');
-    body.ele('user_id').txt(data.user_id || data.identity_uuid || '');
+    body.ele('identity_uuid').txt(data.identity_uuid || data.user_id || '');
 
     const invoiceData = body.ele('invoice_data');
     invoiceData.ele('first_name').txt(data.customer?.first_name || data.invoice_data?.first_name || '');
@@ -119,7 +119,7 @@ class CRMSender {
     for (const r of (data.recipients || [])) {
       const recipientElem = recipients.ele('recipient');
       recipientElem.ele('email').txt(r.email);
-      recipientElem.ele('user_id').txt(r.user_id || r.identity_uuid || '');
+      recipientElem.ele('identity_uuid').txt(r.identity_uuid || r.user_id || '');
       const contact = recipientElem.ele('contact');
       contact.ele('first_name').txt(r.first_name || '');
       contact.ele('last_name').txt(r.last_name || '');
@@ -198,7 +198,7 @@ class CRMSender {
 
     const body = root.ele('body');
     const customer = body.ele('customer');
-    customer.ele('user_id').txt(data.customer.user_id || data.customer.identity_uuid || '');
+    customer.ele('identity_uuid').txt(data.customer.identity_uuid || data.customer.user_id || '');
     customer.ele('email').txt(data.customer.email || '');
     if (data.customer.date_of_birth) customer.ele('date_of_birth').txt(data.customer.date_of_birth);
 
@@ -257,7 +257,7 @@ class CRMSender {
     header.ele('version').txt('2.0');
 
     const body = root.ele('body');
-    body.ele('user_id').txt(data.user_id || data.identity_uuid || '');
+    body.ele('identity_uuid').txt(data.identity_uuid || data.user_id || '');
     body.ele('email').txt(data.email || '');
     if (data.date_of_birth) body.ele('date_of_birth').txt(data.date_of_birth);
 
@@ -313,7 +313,7 @@ class CRMSender {
     header.ele('version').txt('2.0');
 
     const body = root.ele('body');
-    body.ele('user_id').txt(data.user_id || data.identity_uuid || '');
+    body.ele('identity_uuid').txt(data.identity_uuid || data.user_id || '');
     body.ele('session_id').txt(data.session_id || '');
     if (data.reason) body.ele('reason').txt(data.reason);
 
@@ -578,7 +578,7 @@ class CRMSender {
     if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
 
     const body = root.ele('body');
-    body.ele('user_id').txt(data.user_id || data.master_uuid || '');
+    body.ele('master_uuid').txt(data.master_uuid || data.user_id || '');
     body.ele('session_id').txt(data.session_id || '');
     body.ele('timestamp').txt(data.body_timestamp || data.timestamp || new Date().toISOString());
 
