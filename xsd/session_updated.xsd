@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="UUIDType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="message">
+    <xs:complexType><xs:sequence>
+      <xs:element name="header">
+        <xs:complexType><xs:sequence>
+          <xs:element name="message_id"    type="UUIDType"/>
+          <xs:element name="timestamp"     type="xs:dateTime"/>
+          <xs:element name="source"><xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="planning"/></xs:restriction></xs:simpleType></xs:element>
+          <xs:element name="type"><xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="session_updated"/></xs:restriction></xs:simpleType></xs:element>
+          <xs:element name="version"><xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="2.0"/></xs:restriction></xs:simpleType></xs:element>
+          <xs:element name="correlation_id" type="UUIDType" minOccurs="0"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="body">
+        <xs:complexType><xs:sequence>
+          <xs:element name="session_id"        type="xs:string"/>
+          <xs:element name="title"             type="xs:string"/>
+          <xs:element name="start_datetime"    type="xs:dateTime"/>
+          <xs:element name="end_datetime"      type="xs:dateTime"/>
+          <xs:element name="location"          type="xs:string"/>
+          <xs:element name="session_type">
+            <xs:simpleType><xs:restriction base="xs:string">
+              <xs:enumeration value="keynote"/>
+              <xs:enumeration value="workshop"/>
+              <xs:enumeration value="reception"/>
+              <xs:enumeration value="other"/>
+            </xs:restriction></xs:simpleType>
+          </xs:element>
+          <xs:element name="status">
+            <xs:simpleType><xs:restriction base="xs:string">
+              <xs:enumeration value="draft"/>
+              <xs:enumeration value="published"/>
+              <xs:enumeration value="cancelled"/>
+            </xs:restriction></xs:simpleType>
+          </xs:element>
+          <xs:element name="max_attendees"     type="xs:positiveInteger"/>
+          <xs:element name="current_attendees" type="xs:nonNegativeInteger"/>
+          <xs:element name="change_reason"     type="xs:string" minOccurs="0"/>
+          <xs:element name="speaker" minOccurs="0">
+            <xs:complexType><xs:sequence>
+              <!-- identity_uuid: de master_uuid van de Identity Service (indien spreker een gebruiker is) -->
+              <xs:element name="identity_uuid" type="UUIDType" minOccurs="0"/>
+              <xs:element name="contact">
+                <xs:complexType><xs:sequence>
+                  <xs:element name="first_name" type="xs:string"/>
+                  <xs:element name="last_name"  type="xs:string"/>
+                </xs:sequence></xs:complexType>
+              </xs:element>
+              <xs:element name="organisation" type="xs:string" minOccurs="0"/>
+              <xs:element name="email"        type="xs:string" minOccurs="0"/>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>

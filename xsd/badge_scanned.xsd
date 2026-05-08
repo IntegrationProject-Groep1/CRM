@@ -10,23 +10,32 @@
     <xs:complexType><xs:sequence>
       <xs:element name="header">
         <xs:complexType><xs:sequence>
-          <xs:element name="message_id"     type="UUIDType"/>
-          <xs:element name="timestamp"      type="xs:dateTime"/>
+          <xs:element name="message_id" type="UUIDType"/>
+          <xs:element name="timestamp"  type="xs:dateTime"/>
           <xs:element name="source"><xs:simpleType><xs:restriction base="xs:string">
-            <xs:enumeration value="frontend"/></xs:restriction></xs:simpleType></xs:element>
+            <xs:enumeration value="iot_gateway"/>
+            <xs:enumeration value="kassa"/></xs:restriction></xs:simpleType></xs:element>
           <xs:element name="type"><xs:simpleType><xs:restriction base="xs:string">
-            <xs:enumeration value="user_deleted"/></xs:restriction></xs:simpleType></xs:element>
+            <xs:enumeration value="badge_scanned"/></xs:restriction></xs:simpleType></xs:element>
           <xs:element name="version"><xs:simpleType><xs:restriction base="xs:string">
             <xs:enumeration value="2.0"/></xs:restriction></xs:simpleType></xs:element>
-          <xs:element name="correlation_id" type="UUIDType" minOccurs="0"/>
         </xs:sequence></xs:complexType>
       </xs:element>
       <xs:element name="body">
         <xs:complexType><xs:sequence>
-          <!-- identity_uuid: de master_uuid van de Identity Service -->
-          <xs:element name="identity_uuid" type="UUIDType"/>
-          <xs:element name="email"         type="xs:string"/>
-          <xs:element name="reason"        type="xs:string" minOccurs="0"/>
+          <xs:choice>
+            <xs:element name="badge_id"      type="xs:string"/>
+            <xs:element name="identity_uuid" type="UUIDType"/>
+          </xs:choice>
+          <xs:element name="location">
+            <xs:simpleType><xs:restriction base="xs:string">
+              <xs:enumeration value="entrance"/>
+              <xs:enumeration value="bar"/>
+              <xs:enumeration value="main_bar"/>
+              <xs:enumeration value="session"/>
+            </xs:restriction></xs:simpleType>
+          </xs:element>
+          <xs:element name="scanned_at" type="xs:dateTime"/>
         </xs:sequence></xs:complexType>
       </xs:element>
     </xs:sequence></xs:complexType>

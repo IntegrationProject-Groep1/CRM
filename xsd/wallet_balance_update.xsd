@@ -22,8 +22,8 @@
                   </xs:restriction>
                 </xs:simpleType>
               </xs:element>
-              <xs:element name="type"    type="xs:string" fixed="wallet_balance_update"/>
-              <xs:element name="version" type="xs:string" fixed="2.0"/>
+              <xs:element name="type"       type="xs:string" fixed="wallet_balance_update"/>
+              <xs:element name="version"    type="xs:string" fixed="2.0"/>
             </xs:sequence>
           </xs:complexType>
         </xs:element>
@@ -40,6 +40,7 @@
                   </xs:simpleContent>
                 </xs:complexType>
               </xs:element>
+              <!-- Authority Lease Model Velden (Optioneel voor compatibiliteit) -->
               <xs:element name="authority" minOccurs="0">
                 <xs:simpleType>
                   <xs:restriction base="xs:string">

@@ -13,14 +13,12 @@
           <xs:element name="message_id"     type="UUIDType"/>
           <xs:element name="timestamp"      type="xs:dateTime"/>
           <xs:element name="source"><xs:simpleType><xs:restriction base="xs:string">
-            <xs:enumeration value="frontend"/>
-            <xs:enumeration value="crm"/>
-          </xs:restriction></xs:simpleType></xs:element>
+            <xs:enumeration value="frontend"/></xs:restriction></xs:simpleType></xs:element>
           <xs:element name="type"><xs:simpleType><xs:restriction base="xs:string">
             <xs:enumeration value="cancel_registration"/></xs:restriction></xs:simpleType></xs:element>
           <xs:element name="version"><xs:simpleType><xs:restriction base="xs:string">
             <xs:enumeration value="2.0"/></xs:restriction></xs:simpleType></xs:element>
-          <xs:element name="correlation_id" type="UUIDType" minOccurs="0"/>
+          <xs:element name="correlation_id" type="UUIDType"/>
         </xs:sequence></xs:complexType>
       </xs:element>
       <xs:element name="body">

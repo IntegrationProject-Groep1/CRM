@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <!--
+    TYPE   : identity_request (create)
+    FLOW   : Elk systeem → Identity Service  (queue: identity.user.create.request)
+    LET OP : Geen <messcorrelation_id, message_id en timestamp in als message properties
+  -->
+  <xs:element name="identity_request">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="email"         type="xs:string"/>
+        <xs:element name="source_system" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

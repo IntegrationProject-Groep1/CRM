@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <!--
+    TYPE   : user_event (UserCreated)
+    FLOW   : Identity Service → Alle teams (exchange: user.events, fanout)
+    LET OP : Geen <message><header> wrapper — eigen Identity formaat
+  -->
+  <xs:element name="user_event">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="event">
+          <xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="UserCreated"/>
+          </xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="master_uuid"   type="xs:string"/>
+        <xs:element name="email"         type="xs:string"/>
+        <xs:element name="source_system" type="xs:string"/>
+        <xs:element name="timestamp"     type="xs:dateTime"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

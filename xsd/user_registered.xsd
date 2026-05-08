@@ -25,6 +25,7 @@
         <xs:complexType><xs:sequence>
           <xs:element name="customer">
             <xs:complexType><xs:sequence>
+              <!-- identity_uuid: de master_uuid van de Identity Service -->
               <xs:element name="identity_uuid" type="UUIDType"/>
               <xs:element name="email"         type="xs:string"/>
               <xs:element name="contact">
@@ -39,9 +40,10 @@
                   <xs:enumeration value="company"/>
                 </xs:restriction></xs:simpleType>
               </xs:element>
+              <!-- Verplicht wanneer type=company -->
               <xs:element name="company_name" type="xs:string" minOccurs="0"/>
               <xs:element name="vat_number"   type="xs:string" minOccurs="0"/>
-              <xs:element name="session_id"   type="xs:string"/>
+              <xs:element name="session_id"    type="xs:string"/>
             </xs:sequence></xs:complexType>
           </xs:element>
           <xs:element name="session_title"   type="xs:string" minOccurs="0"/>

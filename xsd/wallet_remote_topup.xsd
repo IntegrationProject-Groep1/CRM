@@ -12,21 +12,21 @@
         <xs:complexType><xs:sequence>
           <xs:element name="message_id"     type="UUIDType"/>
           <xs:element name="timestamp"      type="xs:dateTime"/>
-          <xs:element name="source"><xs:simpleType><xs:restriction base="xs:string">
-            <xs:enumeration value="frontend"/></xs:restriction></xs:simpleType></xs:element>
-          <xs:element name="type"><xs:simpleType><xs:restriction base="xs:string">
-            <xs:enumeration value="user_deleted"/></xs:restriction></xs:simpleType></xs:element>
-          <xs:element name="version"><xs:simpleType><xs:restriction base="xs:string">
-            <xs:enumeration value="2.0"/></xs:restriction></xs:simpleType></xs:element>
-          <xs:element name="correlation_id" type="UUIDType" minOccurs="0"/>
+          <xs:element name="source"         type="xs:string" fixed="crm"/>
+          <xs:element name="type"           type="xs:string" fixed="wallet_remote_topup"/>
+          <xs:element name="version"        type="xs:string" fixed="2.0"/>
+          <xs:element name="correlation_id" type="UUIDType"/>
         </xs:sequence></xs:complexType>
       </xs:element>
       <xs:element name="body">
         <xs:complexType><xs:sequence>
-          <!-- identity_uuid: de master_uuid van de Identity Service -->
           <xs:element name="identity_uuid" type="UUIDType"/>
-          <xs:element name="email"         type="xs:string"/>
-          <xs:element name="reason"        type="xs:string" minOccurs="0"/>
+          <xs:element name="add_amount">
+            <xs:complexType><xs:simpleContent><xs:extension base="xs:decimal">
+              <xs:attribute name="currency" type="xs:string" fixed="eur" use="required"/>
+            </xs:extension></xs:simpleContent></xs:complexType>
+          </xs:element>
+          <xs:element name="reason" type="xs:string"/>
         </xs:sequence></xs:complexType>
       </xs:element>
     </xs:sequence></xs:complexType>

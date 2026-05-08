@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="UUIDType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="message">
+    <xs:complexType><xs:sequence>
+      <xs:element name="header">
+        <xs:complexType><xs:sequence>
+          <xs:element name="message_id" type="UUIDType"/>
+          <xs:element name="timestamp"  type="xs:dateTime"/>
+          <xs:element name="source"><xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="mailing"/></xs:restriction></xs:simpleType></xs:element>
+          <xs:element name="type"><xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="mailing_status"/></xs:restriction></xs:simpleType></xs:element>
+          <xs:element name="version"><xs:simpleType><xs:restriction base="xs:string">
+            <xs:enumeration value="2.0"/></xs:restriction></xs:simpleType></xs:element>
+          <xs:element name="correlation_id" type="UUIDType" minOccurs="0"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="body">
+        <xs:complexType><xs:sequence>
+          <xs:element name="campaign_id" type="xs:string"/>
+          <xs:element name="subject"     type="xs:string"/>
+          <xs:element name="sent"        type="xs:integer"/>
+          <xs:element name="delivered"   type="xs:integer"/>
+          <xs:element name="bounced"     type="xs:integer"/>
+          <!-- bounced_emails: optioneel maar sterk aanbevolen — staat direct na bounced -->
+          <!-- CRM gebruikt dit om ongeldige e-mailadressen te markeren in Salesforce -->
+          <xs:element name="bounced_emails" minOccurs="0">
+            <xs:complexType><xs:sequence>
+              <xs:element name="email" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+            </xs:sequence></xs:complexType>
+          </xs:element>
+          <xs:element name="opened"      type="xs:integer"/>
+          <xs:element name="status">
+            <xs:simpleType><xs:restriction base="xs:string">
+              <xs:enumeration value="completed"/>
+              <xs:enumeration value="partial_failure"/>
+              <xs:enumeration value="failed"/>
+            </xs:restriction></xs:simpleType>
+          </xs:element>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>
