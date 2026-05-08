@@ -65,10 +65,10 @@ class Heartbeat {
 <message>
   <header>
     <message_id>${messageId}</message_id>
-    <version>2.0</version>
-    <type>heartbeat</type>
     <timestamp>${now}</timestamp>
     <source>crm</source>
+    <type>heartbeat</type>
+    <version>2.0</version>
   </header>
   <body>
     <status>${status}</status>
