@@ -132,6 +132,19 @@ class CRMSender {
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }
 
+  async sendLog(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    const xmlPayload = this.buildLogXml(data);
+    const queue = 'logs';
+    await this.channel.assertQueue(queue, { durable: true });
+    const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+      contentType: 'application/xml',
+      deliveryMode: 2,
+    });
+    if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+    return { success: true, queue, payload: xmlPayload };
+  }
+
   // ── new_registration (CRM → Kassa, section 10.1) ────────────────────────────
   // Body: customer{identity_uuid, email, date_of_birth, contact, type, ..., session_id, payment_due}
   // session_id and payment_due are inside customer; correlation_id REQUIRED
