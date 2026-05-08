@@ -34,10 +34,9 @@ const MESSAGE_TYPES = {
   USER_UNREGISTERED: 'user.unregistered',
   PAYMENT_REGISTERED: 'payment_registered',
   BADGE_SCANNED: 'badge_scanned',
-  SESSION_UPDATE: 'session_updated',
-  SESSION_CREATED: 'session.created',
-  SESSION_UPDATED: 'session.updated',
-  SESSION_DELETED: 'session.deleted',
+  SESSION_CREATED: 'session_created',
+  SESSION_UPDATED: 'session_updated',
+  SESSION_DELETED: 'session_deleted',
   INVOICE_STATUS: 'invoice_status',
   SEND_INVOICE: 'send_invoice',
   MAILING_STATUS: 'mailing_status',
@@ -528,7 +527,7 @@ class ReceiverV2 {
 
       const kassaPayload = {
         customer: {
-          identity_uuid: masterUuid,
+          master_uuid: masterUuid,
           email: email,
           date_of_birth: getCustomerText('date_of_birth') || '',
           first_name: firstName || '',
@@ -537,10 +536,10 @@ class ReceiverV2 {
           company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
           vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
           session_id: sessionId || '',
-          payment_due: {
-            amount: registrationAmount || '0.00',
-            status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
-          },
+        },
+        payment_due: {
+          amount: registrationAmount || '0.00',
+          status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
         },
       };
       await this.sender.sendNewRegistrationToKassa(kassaPayload);
@@ -751,16 +750,16 @@ class ReceiverV2 {
       let memberId = await this._findUserByMasterUuid(masterUuid);
       if (!memberId && email) memberId = await this._findUserByEmail(email);
 
-      if (memberId) {
-        await this.sf.apiCall((conn) =>
-          conn.sobject('Member__c').update({
-            Id: memberId,
-            Last_Invoice_URL__c: invoiceUrl,
-            Last_Invoice_Due_Date__c: dueDate,
-            Last_Invoice_Number__c: invoiceNumber
-          })
-        );
-      }
+      if (!memberId) throw new Error(`No Member__c found for master_uuid=${masterUuid}`);
+
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').update({
+          Id: memberId,
+          Last_Invoice_URL__c: invoiceUrl,
+          Last_Invoice_Due_Date__c: dueDate,
+          Last_Invoice_Number__c: invoiceNumber
+        })
+      );
     } catch (err) {
       console.error(`[receiver] Error in handleSendInvoice: ${err}`);
       throw err;
@@ -797,9 +796,11 @@ class ReceiverV2 {
 
       const amountVal = body?.amount_paid || (invoice ? invoice.amount_paid : null);
       const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || '0.00');
-      const invoiceId = ReceiverV2.getElementText(invoice, 'id');
+      const invoiceId = ReceiverV2.getElementText(invoice, 'id') || ReceiverV2.getElementText(body, 'invoice_id');
       const transactionId = transaction ? ReceiverV2.getElementText(transaction, 'id') : null;
-      const paymentMethod = transaction ? ReceiverV2.getElementText(transaction, 'method') : 'unknown';
+      const paymentMethod = transaction
+        ? (ReceiverV2.getElementText(transaction, 'payment_method') || ReceiverV2.getElementText(transaction, 'method') || 'unknown')
+        : (ReceiverV2.getElementText(body, 'payment_method') || 'unknown');
       const paidAt = transaction ? ReceiverV2.getElementText(transaction, 'timestamp') : null;
 
       const taskData = {
@@ -936,7 +937,7 @@ class ReceiverV2 {
     }
   }
 
-  async handleConsumptionOrder(header, body) {
+  async handleConsumptionOrder(header, body, rawXml = null) {
     try {
       const isAnonymous = ReceiverV2.getElementText(body, 'is_anonymous') === 'true';
       const customer = body ? body.customer : null;
@@ -970,6 +971,8 @@ class ReceiverV2 {
           await this.sf.apiCall((conn) => conn.sobject('Consumption__c').upsert(consumptionData, 'Consumption_ID__c'));
         }
       }
+
+      if (rawXml) await this.sender.sendConsumptionOrderToFacturatie(rawXml);
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
       throw err;
@@ -1040,23 +1043,27 @@ class ReceiverV2 {
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
 
+      const rawAmount = invoiceData ? ReceiverV2.getElementText(invoiceData, 'amount_paid') : null;
       await this.sender.sendInvoiceRequest({
-        identity_uuid: masterUuid,
+        master_uuid: masterUuid,
         correlation_id: header.correlation_id || header.message_id,
-        invoice_data: {
+        customer: {
+          email: email || '',
           first_name: contact ? ReceiverV2.getElementText(contact, 'first_name') : '',
           last_name: contact ? ReceiverV2.getElementText(contact, 'last_name') : '',
-          email: email || '',
-          address: invoiceData ? {
-            street:      ReceiverV2.getElementText(invoiceData.address, 'street') || '',
-            number:      ReceiverV2.getElementText(invoiceData.address, 'number') || '',
-            postal_code: ReceiverV2.getElementText(invoiceData.address, 'postal_code') || '',
-            city:        ReceiverV2.getElementText(invoiceData.address, 'city') || '',
-            country:     ReceiverV2.getElementText(invoiceData.address, 'country') || '',
-          } : { street: '', number: '', postal_code: '', city: '', country: '' },
           company_name: invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null,
           vat_number:   invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null,
         },
+        invoice: {
+          amount: rawAmount ? parseFloat(rawAmount) : 0,
+        },
+        address: invoiceData ? {
+          street:      ReceiverV2.getElementText(invoiceData.address, 'street') || '',
+          number:      ReceiverV2.getElementText(invoiceData.address, 'number') || '',
+          postal_code: ReceiverV2.getElementText(invoiceData.address, 'postal_code') || '',
+          city:        ReceiverV2.getElementText(invoiceData.address, 'city') || '',
+          country:     ReceiverV2.getElementText(invoiceData.address, 'country') || '',
+        } : { street: '', number: '', postal_code: '', city: '', country: '' },
       });
     } catch (err) {
       console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
@@ -1065,7 +1072,19 @@ class ReceiverV2 {
   }
 
   async handleUserUpdated() { console.log('[receiver] user.updated received'); }
-  async handleDeleteUser() { console.log('[receiver] delete_user received'); }
+  async handleDeleteUser(header, body) {
+    try {
+      const masterUuid = await this.resolveMasterUuid(header, body);
+      if (!this.sf.isConnected) return;
+      const memberId = await this._findUserByMasterUuid(masterUuid);
+      if (memberId) {
+        await this.sf.apiCall((conn) => conn.sobject('Member__c').update({ Id: memberId, Is_Deleted__c: true }));
+      }
+    } catch (err) {
+      console.error(`[receiver] Error in handleDeleteUser: ${err}`);
+      throw err;
+    }
+  }
   async handleCancelRegistration(header, body) {
     try {
       const userId    = ReceiverV2.getElementText(body, 'user_id') || ReceiverV2.getElementText(body, 'identity_uuid');
@@ -1102,7 +1121,35 @@ class ReceiverV2 {
   async handleIdentityUserEvent(msg) {
     try {
       const content = msg.content.toString();
-      console.log(`[receiver] Received Identity Fanout event: ${content.substring(0, 100)}...`);
+      let parsed;
+      try {
+        parsed = parser.parse(content);
+      } catch {
+        this.channel.nack(msg, false, false);
+        return;
+      }
+
+      const event = parsed?.user_event;
+      if (!event) {
+        this.channel.nack(msg, false, false);
+        return;
+      }
+
+      const masterUuid = ReceiverV2.getElementText(event, 'master_uuid');
+      if (!masterUuid) {
+        this.channel.nack(msg, false, false);
+        return;
+      }
+
+      const eventType = ReceiverV2.getElementText(event, 'event');
+      const email = ReceiverV2.getElementText(event, 'email');
+
+      if (eventType === 'UserCreated' && this.sf.isConnected) {
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert({ Master_UUID__c: masterUuid, Email__c: email }, 'Master_UUID__c')
+        );
+      }
+
       this.channel.ack(msg);
     } catch (err) {
       console.error(`[receiver] Identity Fanout error: ${err.message}`);
