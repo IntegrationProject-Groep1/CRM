@@ -27,7 +27,7 @@ const PLANNING_SESSION_ROUTING_KEYS = [
   'planning.session.deleted',
 ];
 const KASSA_EXCHANGE = 'kassa.exchange';
-const KASSA_ROUTING_KEY = 'kassa.payments.#';
+const KASSA_ROUTING_KEYS = ['kassa.payments.#', 'kassa.to.crm.#'];
 
 const MESSAGE_TYPES = {
   USER_CREATED: 'user.created',
@@ -135,7 +135,9 @@ class ReceiverV2 {
         await this.channel.assertQueue(QUEUE_NAME, { durable: true });
         await this.channel.assertExchange(KASSA_EXCHANGE, 'topic', { durable: true });
         await this.channel.assertQueue(KASSA_QUEUE, { durable: true });
-        await this.channel.bindQueue(KASSA_QUEUE, KASSA_EXCHANGE, KASSA_ROUTING_KEY);
+        for (const rk of KASSA_ROUTING_KEYS) {
+          await this.channel.bindQueue(QUEUE_NAME, KASSA_EXCHANGE, rk);
+        }
         await this.channel.assertQueue(FACTURATIE_TO_CRM_QUEUE, { durable: true });
         await this.channel.assertQueue(USER_REGISTERED_QUEUE, { durable: true });
         await this.channel.assertQueue(USER_CREATED_QUEUE, { durable: true });
