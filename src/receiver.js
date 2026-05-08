@@ -1076,7 +1076,7 @@ class ReceiverV2 {
     }
   }
 
-  async handleUserUpdated(header, body) {
+  async handleUserUpdated() {
     console.log('[receiver] user.updated received');
   }
 
