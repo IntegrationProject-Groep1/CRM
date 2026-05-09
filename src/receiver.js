@@ -83,9 +83,9 @@ const PLANNING_SESSION_TYPES = new Set([
 ]);
 
 const TYPES_ACCEPTING_V1 = new Set([
-  MESSAGE_TYPES.USER_UNREGISTERED,
-  MESSAGE_TYPES.USER_CREATED,
-  MESSAGE_TYPES.USER_REGISTERED,
+  'user_unregistered',
+  'user_created',
+  'user_registered',
 ]);
 
 const BASE_HEADER_FIELDS = ['message_id', 'version', 'type', 'timestamp', 'source'];
