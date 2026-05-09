@@ -57,6 +57,7 @@ const MESSAGE_TYPES = {
   COMPANY_DELETE: 'company_delete',
   CANCEL_REGISTRATION: 'cancel_registration',
   WALLET_LEASE_REQUEST: 'wallet_lease_request',
+  WALLET_LEASE_RETURN: 'wallet_lease_return',
 };
 
 const LAZY_MASTER_UUID_TYPES = new Set([
@@ -357,6 +358,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.USER_CHECKIN]: 'user_checkin.xsd',
         [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
+        [MESSAGE_TYPES.WALLET_LEASE_RETURN]: 'wallet_lease_return.xsd',
       };
 
       const xsdFile = xsdMapping[messageType];
@@ -422,6 +424,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.SESSION_DELETED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.USER_CHECKIN]: () => this.handleUserCheckin(header, body),
       [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: () => this.handleWalletLeaseRequest(header, body),
+      [MESSAGE_TYPES.WALLET_LEASE_RETURN]: () => this.handleWalletLeaseReturn(header, body),
     };
 
     const handler = handlers[msgType];
@@ -1108,6 +1111,62 @@ class ReceiverV2 {
     console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
     // Bij een error sturen we optioneel een 'denied' bericht naar de kassa
     throw err; 
+  }
+}
+
+async handleWalletLeaseReturn(header, body) {
+  try {
+    const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+    const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
+    const leaseId = ReceiverV2.getElementText(body, 'lease_id');
+    const txCount = ReceiverV2.getElementText(body, 'transaction_count');
+
+    console.log(`[lease-return] Ontvangen voor User: ${masterUuid}. Lease: ${leaseId}. Transacties: ${txCount}`);
+
+    if (!this.sf.isConnected) {
+      throw new Error("Salesforce niet verbonden. Kan lease-return niet verwerken.");
+    }
+
+    // 1. Zoek de gebruiker op in Salesforce
+    const records = await this.sf.apiCall((conn) =>
+      conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
+    );
+
+    if (!records || records.length === 0) {
+      throw new Error(`User met UUID ${masterUuid} niet gevonden bij afsluiten lease.`);
+    }
+
+    const memberId = records[0].Id;
+
+    // 2. Update Salesforce: Saldo bijwerken en status op 'Active' zetten
+    await this.sf.apiCall((conn) =>
+      conn.sobject('Member__c').update({
+        Id: memberId,
+        Wallet_Balance__c: parseFloat(finalBalance),
+        Wallet_Status__c: 'Active', // De wallet is nu weer beschikbaar voor online transacties
+        Last_Lease_ID__c: leaseId,   // Optioneel: log welke lease als laatste is afgerond
+        Last_Sync_At__c: new Date().toISOString()
+      })
+    );
+
+    // 3. Log de succesvolle afhandeling
+    await this.sender.sendLog({
+      level: 'info',
+      action: 'wallet',
+      message: `Lease ${leaseId} succesvol beëindigd voor ${masterUuid}. Nieuw saldo: ${finalBalance} (${txCount} transacties verwerkt).`
+    });
+
+    console.log(`[lease-return] Wallet succesvol vrijgegeven in CRM voor ${masterUuid}.`);
+
+  } catch (err) {
+    console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
+    // Bij een kritieke fout (bijv. saldo niet kunnen updaten), log dit als een error
+    await this.sender.sendLog({
+      level: 'error',
+      action: 'wallet',
+      message: `CRITIEK: Kon lease-return voor ${leaseId} niet verwerken! Error: ${err.message}`
+    });
+    throw err;
   }
 }
 
