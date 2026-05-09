@@ -27,6 +27,22 @@ class CRMSender {
       'payment_registered': 'payment_registered_facturatie.xsd', // Default to facturatie for passthrough
       'consumption_order': 'consumption_order.xsd'
     };
+    this.messageTypeToLogAction = {
+      'new_registration': 'registration',
+      'profile_update': 'user',
+      'cancel_registration': 'registration',
+      'invoice_request': 'invoice',
+      'send_mailing': 'email',
+      'session_registration_confirmed': 'session',
+      'user.unregistered': 'user',
+      'event_ended': 'session',
+      'payment_registered': 'payment',
+      'consumption_order': 'payment',
+      'invoice_status': 'invoice',
+      'refund_processed': 'refund',
+      'badge_scanned': 'badge',
+      'badge_assigned': 'badge'
+    };
   }
 
   _validate(xml, type) {
@@ -40,11 +56,19 @@ class CRMSender {
     if (!valid) {
       const errorMsg = `Outgoing XML validation failed for "${type}" (${xsdFile}): ${errors.join('; ')}`;
       console.error(`[sender] ${errorMsg}`);
-      // In production we might want to throw, but for now we just log to avoid breaking existing flows
-      // unless it's a critical error. Actually, the user asked for "real" validation.
       throw new Error(errorMsg);
     }
     console.log(`[sender] XSD validation passed for outgoing "${type}"`);
+  }
+
+  async _logOutbound(type, destination, correlationId) {
+    const action = this.messageTypeToLogAction[type] || 'system_error';
+    const message = `Published ${type} to ${destination}. CorrelationID: ${correlationId || 'N/A'}.`;
+    try {
+      await this.sendLog({ level: 'info', action, message });
+    } catch (err) {
+      console.error(`[sender] Failed to send outbound log: ${err.message}`);
+    }
   }
 
   async init() {
@@ -117,6 +141,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`New registration forwarded to queue "${queue}"`);
+      await this._logOutbound('new_registration', queue, data.correlation_id);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send new registration to Kassa: ${error}`);
@@ -175,6 +200,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Profile update forwarded to queue "${queue}"`);
+      await this._logOutbound('profile_update', queue, 'N/A');
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send profile update to Kassa: ${error}`);
@@ -218,6 +244,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Cancel registration forwarded to queue "${queue}"`);
+      await this._logOutbound('cancel_registration', queue, 'N/A');
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send cancel registration to Kassa: ${error}`);
@@ -239,6 +266,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for exchange "${exchange}"`);
       console.log(`Cancel registration forwarded to Planning via "${exchange}" [${routingKey}]`);
+      await this._logOutbound('cancel_registration', exchange, 'N/A');
       return { success: true, exchange, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send cancel registration to Planning: ${error}`);
@@ -301,6 +329,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Invoice request sent to queue "${queue}"`);
+      await this._logOutbound('invoice_request', queue, data.correlation_id);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send invoice request: ${error}`);
@@ -321,6 +350,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Consumption order forwarded to queue "${queue}"`);
+      await this._logOutbound('consumption_order', queue, 'PASSTHROUGH');
       return { success: true, queue, payload: xml };
     } catch (error) {
       console.log(`Failed to forward consumption order to Facturatie: ${error}`);
@@ -343,7 +373,8 @@ class CRMSender {
     header.ele('source').txt('crm');
     header.ele('type').txt('send_mailing');
     header.ele('version').txt('2.0');
-    header.ele('correlation_id').txt(data.correlation_id || uuidv4());
+    const correlationId = data.correlation_id || uuidv4();
+    header.ele('correlation_id').txt(correlationId);
 
     const body = root.ele('body');
     body.ele('campaign_id').txt(mailing.campaign_id || data.campaign_id || '');
@@ -395,6 +426,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Mailing send request sent to queue "${queue}"`);
+      await this._logOutbound('send_mailing', queue, data.correlation_id);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.log(`Failed to send mailing send request: ${error}`);
@@ -430,17 +462,24 @@ class CRMSender {
   }
 
   async sendLog(data) {
-    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
-    const xmlPayload = this.buildLogXml(data);
-    this._validate(xmlPayload, 'log');
-    const queue = 'logs';
-    await this.channel.assertQueue(queue, { durable: true });
-    const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
-      contentType: 'application/xml',
-      deliveryMode: 2,
-    });
-    if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
-    return { success: true, queue, payload: xmlPayload };
+    if (!this.channel) {
+      console.error('[sender] sendLog failed: Channel not initialized');
+      return;
+    }
+    try {
+      const xmlPayload = this.buildLogXml(data);
+      const queue = 'logs';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.error(`[sender] sendLog error: ${error.message}`);
+      return { success: false, error: error.message };
+    }
   }
 
   // ── payment_registered (CRM → Frontend/Facturatie passthrough) ──────────────
@@ -456,6 +495,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Payment registered forwarded to Frontend queue "${queue}"`);
+      await this._logOutbound('payment_registered', queue, 'PASSTHROUGH');
       return { success: true, queue, payload: xml };
     } catch (error) {
       console.log(`Failed to forward payment to Frontend: ${error}`);
@@ -475,6 +515,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Payment registered forwarded to Facturatie queue "${queue}"`);
+      await this._logOutbound('payment_registered', queue, 'PASSTHROUGH');
       return { success: true, queue, payload: xml };
     } catch (error) {
       console.log(`Failed to forward payment to Facturatie: ${error}`);
@@ -510,6 +551,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`Event ended notification sent to Facturatie queue "${queue}"`);
+      await this._logOutbound('event_ended', queue, messageId);
     } catch (error) {
       console.log(`Failed to send event ended to Facturatie: ${error}`);
     }
@@ -529,7 +571,8 @@ class CRMSender {
       header.ele('source').txt('crm');
       header.ele('type').txt('new_registration');
       header.ele('version').txt('2.0');
-      if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+      const correlationId = data.correlation_id || uuidv4();
+      header.ele('correlation_id').txt(correlationId);
 
       const body = root.ele('body');
       body.ele('master_uuid').txt(data.master_uuid);
@@ -563,6 +606,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       console.log(`New registration forwarded to Facturatie queue "${queue}"`);
+      await this._logOutbound('new_registration', queue, correlationId);
     } catch (error) {
       console.log(`Failed to forward registration to Facturatie: ${error}`);
     }
@@ -581,7 +625,8 @@ class CRMSender {
       header.ele('source').txt('crm');
       header.ele('type').txt('session_registration_confirmed');
       header.ele('version').txt('2.0');
-      if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+      const correlationId = data.correlation_id || uuidv4();
+      header.ele('correlation_id').txt(correlationId);
 
       const body = root.ele('body');
       body.ele('session_id').txt(data.session_id);
@@ -599,6 +644,7 @@ class CRMSender {
       });
       if (!ok) console.log(`[sender] Warning: write buffer full for exchange "${exchange}"`);
       console.log(`Session registration confirmation sent to Planning via "${exchange}" [${routingKey}]`);
+      await this._logOutbound('session_registration_confirmed', exchange, correlationId);
     } catch (error) {
       console.log(`Failed to send session registration confirmation: ${error}`);
     }

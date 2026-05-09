@@ -121,6 +121,14 @@ class ReceiverV2 {
     await this.connectRabbitMQ();
   }
 
+  async log(level, action, message) {
+    try {
+      await this.sender.sendLog({ level, action, message });
+    } catch (err) {
+      console.error(`[receiver] Failed to send log: ${err.message}`);
+    }
+  }
+
   async connectRabbitMQ() {
     const maxRetries = 5;
     let retryCount = 0;
@@ -285,6 +293,7 @@ class ReceiverV2 {
         parsed = parser.parse(xmlContent);
       } catch (err) {
         console.log(`[receiver] XML parse error: ${err}`);
+        await this.log('error', 'xml_validation', `Received invalid XML from RabbitMQ. Parse error: ${err.message}`);
         this.channel.nack(msg, false, false); // Automatic move to DLX
         return;
       }
@@ -292,6 +301,7 @@ class ReceiverV2 {
       const [basicValid, basicError] = this.validateXmlMessage(parsed);
       if (!basicValid) {
         console.log(`[basic-val] error: ${basicError}`);
+        await this.log('error', 'xml_validation', `Received message with invalid structure. Error: ${basicError}`);
         this.channel.nack(msg, false, false); // Automatic move to DLX
         return;
       }
@@ -331,12 +341,15 @@ class ReceiverV2 {
         if (!valid) {
           const reason = `XSD_VALIDATION_ERROR: ${errors.join('; ')}`;
           console.log(`[receiver] ${reason} for ${messageType}`);
+          await this.log('error', 'xml_validation', `Received ${messageType} from ${source}. Validation: Failure. Details: ${errors.join('; ')}`);
           this.channel.nack(msg, false, false); // Automatic move to DLX
           return;
         }
         console.log(`[receiver] XSD validation passed for ${messageType}`);
+        await this.log('info', 'xml_validation', `Received ${messageType} from ${source}. Validation: Success.`);
       } else {
         console.log(`[receiver] Warning: No XSD mapping found for message type: ${messageType}`);
+        await this.log('info', 'xml_validation', `Received ${messageType} from ${source}. Validation: Skipped (No XSD).`);
       }
 
       console.log(`[receiver] Processing message type: ${messageType}, ID: ${messageId}`);
@@ -346,6 +359,7 @@ class ReceiverV2 {
       console.log(`[receiver] Message processed successfully: ${messageId}`);
     } catch (err) {
       console.log(`[receiver] Unexpected error: ${err}`);
+      await this.log('error', 'system_error', `Internal Error in Receiver: ${err.message}`);
       this.channel.nack(msg, false, false); // Automatic move to DLX
     }
   }
@@ -1155,15 +1169,18 @@ class ReceiverV2 {
       const { valid, errors } = validateXml(xmlContent, 'identity_user_created.xsd');
       if (!valid) {
         console.error(`[receiver] Identity event XSD Validation error: ${errors.join(', ')}`);
+        await this.log('error', 'xml_validation', `Received UserCreated from identity-service. Validation: Failure. Details: ${errors.join('; ')}`);
         this.channel.nack(msg, false, false);
         return;
       }
+      await this.log('info', 'xml_validation', `Received UserCreated from identity-service. Validation: Success.`);
 
       let parsed;
       try {
         parsed = parser.parse(xmlContent);
       } catch (parseErr) {
         console.error('[receiver] Identity event XML parse error:', parseErr.message);
+        await this.log('error', 'xml_validation', `Received invalid XML from identity-service. Parse error: ${parseErr.message}`);
         this.channel.nack(msg, false, false);
         return;
       }
@@ -1195,6 +1212,7 @@ class ReceiverV2 {
       console.log(`[receiver] Identity event processed: ${eventType} ${masterUuid}`);
     } catch (err) {
       console.error(`[receiver] Identity Fanout error: ${err.message}`);
+      await this.log('error', 'system_error', `Internal Error in handleIdentityUserEvent: ${err.message}`);
       this.channel.nack(msg, false, false);
     }
   }
