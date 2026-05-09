@@ -59,4 +59,3 @@ jobs:
             ghcr.io/${{ steps.repo_name.outputs.value }}:latest
             ghcr.io/${{ steps.repo_name.outputs.value }}:${{ steps.vars.outputs.tag }}
             ghcr.io/${{ steps.repo_name.outputs.value }}:${{ github.sha }}
-
