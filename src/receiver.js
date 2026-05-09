@@ -1163,10 +1163,7 @@ async handleWalletLeaseReturn(header, body) {
   async handleWalletTopupRequest(header, body) {
     try {
       const identityUuid = ReceiverV2.getElementText(body, 'identity_uuid');
-      const topupRaw = body?.topup_amount;
-      const topupAmount = parseFloat(
-        typeof topupRaw === 'object' ? (topupRaw['#text'] || 0) : (topupRaw || 0)
-      );
+      const topupAmount = parseFloat(ReceiverV2.getElementText(body, 'topup_amount') || 0);
       const transactionId = ReceiverV2.getElementText(body, 'transaction_id') || header.message_id;
 
       if (!identityUuid || isNaN(topupAmount) || topupAmount <= 0) {
