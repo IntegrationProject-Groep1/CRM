@@ -57,6 +57,38 @@ const MESSAGE_TYPES = {
   CANCEL_REGISTRATION: 'cancel_registration',
 };
 
+const LAZY_MASTER_UUID_TYPES = new Set([
+  MESSAGE_TYPES.USER_CREATED,
+  MESSAGE_TYPES.USER_REGISTERED,
+  MESSAGE_TYPES.NEW_REGISTRATION,
+  MESSAGE_TYPES.PAYMENT_REGISTERED,
+  MESSAGE_TYPES.BADGE_SCANNED,
+  MESSAGE_TYPES.INVOICE_STATUS,
+  MESSAGE_TYPES.SEND_INVOICE,
+  MESSAGE_TYPES.CONSUMPTION_ORDER,
+  MESSAGE_TYPES.BADGE_ASSIGNED,
+  MESSAGE_TYPES.REFUND_PROCESSED,
+  MESSAGE_TYPES.INVOICE_REQUEST,
+  MESSAGE_TYPES.INVOICE_CANCELLED,
+  MESSAGE_TYPES.USER_UPDATED,
+  MESSAGE_TYPES.DELETE_USER,
+  MESSAGE_TYPES.USER_DELETED,
+]);
+
+const PLANNING_SESSION_TYPES = new Set([
+  MESSAGE_TYPES.SESSION_CREATED,
+  MESSAGE_TYPES.SESSION_UPDATED,
+  MESSAGE_TYPES.SESSION_DELETED,
+]);
+
+const TYPES_ACCEPTING_V1 = new Set([
+  MESSAGE_TYPES.USER_UNREGISTERED,
+  MESSAGE_TYPES.USER_CREATED,
+  MESSAGE_TYPES.USER_REGISTERED,
+]);
+
+const BASE_HEADER_FIELDS = ['message_id', 'version', 'type', 'timestamp', 'source'];
+
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '',
@@ -178,6 +210,22 @@ class ReceiverV2 {
     if (!parsed.message || !parsed.message.header || !parsed.message.header.type) {
       return [false, 'Missing required message root or header/type'];
     }
+
+    const header = parsed.message.header;
+    const presentBaseHeaderFields = BASE_HEADER_FIELDS.filter((field) =>
+      ReceiverV2.getElementText(header, field) !== null
+    );
+
+    if (!presentBaseHeaderFields.includes('type')) {
+      return [false, 'Missing required header/type'];
+    }
+
+    const version = ReceiverV2.getElementText(header, 'version');
+    const type = ReceiverV2.getElementText(header, 'type');
+    if (version === 'v1' && !TYPES_ACCEPTING_V1.has(type)) {
+      return [false, `Unsupported v1 message type: ${type}`];
+    }
+
     return [true, null];
   }
 
@@ -337,6 +385,11 @@ class ReceiverV2 {
 
   async routeMessage(header, body, rawXml = null) {
     const msgType = header.type;
+    if (PLANNING_SESSION_TYPES.has(msgType) || msgType === MESSAGE_TYPES.EVENT_ENDED) {
+      await this.handlePlanningSessionEvent(header, body);
+      return;
+    }
+
     const handlers = {
       [MESSAGE_TYPES.USER_CREATED]: () => this.handleUserCreated(header, body),
       [MESSAGE_TYPES.USER_REGISTERED]: () => this.handleUserRegistered(header, body),
@@ -344,10 +397,6 @@ class ReceiverV2 {
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body, rawXml),
       [MESSAGE_TYPES.BADGE_SCANNED]: () => this.handleBadgeScanned(header, body),
-      [MESSAGE_TYPES.SESSION_CREATED]: () => this.handlePlanningSessionEvent(header, body),
-      [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handlePlanningSessionEvent(header, body),
-      [MESSAGE_TYPES.SESSION_DELETED]: () => this.handlePlanningSessionEvent(header, body),
-      [MESSAGE_TYPES.EVENT_ENDED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.INVOICE_STATUS]: () => this.handleInvoiceStatus(header, body),
       [MESSAGE_TYPES.SEND_INVOICE]: () => this.handleSendInvoice(header, body),
       [MESSAGE_TYPES.MAILING_STATUS]: () => this.handleMailingStatus(header, body),
@@ -410,11 +459,14 @@ class ReceiverV2 {
     const existingMasterUuid = this._getExistingMasterUuid(header, body);
     if (existingMasterUuid) return existingMasterUuid;
 
+    const messageType = options.messageType || (header && header.type);
+    const lazyLookupConfigured = messageType ? LAZY_MASTER_UUID_TYPES.has(messageType) : false;
+
     const email = (this._getFallbackEmail(body, options.email) || '').toLowerCase().trim();
     if (!email) return null;
 
     const sourceSystem = options.sourceSystem || (header && header.source) || 'crm';
-    console.log(`[receiver] Lazy Master UUID lookup for ${email} via ${sourceSystem}`);
+    console.log(`[receiver] Lazy Master UUID lookup for ${email} via ${sourceSystem} (type=${messageType || 'unknown'}, configured=${lazyLookupConfigured})`);
     return this.getOrCreateMasterUuid(email, sourceSystem);
   }
 
