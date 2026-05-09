@@ -728,7 +728,7 @@ describe('handlePlanningSessionEvent', () => {
     const xml = withoutMasterUuid(buildXml('event_ended', `
       <session_id>sess-keynote-001</session_id>
       <ended_at>2026-05-15T15:00:00Z</ended_at>
-    `));
+    `).replace('<source>test</source>', '<source>frontend</source>'));
 
     await receiver.handleMessage(buildMsg(xml));
 

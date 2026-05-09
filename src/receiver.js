@@ -13,6 +13,7 @@ const CRMSender = require('./sender');
 const { create } = require('xmlbuilder2');
 
 const QUEUE_NAME = 'crm.incoming';
+const KASSA_QUEUE = 'kassa.payments';
 const FACTURATIE_TO_CRM_QUEUE = 'facturatie.to.crm';
 const DEAD_LETTER_EXCHANGE = 'crm.dlx';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
@@ -56,30 +57,6 @@ const MESSAGE_TYPES = {
   CANCEL_REGISTRATION: 'cancel_registration',
 };
 
-const LAZY_MASTER_UUID_TYPES = new Set([
-  MESSAGE_TYPES.USER_CREATED,
-  MESSAGE_TYPES.USER_REGISTERED,
-  MESSAGE_TYPES.NEW_REGISTRATION,
-  MESSAGE_TYPES.PAYMENT_REGISTERED,
-  MESSAGE_TYPES.BADGE_SCANNED,
-  MESSAGE_TYPES.INVOICE_STATUS,
-  MESSAGE_TYPES.SEND_INVOICE,
-  MESSAGE_TYPES.CONSUMPTION_ORDER,
-  MESSAGE_TYPES.BADGE_ASSIGNED,
-  MESSAGE_TYPES.REFUND_PROCESSED,
-  MESSAGE_TYPES.INVOICE_REQUEST,
-  MESSAGE_TYPES.INVOICE_CANCELLED,
-  MESSAGE_TYPES.USER_UPDATED,
-  MESSAGE_TYPES.DELETE_USER,
-  MESSAGE_TYPES.USER_DELETED,
-]);
-
-const PLANNING_SESSION_TYPES = new Set([
-  MESSAGE_TYPES.SESSION_CREATED,
-  MESSAGE_TYPES.SESSION_UPDATED,
-  MESSAGE_TYPES.SESSION_DELETED,
-]);
-
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '',
@@ -87,14 +64,6 @@ const parser = new XMLParser({
   parseTagValue: false,
   parseAttributeValue: false,
 });
-
-const TYPES_ACCEPTING_V1 = new Set([
-  'user.unregistered',
-  'user.created',
-  'user.registered',
-]);
-
-const BASE_HEADER_FIELDS = ['message_id', 'version', 'type', 'timestamp', 'source'];
 
 class ReceiverV2 {
   constructor() {
