@@ -145,7 +145,6 @@ class ReceiverV2 {
         this.connection = await amqp.connect(getAmqpOptions());
         this.channel = await this.connection.createChannel();
 
-        // --- DLX Setup ---
         await this.channel.assertExchange(DEAD_LETTER_EXCHANGE, 'fanout', { durable: true });
         await this.channel.assertQueue(DEAD_LETTER_QUEUE, { durable: true });
         await this.channel.bindQueue(DEAD_LETTER_QUEUE, DEAD_LETTER_EXCHANGE, '');
@@ -317,7 +316,7 @@ class ReceiverV2 {
       } catch (err) {
         console.log(`[receiver] XML parse error: ${err}`);
         await this.log('error', 'xml_validation', `Received invalid XML from RabbitMQ. Parse error: ${err.message}`);
-        this.channel.nack(msg, false, false); // Automatic move to DLX
+        this.channel.nack(msg, false, false);
         return;
       }
 
@@ -325,7 +324,7 @@ class ReceiverV2 {
       if (!basicValid) {
         console.log(`[basic-val] error: ${basicError}`);
         await this.log('error', 'xml_validation', `Received message with invalid structure. Error: ${basicError}`);
-        this.channel.nack(msg, false, false); // Automatic move to DLX
+        this.channel.nack(msg, false, false);
         return;
       }
 
@@ -335,7 +334,6 @@ class ReceiverV2 {
       const messageType = header.type;
       const source = header.source;
 
-      // --- XSD Validation ---
       const xsdMapping = {
         [MESSAGE_TYPES.USER_CREATED]: 'user_created.xsd',
         [MESSAGE_TYPES.USER_REGISTERED]: 'user_registered.xsd',
@@ -370,7 +368,7 @@ class ReceiverV2 {
           const reason = `XSD_VALIDATION_ERROR: ${errors.join('; ')}`;
           console.log(`[receiver] ${reason} for ${messageType}`);
           await this.log('error', 'xml_validation', `Received ${messageType} from ${source}. Validation: Failure. Details: ${errors.join('; ')}`);
-          this.channel.nack(msg, false, false); // Automatic move to DLX
+          this.channel.nack(msg, false, false);
           return;
         }
         console.log(`[receiver] XSD validation passed for ${messageType}`);
@@ -388,7 +386,7 @@ class ReceiverV2 {
     } catch (err) {
       console.log(`[receiver] Unexpected error: ${err}`);
       await this.log('error', 'system_error', `Internal Error in Receiver: ${err.message}`);
-      this.channel.nack(msg, false, false); // Automatic move to DLX
+      this.channel.nack(msg, false, false);
     }
   }
 
@@ -887,7 +885,6 @@ class ReceiverV2 {
         await this.sender.sendPaymentRegisteredToFacturatie(rawXml);
       }
 
-      // If this was a registration payment, notify Planning (section 21.1)
       if (paymentContext === 'registration' || paymentContext === 'session_registration') {
         const sessionId = ReceiverV2.getElementText(body, 'session_id') || (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
         if (sessionId && masterUuid) {
@@ -1075,7 +1072,6 @@ class ReceiverV2 {
       throw new Error("Salesforce niet verbonden. Kan lease niet verstrekken.");
     }
 
-    // 1. Haal huidige saldo en status op uit Salesforce
     const records = await this.sf.apiCall((conn) =>
       conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
     );
@@ -1086,8 +1082,6 @@ class ReceiverV2 {
 
     const member = records[0];
 
-    // 2. "Bevries" de wallet in Salesforce
-    // We zetten de status op 'Leased' zodat het CRM weet dat de Kassa nu 'baas' is over het geld.
     await this.sf.apiCall((conn) =>
       conn.sobject('Member__c').update({
         Id: member.Id,
@@ -1096,8 +1090,6 @@ class ReceiverV2 {
       })
     );
 
-    // 3. Stuur het saldo terug naar de Kassa (Authority Transfer)
-    // Je hebt hiervoor een methode nodig in je sender.js (bijv. sendWalletLeaseApproved)
     const leaseData = {
       master_uuid: masterUuid,
       badge_id: badgeId,
@@ -1112,8 +1104,7 @@ class ReceiverV2 {
 
   } catch (err) {
     console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
-    // Bij een error sturen we optioneel een 'denied' bericht naar de kassa
-    throw err; 
+    throw err;
   }
 }
 
@@ -1130,7 +1121,6 @@ async handleWalletLeaseReturn(header, body) {
       throw new Error("Salesforce niet verbonden. Kan lease-return niet verwerken.");
     }
 
-    // 1. Zoek de gebruiker op in Salesforce
     const records = await this.sf.apiCall((conn) =>
       conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
     );
@@ -1141,18 +1131,16 @@ async handleWalletLeaseReturn(header, body) {
 
     const memberId = records[0].Id;
 
-    // 2. Update Salesforce: Saldo bijwerken en status op 'Active' zetten
     await this.sf.apiCall((conn) =>
       conn.sobject('Member__c').update({
         Id: memberId,
         Wallet_Balance__c: parseFloat(finalBalance),
-        Wallet_Status__c: 'Active', // De wallet is nu weer beschikbaar voor online transacties
-        Last_Lease_ID__c: leaseId,   // Optioneel: log welke lease als laatste is afgerond
+        Wallet_Status__c: 'Active',
+        Last_Lease_ID__c: leaseId,
         Last_Sync_At__c: new Date().toISOString()
       })
     );
 
-    // 3. Log de succesvolle afhandeling
     await this.sender.sendLog({
       level: 'info',
       action: 'wallet',
@@ -1163,7 +1151,6 @@ async handleWalletLeaseReturn(header, body) {
 
   } catch (err) {
     console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
-    // Bij een kritieke fout (bijv. saldo niet kunnen updaten), log dit als een error
     await this.sender.sendLog({
       level: 'error',
       action: 'wallet',
@@ -1408,7 +1395,6 @@ async handleWalletLeaseReturn(header, body) {
     try {
       const xmlContent = msg.content.toString();
       
-      // --- XSD Validation ---
       const { valid, errors } = validateXml(xmlContent, 'identity_user_created.xsd');
       if (!valid) {
         console.error(`[receiver] Identity event XSD Validation error: ${errors.join(', ')}`);
