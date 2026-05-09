@@ -5,6 +5,7 @@ const amqp = require('amqplib');
 const { getAmqpOptions } = require('./amqpUrl');
 const { create } = require('xmlbuilder2');
 const { v4: uuidv4 } = require('uuid');
+const { validateXml } = require('./validator');
 
 const USER_UNREGISTERED_EXCHANGE = 'frontend.user.unregistered';
 
@@ -13,6 +14,37 @@ class CRMSender {
     this.connection = null;
     this.channel = null;
     this.rabbitmqOptions = getAmqpOptions();
+    this.xsdMapping = {
+      'new_registration': 'new_registration_kassa.xsd',
+      'profile_update': 'profile_update.xsd',
+      'cancel_registration': 'cancel_registration.xsd',
+      'invoice_request': 'invoice_request_facturatie.xsd',
+      'send_mailing': 'send_mailing.xsd',
+      'log': 'log.xsd',
+      'session_registration_confirmed': 'session_registration_confirmed.xsd',
+      'user.unregistered': 'user_deleted.xsd',
+      'event_ended': 'event_ended.xsd',
+      'payment_registered': 'payment_registered_facturatie.xsd', // Default to facturatie for passthrough
+      'consumption_order': 'consumption_order.xsd'
+    };
+  }
+
+  _validate(xml, type) {
+    const xsdFile = this.xsdMapping[type];
+    if (!xsdFile) {
+      console.log(`[sender] Warning: No XSD mapping for outgoing type "${type}"`);
+      return;
+    }
+
+    const { valid, errors } = validateXml(xml, xsdFile);
+    if (!valid) {
+      const errorMsg = `Outgoing XML validation failed for "${type}" (${xsdFile}): ${errors.join('; ')}`;
+      console.error(`[sender] ${errorMsg}`);
+      // In production we might want to throw, but for now we just log to avoid breaking existing flows
+      // unless it's a critical error. Actually, the user asked for "real" validation.
+      throw new Error(errorMsg);
+    }
+    console.log(`[sender] XSD validation passed for outgoing "${type}"`);
   }
 
   async init() {
@@ -30,7 +62,7 @@ class CRMSender {
   // Body: customer{identity_uuid, email, date_of_birth, contact, type, ..., session_id, payment_due}
   // session_id and payment_due are inside customer; no correlation_id per contract
   buildNewRegistrationForKassaXml(data) {
-    const messageId = 'reg-crm-' + uuidv4();
+    const messageId = uuidv4();
     const timestamp = new Date().toISOString();
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
@@ -75,6 +107,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
       const xmlPayload = this.buildNewRegistrationForKassaXml(data);
+      this._validate(xmlPayload, 'new_registration');
       const queue = 'kassa.incoming';
       await this.channel.assertQueue(queue, { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx', 'x-dead-letter-routing-key': 'kassa.incoming.dlq' } });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -93,7 +126,7 @@ class CRMSender {
   // ── profile_update (CRM → Kassa, section 10.2) ──────────────────────────────
   // Body: identity_uuid, email, date_of_birth?, contact, type?, company_name?, vat_number?, company_id?, payment_due?
   buildProfileUpdateXml(data) {
-    const messageId = 'prof-crm-' + uuidv4();
+    const messageId = uuidv4();
     const timestamp = new Date().toISOString();
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
@@ -132,6 +165,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
       const xmlPayload = this.buildProfileUpdateXml(data);
+      this._validate(xmlPayload, 'profile_update');
       const queue = 'kassa.incoming';
       await this.channel.assertQueue(queue, { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx', 'x-dead-letter-routing-key': 'kassa.incoming.dlq' } });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -150,7 +184,7 @@ class CRMSender {
   // ── cancel_registration (CRM → Kassa, section 10.3) ─────────────────────────
   // Body: identity_uuid, session_id, reason?; no correlation_id per contract §10.3
   buildCancelRegistrationXml(data) {
-    const messageId = 'cancel-crm-' + uuidv4();
+    const messageId = uuidv4();
     const timestamp = new Date().toISOString();
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
@@ -174,6 +208,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
       const xmlPayload = this.buildCancelRegistrationXml(data);
+      this._validate(xmlPayload, 'cancel_registration');
       const queue = 'kassa.incoming';
       await this.channel.assertQueue(queue, { durable: true, arguments: { 'x-dead-letter-exchange': 'kassa.dlx', 'x-dead-letter-routing-key': 'kassa.incoming.dlq' } });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -193,6 +228,7 @@ class CRMSender {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
       const xmlPayload = this.buildCancelRegistrationXml(data);
+      this._validate(xmlPayload, 'cancel_registration');
       const exchange = 'calendar.exchange';
       const routingKey = 'crm.to.planning.cancel_registration';
       await this.channel.assertExchange(exchange, 'topic', { durable: true });
@@ -213,7 +249,7 @@ class CRMSender {
   // Body: identity_uuid + invoice_data{first_name, last_name, email, address, company_name?, vat_number?}
   // correlation_id is REQUIRED (links to consumption_order message_id)
   buildInvoiceRequestXml(data) {
-    const messageId = 'inv-crm-' + uuidv4();
+    const messageId = uuidv4();
     const timestamp = new Date().toISOString();
 
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
@@ -253,6 +289,7 @@ class CRMSender {
     }
     try {
       const xmlPayload = this.buildInvoiceRequestXml(data);
+      this._validate(xmlPayload, 'invoice_request');
       const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -272,6 +309,7 @@ class CRMSender {
   async sendConsumptionOrderToFacturatie(xml) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
+      this._validate(xml, 'consumption_order');
       const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xml), {
@@ -345,6 +383,7 @@ class CRMSender {
     }
     try {
       const xmlPayload = this.buildMailingSendXml(data);
+      this._validate(xmlPayload, 'send_mailing');
       const queue = 'crm.to.mailing';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -390,6 +429,7 @@ class CRMSender {
   async sendLog(data) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     const xmlPayload = this.buildLogXml(data);
+    this._validate(xmlPayload, 'log');
     const queue = 'logs';
     await this.channel.assertQueue(queue, { durable: true });
     const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -404,6 +444,7 @@ class CRMSender {
   async sendPaymentRegisteredToFrontend(xml) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
+      this._validate(xml, 'payment_registered');
       const queue = 'frontend.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xml), {
@@ -422,6 +463,7 @@ class CRMSender {
   async sendPaymentRegisteredToFacturatie(xml) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
+      this._validate(xml, 'payment_registered');
       const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xml), {
@@ -434,6 +476,39 @@ class CRMSender {
     } catch (error) {
       console.log(`Failed to forward payment to Facturatie: ${error}`);
       throw error;
+    }
+  }
+
+  async sendEventEndedToFacturatie(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const messageId = uuidv4();
+      const timestamp = new Date().toISOString();
+
+      const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+      const header = root.ele('header');
+      header.ele('message_id').txt(messageId);
+      header.ele('timestamp').txt(timestamp);
+      header.ele('source').txt('crm');
+      header.ele('type').txt('event_ended');
+      header.ele('version').txt('2.0');
+
+      const body = root.ele('body');
+      body.ele('session_id').txt(data.session_id);
+      body.ele('ended_at').txt(data.ended_at || timestamp);
+
+      const xmlPayload = root.doc().end({ prettyPrint: true, indent: '  ' });
+      this._validate(xmlPayload, 'event_ended');
+      const queue = 'facturatie.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Event ended notification sent to Facturatie queue "${queue}"`);
+    } catch (error) {
+      console.log(`Failed to send event ended to Facturatie: ${error}`);
     }
   }
 
@@ -476,6 +551,7 @@ class CRMSender {
       paymentDue.ele('status').txt(data.payment_due.status || 'unpaid');
 
       const xmlPayload = root.doc().end({ prettyPrint: true, indent: '  ' });
+      this._validate(xmlPayload, 'new_registration');
       const queue = 'facturatie.incoming';
       await this.channel.assertQueue(queue, { durable: true });
       const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
@@ -509,6 +585,7 @@ class CRMSender {
       body.ele('identity_uuid').txt(data.identity_uuid);
 
       const xmlPayload = root.doc().end({ prettyPrint: true, indent: '  ' });
+      this._validate(xmlPayload, 'session_registration_confirmed');
       const exchange = 'calendar.exchange';
       const routingKey = 'crm.to.planning.session_registration_confirmed';
 
@@ -557,6 +634,7 @@ class CRMSender {
     }
 
     const xmlPayload = this.buildUserUnregisteredXml(data);
+    this._validate(xmlPayload, 'user.unregistered');
     const ok = this.channel.publish(exchange, '', Buffer.from(xmlPayload), {
       contentType: 'application/xml',
       deliveryMode: 2,

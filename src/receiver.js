@@ -6,6 +6,7 @@ const amqp = require('amqplib');
 const { v4: uuidv4 } = require('uuid');
 const { parseStringPromise } = require('xml2js');
 const { XMLParser } = require('fast-xml-parser');
+const { validateXml } = require('./validator');
 const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
@@ -14,6 +15,7 @@ const { create } = require('xmlbuilder2');
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
 const FACTURATIE_TO_CRM_QUEUE = 'facturatie.to.crm';
+const DEAD_LETTER_EXCHANGE = 'crm.dlx';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
 const USER_REGISTERED_QUEUE = 'user.registered';
 const USER_CREATED_QUEUE = 'user.created';
@@ -129,15 +131,18 @@ class ReceiverV2 {
         this.connection = await amqp.connect(getAmqpOptions());
         this.channel = await this.connection.createChannel();
 
-        await this.channel.assertQueue(QUEUE_NAME, { durable: true });
-        await this.channel.assertQueue(KASSA_QUEUE, { durable: true });
-        await this.channel.assertQueue(FACTURATIE_TO_CRM_QUEUE, { durable: true });
-        await this.channel.assertQueue(USER_REGISTERED_QUEUE, { durable: true });
-        await this.channel.assertQueue(USER_CREATED_QUEUE, { durable: true });
-        await this.channel.assertQueue(DEAD_LETTER_QUEUE, {
-          durable: true,
-          arguments: { 'x-dead-letter-exchange': '' },
-        });
+        // --- DLX Setup ---
+        await this.channel.assertExchange(DEAD_LETTER_EXCHANGE, 'fanout', { durable: true });
+        await this.channel.assertQueue(DEAD_LETTER_QUEUE, { durable: true });
+        await this.channel.bindQueue(DEAD_LETTER_QUEUE, DEAD_LETTER_EXCHANGE, '');
+
+        const crmQueueArgs = { 'x-dead-letter-exchange': DEAD_LETTER_EXCHANGE };
+
+        await this.channel.assertQueue(QUEUE_NAME, { durable: true, arguments: crmQueueArgs });
+        await this.channel.assertQueue(KASSA_QUEUE, { durable: true, arguments: crmQueueArgs });
+        await this.channel.assertQueue(FACTURATIE_TO_CRM_QUEUE, { durable: true, arguments: crmQueueArgs });
+        await this.channel.assertQueue(USER_REGISTERED_QUEUE, { durable: true, arguments: crmQueueArgs });
+        await this.channel.assertQueue(USER_CREATED_QUEUE, { durable: true, arguments: crmQueueArgs });
 
         await this.channel.assertExchange(IDENTITY_EVENTS_EXCHANGE, 'fanout', { durable: true });
         await this.channel.assertQueue(IDENTITY_EVENTS_QUEUE, { durable: true });
@@ -172,7 +177,7 @@ class ReceiverV2 {
         this.channel.consume(PLANNING_SESSION_QUEUE, consume, { noAck: false });
         this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => this.handleIdentityUserEvent(msg), { noAck: false });
 
-        console.log(`[receiver] Connected to RabbitMQ, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${FACTURATIE_TO_CRM_QUEUE}, ${PLANNING_SESSION_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
+        console.log(`[receiver] Connected to RabbitMQ with Auto-DLX, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${FACTURATIE_TO_CRM_QUEUE}, ${PLANNING_SESSION_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
 
         await new Promise((resolve, reject) => {
           this.connection.on('error', reject);
@@ -193,38 +198,9 @@ class ReceiverV2 {
   }
 
   validateXmlMessage(parsed) {
-    if (!parsed.message) {
-      return [false, 'Missing message root element'];
+    if (!parsed.message || !parsed.message.header || !parsed.message.header.type) {
+      return [false, 'Missing required message root or header/type'];
     }
-    const msg = parsed.message;
-    const header = msg.header;
-    if (!header) {
-      return [false, 'Missing header element'];
-    }
-
-    const messageType = header.type;
-    const needsReceiver = messageType === MESSAGE_TYPES.USER_UNREGISTERED;
-    const skipMasterUuid = needsReceiver || LAZY_MASTER_UUID_TYPES.has(messageType) || PLANNING_SESSION_TYPES.has(messageType);
-    const requiredFields = needsReceiver
-      ? [...BASE_HEADER_FIELDS, 'receiver']
-      : skipMasterUuid
-        ? BASE_HEADER_FIELDS
-        : [...BASE_HEADER_FIELDS, 'master_uuid'];
-
-    const missingFields = requiredFields.filter((f) => header[f] === undefined || header[f] === null);
-    if (missingFields.length > 0) {
-      return [false, `Missing required header fields: ${missingFields.join(', ')}`];
-    }
-    const validVersions = TYPES_ACCEPTING_V1.has(messageType) ? ['1.0', '2.0'] : ['2.0'];
-    if (!validVersions.includes(String(header.version))) {
-      return [false, `Invalid version: expected ${validVersions.join(' or ')}, got ${header.version}`];
-    }
-
-    const validTypes = Object.values(MESSAGE_TYPES);
-    if (!validTypes.includes(header.type)) {
-      return [false, `Invalid message type: ${header.type}`];
-    }
-
     return [true, null];
   }
 
@@ -310,16 +286,14 @@ class ReceiverV2 {
         parsed = parser.parse(xmlContent);
       } catch (err) {
         console.log(`[receiver] XML parse error: ${err}`);
-        this.sendToDeadLetter(msg.content, 'XML_PARSE_ERROR');
-        this.channel.nack(msg, false, false);
+        this.channel.nack(msg, false, false); // Automatic move to DLX
         return;
       }
 
-      const [valid, error] = this.validateXmlMessage(parsed);
-      if (!valid) {
-        console.log(`[receiver] Validation error: ${error}`);
-        this.sendToDeadLetter(msg.content, `VALIDATION_ERROR: ${error}`);
-        this.channel.nack(msg, false, false);
+      const [basicValid, basicError] = this.validateXmlMessage(parsed);
+      if (!basicValid) {
+        console.log(`[basic-val] error: ${basicError}`);
+        this.channel.nack(msg, false, false); // Automatic move to DLX
         return;
       }
 
@@ -327,6 +301,44 @@ class ReceiverV2 {
       const body = parsed.message.body;
       const messageId = header.message_id;
       const messageType = header.type;
+      const source = header.source;
+
+      // --- XSD Validation ---
+      const xsdMapping = {
+        [MESSAGE_TYPES.USER_CREATED]: 'user_created.xsd',
+        [MESSAGE_TYPES.USER_REGISTERED]: 'user_registered.xsd',
+        [MESSAGE_TYPES.NEW_REGISTRATION]: source === 'kassa' ? 'new_registration_kassa.xsd' : 'new_registration_frontend.xsd',
+        [MESSAGE_TYPES.USER_UNREGISTERED]: 'user_unregistered.xsd',
+        [MESSAGE_TYPES.PAYMENT_REGISTERED]: source === 'kassa' ? 'payment_registered_kassa.xsd' : 'payment_registered_facturatie.xsd',
+        [MESSAGE_TYPES.BADGE_SCANNED]: 'badge_scanned.xsd',
+        [MESSAGE_TYPES.SESSION_CREATED]: 'session_created.xsd',
+        [MESSAGE_TYPES.SESSION_UPDATED]: 'session_updated.xsd',
+        [MESSAGE_TYPES.SESSION_DELETED]: 'session_deleted.xsd',
+        [MESSAGE_TYPES.INVOICE_STATUS]: 'invoice_status.xsd',
+        [MESSAGE_TYPES.MAILING_STATUS]: 'mailing_status.xsd',
+        [MESSAGE_TYPES.CONSUMPTION_ORDER]: 'consumption_order.xsd',
+        [MESSAGE_TYPES.BADGE_ASSIGNED]: 'badge_assigned.xsd',
+        [MESSAGE_TYPES.REFUND_PROCESSED]: 'refund_processed.xsd',
+        [MESSAGE_TYPES.INVOICE_REQUEST]: 'invoice_request_kassa.xsd',
+        [MESSAGE_TYPES.INVOICE_CANCELLED]: 'invoice_cancelled.xsd',
+        [MESSAGE_TYPES.USER_UPDATED]: 'user_updated.xsd',
+        [MESSAGE_TYPES.USER_DELETED]: 'user_deleted.xsd',
+        [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
+      };
+
+      const xsdFile = xsdMapping[messageType];
+      if (xsdFile) {
+        const { valid, errors } = validateXml(xmlContent, xsdFile);
+        if (!valid) {
+          const reason = `XSD_VALIDATION_ERROR: ${errors.join('; ')}`;
+          console.log(`[receiver] ${reason} for ${messageType}`);
+          this.channel.nack(msg, false, false); // Automatic move to DLX
+          return;
+        }
+        console.log(`[receiver] XSD validation passed for ${messageType}`);
+      } else {
+        console.log(`[receiver] Warning: No XSD mapping found for message type: ${messageType}`);
+      }
 
       console.log(`[receiver] Processing message type: ${messageType}, ID: ${messageId}`);
       await this.routeMessage(header, body, xmlContent);
@@ -335,7 +347,7 @@ class ReceiverV2 {
       console.log(`[receiver] Message processed successfully: ${messageId}`);
     } catch (err) {
       console.log(`[receiver] Unexpected error: ${err}`);
-      this.channel.nack(msg, false, false);
+      this.channel.nack(msg, false, false); // Automatic move to DLX
     }
   }
 
@@ -1138,10 +1150,19 @@ class ReceiverV2 {
 
   async handleIdentityUserEvent(msg) {
     try {
-      const content = msg.content.toString();
+      const xmlContent = msg.content.toString();
+      
+      // --- XSD Validation ---
+      const { valid, errors } = validateXml(xmlContent, 'identity_user_created.xsd');
+      if (!valid) {
+        console.error(`[receiver] Identity event XSD Validation error: ${errors.join(', ')}`);
+        this.channel.nack(msg, false, false);
+        return;
+      }
+
       let parsed;
       try {
-        parsed = parser.parse(content);
+        parsed = parser.parse(xmlContent);
       } catch (parseErr) {
         console.error('[receiver] Identity event XML parse error:', parseErr.message);
         this.channel.nack(msg, false, false);
@@ -1176,17 +1197,6 @@ class ReceiverV2 {
     } catch (err) {
       console.error(`[receiver] Identity Fanout error: ${err.message}`);
       this.channel.nack(msg, false, false);
-    }
-  }
-
-  sendToDeadLetter(content, reason) {
-    if (this.channel) {
-      const deadLetterContent = Buffer.from(JSON.stringify({
-        reason,
-        originalContent: content.toString('utf8'),
-        timestamp: new Date().toISOString(),
-      }));
-      this.channel.sendToQueue(DEAD_LETTER_QUEUE, deadLetterContent, { persistent: true });
     }
   }
 

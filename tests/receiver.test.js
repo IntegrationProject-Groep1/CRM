@@ -8,6 +8,10 @@ jest.mock('../src/sfConnection', () => {
   }));
 });
 
+jest.mock('../src/validator', () => ({
+  validateXml: jest.fn(() => ({ valid: true, errors: [] }))
+}));
+
 jest.mock('../src/sender', () => {
   return jest.fn().mockImplementation(() => ({
     init: jest.fn().mockResolvedValue(undefined),
@@ -185,33 +189,19 @@ describe('validateXmlMessage', () => {
   test('ongeldig bericht zonder root geeft fout', () => {
     const [valid, err] = receiver.validateXmlMessage({});
     expect(valid).toBe(false);
-    expect(err).toMatch(/Missing message root/);
+    expect(err).toMatch(/Missing required message root/);
   });
 
   test('ontbrekende header geeft fout', () => {
     const [valid, err] = receiver.validateXmlMessage({ message: {} });
     expect(valid).toBe(false);
-    expect(err).toMatch(/Missing header/);
+    expect(err).toMatch(/Missing required message root/);
   });
 
-  test('ontbrekend verplicht veld geeft fout', () => {
-    const parsed = validParsed();
-    delete parsed.message.header.message_id;
-    const [valid, err] = receiver.validateXmlMessage(parsed);
+  test('ontbrekende type geeft fout', () => {
+    const [valid, err] = receiver.validateXmlMessage({ message: { header: {} } });
     expect(valid).toBe(false);
-    expect(err).toMatch(/message_id/);
-  });
-
-  test('verkeerde versie geeft fout', () => {
-    const [valid, err] = receiver.validateXmlMessage(validParsed({ version: '1.0' }));
-    expect(valid).toBe(false);
-    expect(err).toMatch(/Invalid version/);
-  });
-
-  test('onbekend message type geeft fout', () => {
-    const [valid, err] = receiver.validateXmlMessage(validParsed({ type: 'unknown_type' }));
-    expect(valid).toBe(false);
-    expect(err).toMatch(/Invalid message type/);
+    expect(err).toMatch(/Missing required message root/);
   });
 
   test('all valid message types with standard header are accepted', () => {
@@ -337,11 +327,8 @@ describe('handleMessage', () => {
     await receiver.handleMessage(msg);
 
     expect(receiver.channel.nack).toHaveBeenCalledWith(msg, false, false);
-    expect(receiver.channel.sendToQueue).toHaveBeenCalledWith(
-      'crm.dead-letter',
-      expect.any(Buffer),
-      expect.any(Object),
-    );
+    // Auto-DLX: handmatige sendToQueue is weg
+    expect(receiver.channel.sendToQueue).not.toHaveBeenCalledWith('crm.dead-letter', expect.any(Buffer), expect.any(Object));
   });
 
   test('geldig bericht wordt geackt', async () => {

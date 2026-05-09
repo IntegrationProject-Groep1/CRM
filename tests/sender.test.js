@@ -15,6 +15,9 @@ process.env.RABBITMQ_PASS = process.env.RABBITMQ_PASS || 'test';
  */
 
 const { XMLParser } = require('fast-xml-parser');
+jest.mock('../src/validator', () => ({
+  validateXml: jest.fn(() => ({ valid: true, errors: [] }))
+}));
 const CRMSender = require('../src/sender');
 
 // ── XML parser ────────────────────────────────────────────────────────────────
@@ -116,9 +119,9 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
     expect(root.body.customer.vat_number).toBe('BE0123456789');
   });
 
-  test('message_id start met "reg-crm-"', () => {
+  test('message_id is een UUID', () => {
     const root = parser.parse(sender.buildNewRegistrationForKassaXml(baseData())).message;
-    expect(root.header.message_id).toMatch(/^reg-crm-/);
+    expect(root.header.message_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   test('elke aanroep genereert een unieke message_id', () => {
@@ -340,7 +343,7 @@ describe('Consumptie flow — buildProfileUpdateXml', () => {
 
   test('message_id start met "prof-crm-"', () => {
     const root = parser.parse(sender.buildProfileUpdateXml(baseData())).message;
-    expect(root.header.message_id).toMatch(/^prof-crm-/);
+    expect(root.header.message_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 });
 
@@ -404,7 +407,7 @@ describe('Consumptie flow — buildCancelRegistrationXml', () => {
 
   test('message_id start met "cancel-crm-"', () => {
     const root = parser.parse(sender.buildCancelRegistrationXml(baseData())).message;
-    expect(root.header.message_id).toMatch(/^cancel-crm-/);
+    expect(root.header.message_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   test('elke aanroep genereert een unieke message_id', () => {
@@ -564,7 +567,7 @@ describe('Betaling flow — buildInvoiceRequestXml', () => {
 
   test('message_id starts with "inv-crm-"', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
-    expect(root.header.message_id).toMatch(/^inv-crm-/);
+    expect(root.header.message_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 });
 
