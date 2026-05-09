@@ -13,7 +13,6 @@ const CRMSender = require('./sender');
 const { create } = require('xmlbuilder2');
 
 const QUEUE_NAME = 'crm.incoming';
-const KASSA_QUEUE = 'kassa.payments';
 const FACTURATIE_TO_CRM_QUEUE = 'facturatie.to.crm';
 const DEAD_LETTER_EXCHANGE = 'crm.dlx';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
