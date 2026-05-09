@@ -13,6 +13,7 @@ const CRMSender = require('./sender');
 const { create } = require('xmlbuilder2');
 
 const QUEUE_NAME = 'crm.incoming';
+const KASSA_QUEUE = 'kassa.payments';
 const FACTURATIE_TO_CRM_QUEUE = 'facturatie.to.crm';
 const DEAD_LETTER_EXCHANGE = 'crm.dlx';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
@@ -38,6 +39,7 @@ const MESSAGE_TYPES = {
   SESSION_CREATED: 'session_created',
   SESSION_UPDATED: 'session_updated',
   SESSION_DELETED: 'session_deleted',
+  EVENT_ENDED: 'event_ended',
   INVOICE_STATUS: 'invoice_status',
   SEND_INVOICE: 'send_invoice',
   MAILING_STATUS: 'mailing_status',
@@ -77,7 +79,16 @@ const PLANNING_SESSION_TYPES = new Set([
   MESSAGE_TYPES.SESSION_CREATED,
   MESSAGE_TYPES.SESSION_UPDATED,
   MESSAGE_TYPES.SESSION_DELETED,
+  MESSAGE_TYPES.EVENT_ENDED,
 ]);
+
+const TYPES_ACCEPTING_V1 = new Set([
+  'user_unregistered',
+  'user_created',
+  'user_registered',
+]);
+
+const BASE_HEADER_FIELDS = ['message_id', 'version', 'type', 'timestamp', 'source'];
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -86,14 +97,6 @@ const parser = new XMLParser({
   parseTagValue: false,
   parseAttributeValue: false,
 });
-
-const TYPES_ACCEPTING_V1 = new Set([
-  'user.unregistered',
-  'user.created',
-  'user.registered',
-]);
-
-const BASE_HEADER_FIELDS = ['message_id', 'version', 'type', 'timestamp', 'source'];
 
 class ReceiverV2 {
   constructor() {
@@ -208,6 +211,22 @@ class ReceiverV2 {
     if (!parsed.message || !parsed.message.header || !parsed.message.header.type) {
       return [false, 'Missing required message root or header/type'];
     }
+
+    const header = parsed.message.header;
+    const presentBaseHeaderFields = BASE_HEADER_FIELDS.filter((field) =>
+      ReceiverV2.getElementText(header, field) !== null
+    );
+
+    if (!presentBaseHeaderFields.includes('type')) {
+      return [false, 'Missing required header/type'];
+    }
+
+    const version = ReceiverV2.getElementText(header, 'version');
+    const type = ReceiverV2.getElementText(header, 'type');
+    if (version === 'v1' && !TYPES_ACCEPTING_V1.has(type)) {
+      return [false, `Unsupported v1 message type: ${type}`];
+    }
+
     return [true, null];
   }
 
@@ -323,6 +342,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.SESSION_CREATED]: 'session_created.xsd',
         [MESSAGE_TYPES.SESSION_UPDATED]: 'session_updated.xsd',
         [MESSAGE_TYPES.SESSION_DELETED]: 'session_deleted.xsd',
+        [MESSAGE_TYPES.EVENT_ENDED]: 'event_ended.xsd',
         [MESSAGE_TYPES.INVOICE_STATUS]: 'invoice_status.xsd',
         [MESSAGE_TYPES.MAILING_STATUS]: 'mailing_status.xsd',
         [MESSAGE_TYPES.CONSUMPTION_ORDER]: 'consumption_order.xsd',
@@ -366,6 +386,11 @@ class ReceiverV2 {
 
   async routeMessage(header, body, rawXml = null) {
     const msgType = header.type;
+    if (PLANNING_SESSION_TYPES.has(msgType)) {
+      await this.handlePlanningSessionEvent(header, body);
+      return;
+    }
+
     const handlers = {
       [MESSAGE_TYPES.USER_CREATED]: () => this.handleUserCreated(header, body),
       [MESSAGE_TYPES.USER_REGISTERED]: () => this.handleUserRegistered(header, body),
@@ -373,9 +398,6 @@ class ReceiverV2 {
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body, rawXml),
       [MESSAGE_TYPES.BADGE_SCANNED]: () => this.handleBadgeScanned(header, body),
-      [MESSAGE_TYPES.SESSION_CREATED]: () => this.handlePlanningSessionEvent(header, body),
-      [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handlePlanningSessionEvent(header, body),
-      [MESSAGE_TYPES.SESSION_DELETED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.INVOICE_STATUS]: () => this.handleInvoiceStatus(header, body),
       [MESSAGE_TYPES.SEND_INVOICE]: () => this.handleSendInvoice(header, body),
       [MESSAGE_TYPES.MAILING_STATUS]: () => this.handleMailingStatus(header, body),
@@ -391,6 +413,9 @@ class ReceiverV2 {
       [MESSAGE_TYPES.COMPANY_UPDATE]: () => this.handleCompanyUpdate(header, body),
       [MESSAGE_TYPES.COMPANY_DELETE]: () => this.handleCompanyDelete(header, body),
       [MESSAGE_TYPES.CANCEL_REGISTRATION]: () => this.handleCancelRegistration(header, body),
+      [MESSAGE_TYPES.SESSION_CREATED]: () => this.handlePlanningSessionEvent(header, body),
+      [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handlePlanningSessionEvent(header, body),
+      [MESSAGE_TYPES.SESSION_DELETED]: () => this.handlePlanningSessionEvent(header, body),
     };
 
     const handler = handlers[msgType];
@@ -438,11 +463,14 @@ class ReceiverV2 {
     const existingMasterUuid = this._getExistingMasterUuid(header, body);
     if (existingMasterUuid) return existingMasterUuid;
 
+    const messageType = options.messageType || (header && header.type);
+    const lazyLookupConfigured = messageType ? LAZY_MASTER_UUID_TYPES.has(messageType) : false;
+
     const email = (this._getFallbackEmail(body, options.email) || '').toLowerCase().trim();
     if (!email) return null;
 
     const sourceSystem = options.sourceSystem || (header && header.source) || 'crm';
-    console.log(`[receiver] Lazy Master UUID lookup for ${email} via ${sourceSystem}`);
+    console.log(`[receiver] Lazy Master UUID lookup for ${email} via ${sourceSystem} (type=${messageType || 'unknown'}, configured=${lazyLookupConfigured})`);
     return this.getOrCreateMasterUuid(email, sourceSystem);
   }
 

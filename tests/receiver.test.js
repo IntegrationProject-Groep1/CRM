@@ -210,6 +210,7 @@ describe('validateXmlMessage', () => {
     const validTypes = [
       'user.created', 'user.registered', 'new_registration', 'payment_registered',
       'badge_scanned', 'session_created', 'session_updated', 'session_deleted',
+      'event_ended',
       'invoice_status', 'mailing_status',
       'consumption_order', 'badge_assigned', 'refund_processed', 'invoice_request',
       'invoice_cancelled', 'user.updated', 'delete_user', 'user_deleted',
@@ -240,6 +241,16 @@ describe('validateXmlMessage', () => {
       expect(valid).toBe(true);
       expect(err).toBeNull();
     }
+  });
+
+  test('event_ended zonder master_uuid is geldig', () => {
+    const parsed = validParsed({ type: 'event_ended', source: 'frontend' });
+    delete parsed.message.header.master_uuid;
+
+    const [valid, err] = receiver.validateXmlMessage(parsed);
+
+    expect(valid).toBe(true);
+    expect(err).toBeNull();
   });
 
   test('lazy types zonder master_uuid zijn geldig', () => {
@@ -709,6 +720,21 @@ describe('handlePlanningSessionEvent', () => {
     await receiver.handleMessage(buildMsg(xml));
 
     expect(receiver.channel.ack).toHaveBeenCalled();
+    expect(receiver.sf.apiCall).not.toHaveBeenCalled();
+  });
+
+  test('accepteert event_ended zonder forwarding side effects', async () => {
+    const receiver = makeReceiver();
+    const xml = withoutMasterUuid(buildXml('event_ended', `
+      <session_id>sess-keynote-001</session_id>
+      <ended_at>2026-05-15T15:00:00Z</ended_at>
+    `).replace('<source>test</source>', '<source>frontend</source>'));
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.channel.ack).toHaveBeenCalled();
+    expect(receiver.channel.nack).not.toHaveBeenCalled();
+    expect(receiver.sender.sendEventEndedToFacturatie).not.toHaveBeenCalled();
     expect(receiver.sf.apiCall).not.toHaveBeenCalled();
   });
 });
