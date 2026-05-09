@@ -337,6 +337,22 @@ class CRMSender {
     }
   }
 
+  async sendWalletLeaseApproved(data) {
+  const xml = create({ version: '1.0' })
+    .ele('message')
+      .ele('header')
+        .ele('type').txt('wallet_lease_approved').up()
+        .ele('source').txt('crm').up()
+      .up()
+      .ele('body')
+        .ele('identity_uuid').txt(data.master_uuid).up()
+        .ele('current_balance').txt(data.current_balance).up()
+      .up()
+    .end();
+
+  await this.channel.sendToQueue('kassa.lease.responses', Buffer.from(xml));
+}
+
   // ── consumption_order passthrough (CRM → Facturatie) ────────────────────────
   async sendConsumptionOrderToFacturatie(xml) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
