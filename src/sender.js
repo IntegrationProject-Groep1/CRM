@@ -73,6 +73,7 @@ class CRMSender {
     header.ele('source').txt('crm');
     header.ele('type').txt('new_registration');
     header.ele('version').txt('2.0');
+    header.ele('correlation_id').txt(data.correlation_id || uuidv4());
 
     const body = root.ele('body');
     const customer = body.ele('customer');
@@ -266,8 +267,10 @@ class CRMSender {
     body.ele('identity_uuid').txt(data.master_uuid || data.user_id || data.identity_uuid || '');
 
     const invoiceData = body.ele('invoice_data');
-    invoiceData.ele('first_name').txt(data.customer?.first_name || '');
-    invoiceData.ele('last_name').txt(data.customer?.last_name || '');
+    const contact = invoiceData.ele('contact');
+    contact.ele('first_name').txt(data.customer?.first_name || '');
+    contact.ele('last_name').txt(data.customer?.last_name || '');
+    
     invoiceData.ele('email').txt(data.customer?.email || '');
 
     const address = invoiceData.ele('address');
@@ -356,8 +359,8 @@ class CRMSender {
       recipientElem.ele('email').txt(r.email);
       recipientElem.ele('identity_uuid').txt(r.identity_uuid || r.user_id || '');
       const contact = recipientElem.ele('contact');
-      contact.ele('first_name').txt(r.first_name);
-      contact.ele('last_name').txt(r.last_name);
+      contact.ele('first_name').txt(r.first_name || r.contact?.first_name || '');
+      contact.ele('last_name').txt(r.last_name || r.contact?.last_name || '');
     }
 
     if (data.template_data) {
