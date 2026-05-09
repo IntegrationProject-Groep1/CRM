@@ -49,6 +49,7 @@ const MESSAGE_TYPES = {
   INVOICE_REQUEST: 'invoice_request',
   INVOICE_CANCELLED: 'invoice_cancelled',
   USER_UPDATED: 'user.updated',
+  USER_CHECKIN: 'user_checkin',
   DELETE_USER: 'delete_user',
   USER_DELETED: 'user_deleted',
   COMPANY_REGISTRATION: 'company_registration',
@@ -352,6 +353,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.INVOICE_CANCELLED]: 'invoice_cancelled.xsd',
         [MESSAGE_TYPES.USER_UPDATED]: 'user_updated.xsd',
         [MESSAGE_TYPES.USER_DELETED]: 'user_deleted.xsd',
+        [MESSAGE_TYPES.USER_CHECKIN]: 'user_checkin.xsd',
         [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
       };
 
@@ -416,6 +418,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.SESSION_CREATED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.SESSION_DELETED]: () => this.handlePlanningSessionEvent(header, body),
+      [MESSAGE_TYPES.USER_CHECKIN]: () => this.handleUserCheckin(header, body),
     };
 
     const handler = handlers[msgType];
@@ -1131,6 +1134,36 @@ class ReceiverV2 {
 
   async handleUserUpdated() {
     console.log('[receiver] user.updated received');
+  }
+
+  async handleUserCheckin(header, body) {
+    try {
+      const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+      const sessionId = ReceiverV2.getElementText(body, 'session_id');
+      const checkinAt = ReceiverV2.getElementText(body, 'checkin_at');
+
+      if (!this.sf.isConnected) {
+        throw new Error(`Salesforce niet verbonden. Check-in voor ${masterUuid} mislukt.`);
+      }
+
+      const result = await this.sf.apiCall((conn) =>
+        conn.sobject('Task').create({
+          Subject: `Check-in: ${sessionId}`,
+          Description: `Sessie scan op ${checkinAt}`,
+          Status: 'Completed',
+          Master_UUID__c: masterUuid,
+          ActivityDate: new Date().toISOString().split('T')[0]
+        })
+      );
+
+      if (result && !result.success) {
+        throw new Error(`SF Check-in mislukt: ${JSON.stringify(result.errors)}`);
+      }
+      console.log(`[salesforce] Check-in geregistreerd voor ${masterUuid}`);
+    } catch (err) {
+      console.error(`[receiver] Error in handleUserCheckin: ${err.message}`);
+      throw err;
+    }
   }
 
   async handleDeleteUser(header, body) {
