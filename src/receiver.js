@@ -56,6 +56,7 @@ const MESSAGE_TYPES = {
   COMPANY_UPDATE: 'company_update',
   COMPANY_DELETE: 'company_delete',
   CANCEL_REGISTRATION: 'cancel_registration',
+  WALLET_LEASE_REQUEST: 'wallet_lease_request',
 };
 
 const LAZY_MASTER_UUID_TYPES = new Set([
@@ -355,6 +356,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.USER_DELETED]: 'user_deleted.xsd',
         [MESSAGE_TYPES.USER_CHECKIN]: 'user_checkin.xsd',
         [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
+        [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
       };
 
       const xsdFile = xsdMapping[messageType];
@@ -419,6 +421,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.SESSION_DELETED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.USER_CHECKIN]: () => this.handleUserCheckin(header, body),
+      [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: () => this.handleWalletLeaseRequest(header, body),
     };
 
     const handler = handlers[msgType];
@@ -1054,6 +1057,59 @@ class ReceiverV2 {
       throw err;
     }
   }
+
+  async handleWalletLeaseRequest(header, body) {
+  try {
+    const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+    const badgeId = ReceiverV2.getElementText(body, 'badge_id');
+
+    console.log(`[lease] Aanvraag ontvangen voor User: ${masterUuid}`);
+
+    if (!this.sf.isConnected) {
+      throw new Error("Salesforce niet verbonden. Kan lease niet verstrekken.");
+    }
+
+    // 1. Haal huidige saldo en status op uit Salesforce
+    const records = await this.sf.apiCall((conn) =>
+      conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
+    );
+
+    if (!records || records.length === 0) {
+      throw new Error(`User met UUID ${masterUuid} niet gevonden in CRM.`);
+    }
+
+    const member = records[0];
+
+    // 2. "Bevries" de wallet in Salesforce
+    // We zetten de status op 'Leased' zodat het CRM weet dat de Kassa nu 'baas' is over het geld.
+    await this.sf.apiCall((conn) =>
+      conn.sobject('Member__c').update({
+        Id: member.Id,
+        Wallet_Status__c: 'Leased',
+        Last_Lease_At__c: new Date().toISOString()
+      })
+    );
+
+    // 3. Stuur het saldo terug naar de Kassa (Authority Transfer)
+    // Je hebt hiervoor een methode nodig in je sender.js (bijv. sendWalletLeaseApproved)
+    const leaseData = {
+      master_uuid: masterUuid,
+      badge_id: badgeId,
+      current_balance: member.Wallet_Balance__c || 0.00,
+      status: 'approved',
+      timestamp: new Date().toISOString()
+    };
+
+    await this.sender.sendWalletLeaseApproved(leaseData);
+
+    console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Saldo: ${member.Wallet_Balance__c}`);
+
+  } catch (err) {
+    console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
+    // Bij een error sturen we optioneel een 'denied' bericht naar de kassa
+    throw err; 
+  }
+}
 
   async handleRefundProcessed(header, body) {
     try {
