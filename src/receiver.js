@@ -58,6 +58,7 @@ const MESSAGE_TYPES = {
   CANCEL_REGISTRATION: 'cancel_registration',
   WALLET_LEASE_REQUEST: 'wallet_lease_request',
   WALLET_LEASE_RETURN: 'wallet_lease_return',
+  WALLET_TOPUP_REQUEST: 'wallet_topup_request',
 };
 
 const LAZY_MASTER_UUID_TYPES = new Set([
@@ -359,6 +360,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_RETURN]: 'wallet_lease_return.xsd',
+        [MESSAGE_TYPES.WALLET_TOPUP_REQUEST]: 'wallet_topup_request.xsd',
       };
 
       const xsdFile = xsdMapping[messageType];
@@ -425,6 +427,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.USER_CHECKIN]: () => this.handleUserCheckin(header, body),
       [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: () => this.handleWalletLeaseRequest(header, body),
       [MESSAGE_TYPES.WALLET_LEASE_RETURN]: () => this.handleWalletLeaseReturn(header, body),
+      [MESSAGE_TYPES.WALLET_TOPUP_REQUEST]: () => this.handleWalletTopupRequest(header, body),
     };
 
     const handler = handlers[msgType];
@@ -1169,6 +1172,70 @@ async handleWalletLeaseReturn(header, body) {
     throw err;
   }
 }
+
+  async handleWalletTopupRequest(header, body) {
+    try {
+      const identityUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+      const topupRaw = body?.topup_amount;
+      const topupAmount = parseFloat(
+        typeof topupRaw === 'object' ? (topupRaw['#text'] || 0) : (topupRaw || 0)
+      );
+      const transactionId = ReceiverV2.getElementText(body, 'transaction_id') || header.message_id;
+
+      if (!identityUuid || isNaN(topupAmount) || topupAmount <= 0) {
+        console.log('[receiver] Invalid wallet_topup_request: missing identity_uuid or invalid amount');
+        return;
+      }
+
+      console.log(`[wallet-topup] Received topup request for ${identityUuid}: +€${topupAmount}`);
+
+      if (!this.sf.isConnected) {
+        throw new Error('Salesforce not connected. Cannot process wallet topup.');
+      }
+
+      const records = await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').find({ Master_UUID__c: identityUuid }, ['Id', 'Wallet_Balance__c']).limit(1)
+      );
+
+      if (!records || records.length === 0) {
+        throw new Error(`User with UUID ${identityUuid} not found in CRM.`);
+      }
+
+      const member = records[0];
+      const currentBalance = parseFloat(member.Wallet_Balance__c || 0);
+      const newBalance = Math.round((currentBalance + topupAmount) * 100) / 100;
+
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').update({
+          Id: member.Id,
+          Wallet_Balance__c: newBalance,
+        })
+      );
+
+      await this.sender.sendLog({
+        level: 'info',
+        action: 'wallet',
+        message: `Wallet topup processed for ${identityUuid}: +€${topupAmount}. New balance: €${newBalance}. Transaction: ${transactionId}.`,
+      });
+
+      await this.sender.sendWalletRemoteTopup({
+        identity_uuid: identityUuid,
+        add_amount: topupAmount,
+        reason: `online_topup:${transactionId}`,
+        correlation_id: header.message_id,
+      });
+
+      console.log(`[wallet-topup] Wallet updated for ${identityUuid}. New balance: €${newBalance}`);
+    } catch (err) {
+      console.error(`[receiver] Error in handleWalletTopupRequest: ${err.message}`);
+      await this.sender.sendLog({
+        level: 'error',
+        action: 'wallet',
+        message: `Failed to process wallet_topup_request: ${err.message}`,
+      });
+      throw err;
+    }
+  }
 
   async handleRefundProcessed(header, body) {
     try {

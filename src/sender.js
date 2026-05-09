@@ -26,7 +26,8 @@ class CRMSender {
       'event_ended': 'event_ended.xsd',
       'payment_registered': 'payment_registered_facturatie.xsd', // Default to facturatie for passthrough
       'consumption_order': 'consumption_order.xsd',
-      'wallet_lease_grant': 'wallet_lease_grant.xsd'
+      'wallet_lease_grant': 'wallet_lease_grant.xsd',
+      'wallet_remote_topup': 'wallet_remote_topup.xsd'
     };
     this.messageTypeToLogAction = {
       'new_registration': 'registration',
@@ -43,7 +44,8 @@ class CRMSender {
       'refund_processed': 'refund',
       'badge_scanned': 'badge',
       'badge_assigned': 'badge',
-      'wallet_lease_grant': 'wallet'
+      'wallet_lease_grant': 'wallet',
+      'wallet_remote_topup': 'wallet'
     };
   }
 
@@ -405,6 +407,58 @@ async sendWalletLeaseGrant(data) {
     throw error;
   }
 }
+
+  // ── wallet_remote_topup (CRM → Kassa, section 26.x) ────────────────────────
+  // Body: identity_uuid, add_amount (currency="eur" required), reason (required)
+  // correlation_id is REQUIRED and must link to the originating wallet_topup_request message_id
+  buildWalletRemoteTopupXml(data) {
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(uuidv4());
+    header.ele('timestamp').txt(new Date().toISOString());
+    header.ele('source').txt('crm');
+    header.ele('type').txt('wallet_remote_topup');
+    header.ele('version').txt('2.0');
+    header.ele('correlation_id').txt(data.correlation_id || uuidv4());
+
+    const body = root.ele('body');
+    body.ele('identity_uuid').txt(data.identity_uuid);
+    body.ele('add_amount', { currency: 'eur' }).txt(Number(data.add_amount || 0).toFixed(2));
+    body.ele('reason').txt(data.reason || 'online_topup');
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendWalletRemoteTopup(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildWalletRemoteTopupXml(data);
+      this._validate(xmlPayload, 'wallet_remote_topup');
+
+      const queue = 'kassa.incoming';
+      await this.channel.assertQueue(queue, {
+        durable: true,
+        arguments: {
+          'x-dead-letter-exchange': 'kassa.dlx',
+          'x-dead-letter-routing-key': 'kassa.incoming.dlq',
+        },
+      });
+
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`[sender] Wallet remote topup sent to Kassa for ${data.identity_uuid}: +€${data.add_amount}`);
+      await this._logOutbound('wallet_remote_topup', queue, data.correlation_id);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.error(`[sender] Failed to send wallet remote topup: ${error.message}`);
+      throw error;
+    }
+  }
 
   // ── consumption_order passthrough (CRM → Facturatie) ────────────────────────
   async sendConsumptionOrderToFacturatie(xml) {
