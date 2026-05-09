@@ -79,6 +79,7 @@ const PLANNING_SESSION_TYPES = new Set([
   MESSAGE_TYPES.SESSION_CREATED,
   MESSAGE_TYPES.SESSION_UPDATED,
   MESSAGE_TYPES.SESSION_DELETED,
+  MESSAGE_TYPES.EVENT_ENDED,
 ]);
 
 const TYPES_ACCEPTING_V1 = new Set([
@@ -385,7 +386,7 @@ class ReceiverV2 {
 
   async routeMessage(header, body, rawXml = null) {
     const msgType = header.type;
-    if (PLANNING_SESSION_TYPES.has(msgType) || msgType === MESSAGE_TYPES.EVENT_ENDED) {
+    if (PLANNING_SESSION_TYPES.has(msgType)) {
       await this.handlePlanningSessionEvent(header, body);
       return;
     }
