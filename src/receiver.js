@@ -1065,6 +1065,7 @@ class ReceiverV2 {
   try {
     const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
     const badgeId = ReceiverV2.getElementText(body, 'badge_id');
+    const leaseId = uuidv4();
 
     console.log(`[lease] Aanvraag ontvangen voor User: ${masterUuid}`);
 
@@ -1093,6 +1094,7 @@ class ReceiverV2 {
     const leaseData = {
       master_uuid: masterUuid,
       badge_id: badgeId,
+      lease_id: leaseId,
       current_balance: member.Wallet_Balance__c || 0.00,
       status: 'approved',
       timestamp: new Date().toISOString()
@@ -1103,7 +1105,12 @@ class ReceiverV2 {
     console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Saldo: ${member.Wallet_Balance__c}`);
 
   } catch (err) {
-    console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
+    console.error(`[receiver] Fout bij verwerken wallet_lease_request: ${err.message}`);
+    await this.sender.sendLog({
+      level: 'error',
+      action: 'wallet',
+      message: `CRITIEK: Kon lease-request niet verwerken! Error: ${err.message}`
+    });
     throw err;
   }
 }
