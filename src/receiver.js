@@ -1115,16 +1115,22 @@ class ReceiverV2 {
 
     // 2. "Bevries" de wallet in Salesforce
     // We zetten de status op 'Leased' zodat het CRM weet dat de Kassa nu 'baas' is over het geld.
+    const updateFields = {
+      Id: member.Id,
+      Wallet_Status__c: 'Leased',
+      Last_Lease_At__c: new Date().toISOString()
+    };
+
+    if (badgeId) {
+      updateFields.Badge_ID__c = badgeId;
+    }
+
     await this.sf.apiCall((conn) =>
-      conn.sobject('Member__c').update({
-        Id: member.Id,
-        Wallet_Status__c: 'Leased',
-        Last_Lease_At__c: new Date().toISOString()
-      })
+      conn.sobject('Member__c').update(updateFields)
     );
 
     // 3. Stuur het saldo terug naar de Kassa (Authority Transfer)
-    // Je hebt hiervoor een methode nodig in je sender.js (bijv. sendWalletLeaseApproved)
+    // Je gebruikt het Salesforce Wallet_Balance__c veld als het overgedragen saldo.
     const leaseData = {
       identity_uuid: masterUuid,
       current_balance: member.Wallet_Balance__c || 0.00,
