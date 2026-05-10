@@ -1073,7 +1073,6 @@ class ReceiverV2 {
   async handleWalletLeaseRequest(header, body) {
   try {
     const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
-    const badgeId = ReceiverV2.getElementText(body, 'badge_id');
 
     console.log(`[lease] Aanvraag ontvangen voor User: ${masterUuid}`);
 
