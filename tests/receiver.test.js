@@ -330,6 +330,87 @@ describe('validateXmlMessage', () => {
 });
 
 describe('handleMessage', () => {
+  test('user_created met customer tag wordt naar handleUserCreated gerouteerd', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = buildXml('user_created', `
+      <customer>
+        <identity_uuid>test-identity-1234</identity_uuid>
+        <email>john.doe@example.com</email>
+        <first_name>John</first_name>
+        <last_name>Doe</last_name>
+      </customer>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+
+  test('user.created met user tag blijft achterwaarts compatibel', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = buildXml('user.created', `
+      <user>
+        <master_uuid>test-master-uuid-1234</master_uuid>
+        <email>jane.doe@example.com</email>
+        <first_name>Jane</first_name>
+        <last_name>Doe</last_name>
+      </user>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+
+  test('user_registered met customer en session tag wordt naar handleUserRegistered gerouteerd', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = buildXml('user_registered', `
+      <customer>
+        <identity_uuid>test-identity-5678</identity_uuid>
+        <email>alice@example.com</email>
+        <first_name>Alice</first_name>
+        <last_name>Smith</last_name>
+      </customer>
+      <session>
+        <session_id>sess-001</session_id>
+        <session_name>Test Session</session_name>
+      </session>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+
+  test('user_registered met customerData.session_id fallback wordt naar handleUserRegistered gerouteerd', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = buildXml('user_registered', `
+      <customer>
+        <identity_uuid>test-identity-9012</identity_uuid>
+        <email>bob@example.com</email>
+        <first_name>Bob</first_name>
+        <last_name>Jones</last_name>
+        <session_id>sess-002</session_id>
+      </customer>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+
   test('ongeldige XML stuurt naar dead-letter en nackt', async () => {
     const receiver = makeReceiver();
     const msg = buildMsg('geen xml');

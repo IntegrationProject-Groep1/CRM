@@ -337,7 +337,9 @@ class ReceiverV2 {
       // --- XSD Validation ---
       const xsdMapping = {
         [MESSAGE_TYPES.USER_CREATED]: 'user_created.xsd',
+        'user_created': 'user_created.xsd',
         [MESSAGE_TYPES.USER_REGISTERED]: 'user_registered.xsd',
+        'user_registered': 'user_registered.xsd',
         [MESSAGE_TYPES.NEW_REGISTRATION]: source === 'kassa' ? 'new_registration_kassa.xsd' : 'new_registration_frontend.xsd',
         [MESSAGE_TYPES.USER_UNREGISTERED]: 'user_unregistered.xsd',
         [MESSAGE_TYPES.PAYMENT_REGISTERED]: source === 'kassa' ? 'payment_registered_kassa.xsd' : 'payment_registered_facturatie.xsd',
@@ -400,6 +402,8 @@ class ReceiverV2 {
     const handlers = {
       [MESSAGE_TYPES.USER_CREATED]: () => this.handleUserCreated(header, body),
       [MESSAGE_TYPES.USER_REGISTERED]: () => this.handleUserRegistered(header, body),
+      'user_created': () => this.handleUserCreated(header, body),
+      'user_registered': () => this.handleUserRegistered(header, body),
       [MESSAGE_TYPES.NEW_REGISTRATION]: () => this.handleNewRegistration(header, body),
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body, rawXml),
@@ -636,15 +640,18 @@ class ReceiverV2 {
 
   async handleUserCreated(header, body) {
     try {
-      const user = body?.user;
-      if (!user) throw new Error('Body missing user element');
+      const userData = body?.customer || body?.user;
+      if (!userData) throw new Error('Body missing user element');
 
-      const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
-      const firstName = ReceiverV2.getElementText(user, 'first_name');
-      const lastName = ReceiverV2.getElementText(user, 'last_name');
-      const isCompany = ReceiverV2.getElementText(user, 'is_company') === 'true';
+      const identityUuid = ReceiverV2.getElementText(userData, 'identity_uuid') ||
+        ReceiverV2.getElementText(userData, 'master_uuid');
+      const email = (ReceiverV2.getElementText(userData, 'email') || '').toLowerCase().trim();
+      const firstName = ReceiverV2.getElementText(userData, 'first_name');
+      const lastName = ReceiverV2.getElementText(userData, 'last_name');
+      const isCompany = ReceiverV2.getElementText(userData, 'is_company') === 'true';
+      const sourceSystem = header?.source || 'frontend.drupal';
 
-      const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
+      const masterUuid = identityUuid || await this.getOrCreateMasterUuid(email, sourceSystem);
 
       if (this.sf.isConnected) {
         const sfData = {
@@ -664,23 +671,28 @@ class ReceiverV2 {
 
   async handleUserRegistered(header, body) {
     try {
-      const user = body?.user;
-      const session = body?.session;
-      if (!user || !session) throw new Error('Body missing user or session');
+      const customerData = body?.customer || body?.user;
+      const session = body?.session || customerData?.session;
+      const sessionId = ReceiverV2.getElementText(session, 'session_id') ||
+        ReceiverV2.getElementText(customerData, 'session_id');
+      const sessionName = ReceiverV2.getElementText(session, 'session_name') ||
+        ReceiverV2.getElementText(customerData, 'session_name');
 
-      const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
-      const sessionId = ReceiverV2.getElementText(session, 'session_id');
-      const sessionName = ReceiverV2.getElementText(session, 'session_name');
+      if (!customerData || !sessionId) throw new Error('Body missing user or session');
+
+      const email = (ReceiverV2.getElementText(customerData, 'email') || '').toLowerCase().trim();
+      const identityUuid = ReceiverV2.getElementText(customerData, 'identity_uuid') ||
+        ReceiverV2.getElementText(customerData, 'master_uuid');
+      const sourceSystem = header?.source || 'frontend.drupal';
+      const masterUuid = identityUuid || await this.getOrCreateMasterUuid(email, sourceSystem);
       const paymentStatus = ReceiverV2.getElementText(body, 'payment_status');
-
-      const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
 
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert({
             Master_UUID__c: masterUuid,
-            First_Name__c: ReceiverV2.getElementText(user, 'first_name'),
-            Last_Name__c: ReceiverV2.getElementText(user, 'last_name'),
+            First_Name__c: ReceiverV2.getElementText(customerData, 'first_name'),
+            Last_Name__c: ReceiverV2.getElementText(customerData, 'last_name'),
             Email__c: email
           }, 'Master_UUID__c')
         );
