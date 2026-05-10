@@ -1,9 +1,16 @@
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --only=production
+# Install build dependencies for libxmljs2
+RUN apk add --no-cache libxml2-dev \
+    && apk add --no-cache --virtual .build-deps \
+        python3 \
+        make \
+        g++ \
+    && COPY package*.json ./ \
+    && npm ci --only=production \
+    && apk del .build-deps
 
 COPY src/ ./src/
 
