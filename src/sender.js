@@ -602,7 +602,7 @@ async sendWalletLeaseGrant(data) {
       const header = root.ele('header');
       header.ele('message_id').txt(messageId);
       header.ele('timestamp').txt(timestamp);
-      header.ele('source').txt('crm');
+      header.ele('source').txt('frontend');
       header.ele('type').txt('event_ended');
       header.ele('version').txt('2.0');
 
