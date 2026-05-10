@@ -1095,14 +1095,12 @@ class ReceiverV2 {
     // 3. Stuur het saldo terug naar de Kassa (Authority Transfer)
     // Je hebt hiervoor een methode nodig in je sender.js (bijv. sendWalletLeaseApproved)
     const leaseData = {
-      master_uuid: masterUuid,
-      badge_id: badgeId,
+      identity_uuid: masterUuid,
       current_balance: member.Wallet_Balance__c || 0.00,
-      status: 'approved',
-      timestamp: new Date().toISOString()
+      correlation_id: uuidv4()
     };
 
-    await this.sender.sendWalletLeaseApproved(leaseData);
+    await this.sender.sendWalletLeaseGrant(leaseData);
 
     console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Saldo: ${member.Wallet_Balance__c}`);
 
