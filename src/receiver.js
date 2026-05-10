@@ -1280,26 +1280,48 @@ async handleWalletLeaseReturn(header, body) {
   }
 
   async handleDeleteUser(header, body) {
+    let masterUuid;
     try {
-      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid') ||
-        ReceiverV2.getElementText(body, 'user_id') ||
-        (header && header.master_uuid) || null;
+      // 1. UUID Extractie (nu inclusief identity_uuid voor XSD alignment)
+      masterUuid = ReceiverV2.getElementText(body, 'identity_uuid') || 
+                   ReceiverV2.getElementText(body, 'master_uuid') || 
+                   ReceiverV2.getElementText(body, 'user_id') || 
+                   header?.master_uuid;
 
       if (!masterUuid) {
-        console.log('[receiver] handleDeleteUser: no master_uuid found');
+        console.warn('[receiver] handleDeleteUser: Geen UUID gevonden.');
         return;
       }
 
-      if (this.sf.isConnected) {
-        const memberId = await this._findUserByMasterUuid(masterUuid);
-        if (memberId) {
-          await this.sf.apiCall((conn) =>
-            conn.sobject('Member__c').update({ Id: memberId, Is_Deleted__c: true, Status__c: 'Deleted' })
-          );
-        }
+      if (!this.sf.isConnected) {
+        throw new Error("Salesforce niet verbonden.");
       }
+
+      // 2. Zoek de record ID op basis van de Master_UUID__c
+      const memberId = await this._findUserByMasterUuid(masterUuid);
+      
+      if (!memberId) {
+        console.log(`[receiver] Delete overgeslagen: User ${masterUuid} bestaat niet in Salesforce.`);
+        return;
+      }
+
+      // 3. De actie: HARD DELETE
+      // Aangezien velden als Is_Deleted__c niet bestaan, verwijderen we het record echt.
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').destroy(memberId)
+      );
+
+      console.log(`[receiver] User ${masterUuid} (ID: ${memberId}) succesvol verwijderd uit Salesforce.`);
+
+      // 4. Bevestiging naar de sender
+      await this.sender.sendLog({
+        level: 'info',
+        action: 'delete_user',
+        message: `User ${masterUuid} definitief verwijderd uit CRM.`
+      });
+
     } catch (err) {
-      console.log(`[receiver] Error in handleDeleteUser: ${err}`);
+      console.error(`[receiver] Fout bij handleDeleteUser voor ${masterUuid || 'onbekend'}: ${err.message}`);
       throw err;
     }
   }

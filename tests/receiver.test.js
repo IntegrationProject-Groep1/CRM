@@ -786,26 +786,35 @@ describe('handlePlanningSessionEvent', () => {
 });
 
 describe('handleDeleteUser', () => {
-  test('zet Is_Deleted__c in Salesforce als verbonden', async () => {
+  test('verwijdert record uit Salesforce als verbonden', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
+    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('sf-member-1');
     receiver.sf.apiCall.mockResolvedValue({});
+    receiver.sender.sendLog = jest.fn().mockResolvedValue({});
 
     const xml = buildXml('delete_user', '<master_uuid>test-master-uuid-1234</master_uuid>');
 
     await receiver.handleMessage(buildMsg(xml));
 
-    expect(receiver.sf.apiCall).toHaveBeenCalled();
+    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('test-master-uuid-1234');
+    expect(receiver.sf.apiCall).toHaveBeenCalledWith(expect.any(Function));
+    expect(receiver.sender.sendLog).toHaveBeenCalledWith({
+      level: 'info',
+      action: 'delete_user',
+      message: 'User test-master-uuid-1234 definitief verwijderd uit CRM.'
+    });
   });
 
-  test('gebruikt user_id als master_uuid bij user_deleted berichten', async () => {
+  test('gebruikt identity_uuid als master_uuid bij user_deleted berichten', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
     receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('sf-member-1');
     receiver.sf.apiCall.mockResolvedValue({});
+    receiver.sender.sendLog = jest.fn().mockResolvedValue({});
 
     const xml = withoutMasterUuid(buildXml('user_deleted', `
-      <user_id>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</user_id>
+      <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
       <email>jan.depeet@mail.com</email>
       <reason>Account op verzoek van gebruiker verwijderd</reason>
     `));
@@ -814,6 +823,7 @@ describe('handleDeleteUser', () => {
 
     expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
     expect(receiver.sf.apiCall).toHaveBeenCalled();
+    expect(receiver.sender.sendLog).toHaveBeenCalled();
   });
 });
 
