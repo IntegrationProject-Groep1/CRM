@@ -548,6 +548,7 @@ class ReceiverV2 {
       if (!masterUuid) throw new Error('new_registration missing identity_uuid/master_uuid');
 
       const userData = {
+        User_ID__c: externalUserId,
         Master_UUID__c: masterUuid,
         
         First_Name__c: firstName,
