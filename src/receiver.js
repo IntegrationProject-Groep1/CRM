@@ -519,15 +519,16 @@ class ReceiverV2 {
       const address = customer ? customer.address : null;
       const companyData = body ? body.company : null;
       const regFee = customer ? (customer.registration_fee || customer.payment_due) : (body ? body.payment_due : null);
-      const sessionId = body ? ReceiverV2.getElementText(body, 'session_id') : null;
 
       const getCustomerText = (key) =>
         ReceiverV2.getElementText(customer, key) || ReceiverV2.getElementText(contact, key);
 
       const email = getCustomerText('email');
-      const externalUserId = getCustomerText('identity_uuid') || getCustomerText('user_id');
+      const identityUuid = getCustomerText('identity_uuid') || getCustomerText('user_id');
+      const sessionId = getCustomerText('session_id') || ReceiverV2.getElementText(body, 'session_id');
       const firstName = getCustomerText('first_name');
       const lastName = getCustomerText('last_name');
+      const addressText = typeof address === 'string' ? address : null;
       
       const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
       const rawType = getCustomerText('type');
@@ -543,7 +544,8 @@ class ReceiverV2 {
         : (amountVal || null);
 
       console.log(`[receiver] Processing new_registration for: ${email}`);
-      const masterUuid = await this.getOrCreateMasterUuid(email, header.source || 'frontend.drupal');
+      const masterUuid = identityUuid || await this.getOrCreateMasterUuid(email, header.source || 'frontend.drupal');
+      if (!masterUuid) throw new Error('new_registration missing identity_uuid/master_uuid');
 
       const userData = {
         Master_UUID__c: masterUuid,
@@ -553,7 +555,7 @@ class ReceiverV2 {
         Email__c: email,
         Birthdate__c: getCustomerText('date_of_birth'),
         User_Type__c: userType,
-        Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+        Street__c: addressText || (address ? ReceiverV2.getElementText(address, 'street') : null),
         House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
         Postal_Code__c: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
         City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
@@ -562,9 +564,9 @@ class ReceiverV2 {
       };
 
       let companyId = null;
-      if ((isCompanyLinked || rawType === 'company') && companyData) {
-        const companyName = ReceiverV2.getElementText(companyData, 'name');
-        const companyVat = ReceiverV2.getElementText(companyData, 'vat_number');
+      if (isCompanyLinked || rawType === 'company') {
+        const companyName = getCustomerText('company_name') || ReceiverV2.getElementText(companyData, 'name');
+        const companyVat = getCustomerText('vat_number') || ReceiverV2.getElementText(companyData, 'vat_number');
         const companyEmail = ReceiverV2.getElementText(companyData, 'email');
 
         if (companyName && companyVat && this.sf.isConnected) {
@@ -574,7 +576,7 @@ class ReceiverV2 {
               Company_Name__c: companyName,
               VAT_Number__c: companyVat,
               Email__c: companyEmail || null,
-              Billing_Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+              Billing_Street__c: addressText || (address ? ReceiverV2.getElementText(address, 'street') : null),
               Billing_City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
             }, 'VAT_Number__c')
           );
@@ -585,6 +587,7 @@ class ReceiverV2 {
       if (companyId) userData.Account__c = companyId;
 
       if (this.sf.isConnected) {
+        console.log(`[receiver] Salesforce Member__c upsert fields: ${Object.keys(userData).join(', ')}`);
         await this.sf.apiCall((conn) => conn.sobject('Member__c').upsert(userData, 'Master_UUID__c'));
       }
 
@@ -596,8 +599,8 @@ class ReceiverV2 {
           first_name: firstName || '',
           last_name: lastName || '',
           type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
-          company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
-          vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+          company_name: getCustomerText('company_name') || ReceiverV2.getElementText(companyData, 'name'),
+          vat_number: getCustomerText('vat_number') || ReceiverV2.getElementText(companyData, 'vat_number'),
           session_id: sessionId || '',
         },
         session_id: sessionId || '',
@@ -615,11 +618,11 @@ class ReceiverV2 {
           last_name: lastName,
           email: email,
           type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
-          company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
-          vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+          company_name: getCustomerText('company_name') || ReceiverV2.getElementText(companyData, 'name'),
+          vat_number: getCustomerText('vat_number') || ReceiverV2.getElementText(companyData, 'vat_number'),
         },
         address: {
-          street: address ? ReceiverV2.getElementText(address, 'street') : null,
+          street: addressText || (address ? ReceiverV2.getElementText(address, 'street') : null),
           number: address ? ReceiverV2.getElementText(address, 'number') : null,
           postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
           city: address ? ReceiverV2.getElementText(address, 'city') : null,

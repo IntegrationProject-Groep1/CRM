@@ -499,6 +499,52 @@ describe('handleNewRegistration', () => {
       'Master_UUID__c',
     );
   });
+
+  test('gebruikt identity_uuid uit contract als master uuid', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    const upsert = jest.fn().mockResolvedValue({ id: 'sf-member-1' });
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({ upsert }),
+    }));
+
+    const xml = buildXml('new_registration', `
+      <customer>
+        <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+        <email>jan@example.com</email>
+        <type>private</type>
+        <is_company_linked>false</is_company_linked>
+        <date_of_birth>1995-03-21</date_of_birth>
+        <contact>
+          <first_name>Jan</first_name>
+          <last_name>Peeters</last_name>
+        </contact>
+        <address>Nijverheidskaai 170, 1070 Brussel</address>
+        <session_id>sess-keynote-001</session_id>
+        <payment_due><amount currency="eur">25</amount><status>unpaid</status></payment_due>
+      </customer>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.getOrCreateMasterUuid).not.toHaveBeenCalled();
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        Master_UUID__c: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+        Street__c: 'Nijverheidskaai 170, 1070 Brussel',
+      }),
+      'Master_UUID__c',
+    );
+    expect(receiver.sender.sendNewRegistrationToKassa).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: expect.objectContaining({
+          master_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+          session_id: 'sess-keynote-001',
+        }),
+        session_id: 'sess-keynote-001',
+      }),
+    );
+  });
 });
 
 describe('handlePaymentRegistered', () => {
