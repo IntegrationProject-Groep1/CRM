@@ -1109,10 +1109,11 @@ class ReceiverV2 {
 }
 
 async handleWalletLeaseReturn(header, body) {
+  let leaseId; // Declare at function scope
   try {
     const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
     const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
-    const leaseId = ReceiverV2.getElementText(body, 'lease_id');
+    leaseId = ReceiverV2.getElementText(body, 'lease_id'); // Now available in catch block
     const txCount = ReceiverV2.getElementText(body, 'transaction_count');
 
     console.log(`[lease-return] Ontvangen voor User: ${masterUuid}. Lease: ${leaseId}. Transacties: ${txCount}`);
@@ -1154,7 +1155,7 @@ async handleWalletLeaseReturn(header, body) {
     await this.sender.sendLog({
       level: 'error',
       action: 'wallet',
-      message: `CRITIEK: Kon lease-return voor ${leaseId} niet verwerken! Error: ${err.message}`
+      message: `CRITIEK: Kon lease-return voor ${leaseId || 'UNKNOWN'} niet verwerken! Error: ${err.message}`
     });
     throw err;
   }
