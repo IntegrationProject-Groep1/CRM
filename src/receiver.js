@@ -525,9 +525,11 @@ class ReceiverV2 {
         ReceiverV2.getElementText(customer, key) || ReceiverV2.getElementText(contact, key);
 
       const email = getCustomerText('email');
+      const externalUserId = getCustomerText('identity_uuid') || getCustomerText('user_id');
+      const externalUserId = getCustomerText('identity_uuid') || getCustomerText('user_id');
       const firstName = getCustomerText('first_name');
       const lastName = getCustomerText('last_name');
-      const externalUserId = getCustomerText('identity_uuid') || getCustomerText('user_id');
+      
       const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
       const rawType = getCustomerText('type');
       const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
@@ -547,6 +549,7 @@ class ReceiverV2 {
       const userData = {
         Master_UUID__c: masterUuid,
         User_ID__c: externalUserId,
+        
         First_Name__c: firstName,
         Last_Name__c: lastName,
         Email__c: email,
@@ -570,6 +573,7 @@ class ReceiverV2 {
           const result = await this.sf.apiCall((conn) =>
             conn.sobject('Account').upsert({
               Master_UUID__c: masterUuid,
+        User_ID__c: externalUserId,
               Company_Name__c: companyName,
               VAT_Number__c: companyVat,
               Email__c: companyEmail || null,
@@ -652,6 +656,7 @@ class ReceiverV2 {
       if (this.sf.isConnected) {
         const sfData = {
           Master_UUID__c: masterUuid,
+        User_ID__c: externalUserId,
           First_Name__c: firstName,
           Last_Name__c: lastName,
           Email__c: email,
@@ -682,6 +687,7 @@ class ReceiverV2 {
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert({
             Master_UUID__c: masterUuid,
+        User_ID__c: externalUserId,
             First_Name__c: ReceiverV2.getElementText(user, 'first_name'),
             Last_Name__c: ReceiverV2.getElementText(user, 'last_name'),
             Email__c: email
@@ -694,6 +700,7 @@ class ReceiverV2 {
             Description: `ID: ${sessionId} | Status: ${paymentStatus}`,
             Status: 'Completed',
             Master_UUID__c: masterUuid,
+        User_ID__c: externalUserId,
             ActivityDate: new Date().toISOString().split('T')[0]
           })
         );
@@ -714,6 +721,7 @@ class ReceiverV2 {
 
       const sfCompanyData = {
         Master_UUID__c: masterUuid,
+        User_ID__c: externalUserId,
         Company_Name__c: ReceiverV2.getElementText(company, 'name'),
         Email__c: email,
         VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
@@ -1267,6 +1275,7 @@ async handleWalletLeaseReturn(header, body) {
           Description: `Sessie scan op ${checkinAt}`,
           Status: 'Completed',
           Master_UUID__c: masterUuid,
+        User_ID__c: externalUserId,
           ActivityDate: new Date().toISOString().split('T')[0]
         })
       );
@@ -1380,7 +1389,8 @@ async handleWalletLeaseReturn(header, body) {
 
       if (eventType === 'UserCreated' && this.sf.isConnected) {
         await this.sf.apiCall((conn) =>
-          conn.sobject('Member__c').upsert({ Master_UUID__c: masterUuid, Email__c: email }, 'Master_UUID__c')
+          conn.sobject('Member__c').upsert({ Master_UUID__c: masterUuid,
+        User_ID__c: externalUserId, Email__c: email }, 'Master_UUID__c')
         );
       }
 
