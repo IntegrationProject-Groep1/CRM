@@ -625,7 +625,7 @@ class ReceiverV2 {
         session_id: sessionId || '',
         payment_due: {
           amount: registrationAmount ? parseFloat(registrationAmount) : 0,
-          status: paymentStatus,
+          status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
         }
       };
       await this.sender.sendNewRegistrationToFacturatie(fossPayload);
