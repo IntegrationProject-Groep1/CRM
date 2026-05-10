@@ -30,8 +30,8 @@ const PLANNING_SESSION_ROUTING_KEYS = [
 ];
 
 const MESSAGE_TYPES = {
-  USER_CREATED: 'user.created',
-  USER_REGISTERED: 'user.registered',
+  USER_CREATED: 'user_created',
+  USER_REGISTERED: 'user_registered',
   NEW_REGISTRATION: 'new_registration',
   USER_UNREGISTERED: 'user.unregistered',
   PAYMENT_REGISTERED: 'payment_registered',
@@ -638,26 +638,46 @@ class ReceiverV2 {
 
   async handleUserCreated(header, body) {
     try {
-      const user = body?.user;
-      if (!user) throw new Error('Body missing user element');
+      const customer = body?.customer;
+      if (!customer) throw new Error('Body missing customer element');
 
-      const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
-      const firstName = ReceiverV2.getElementText(user, 'first_name');
-      const lastName = ReceiverV2.getElementText(user, 'last_name');
-      const isCompany = ReceiverV2.getElementText(user, 'is_company') === 'true';
+      const identityUuid = ReceiverV2.getElementText(customer, 'identity_uuid');
+      const email = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
+      const contact = customer.contact;
+      const firstName = ReceiverV2.getElementText(contact, 'first_name');
+      const lastName = ReceiverV2.getElementText(contact, 'last_name');
+      const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
+      const rawType = ReceiverV2.getElementText(customer, 'type');
+      const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
 
-      const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
+      if (!identityUuid) throw new Error('Missing identity_uuid in user_created message');
 
       if (this.sf.isConnected) {
-        const sfData = {
-          Master_UUID__c: masterUuid,
-          First_Name__c: firstName,
-          Last_Name__c: lastName,
-          Email__c: email,
-          User_Type__c: isCompany ? 'Bedrijf' : 'Particulier'
-        };
-        await this.sf.apiCall((conn) => conn.sobject('Member__c').upsert(sfData, 'Master_UUID__c'));
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert({
+            Master_UUID__c: identityUuid,
+            First_Name__c: firstName,
+            Last_Name__c: lastName,
+            Email__c: email,
+            Birthdate__c: dateOfBirth || null,
+            User_Type__c: userType,
+          }, 'Master_UUID__c')
+        );
       }
+
+      await this.sender.sendProfileUpdateToKassa({
+        identity_uuid: identityUuid,
+        email,
+        first_name: firstName,
+        last_name: lastName,
+        date_of_birth: dateOfBirth,
+        type: rawType,
+        company_name: ReceiverV2.getElementText(customer, 'company_name'),
+        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        company_id: ReceiverV2.getElementText(customer, 'company_id'),
+      });
+
+      console.log(`[receiver] User created in Salesforce and forwarded to Kassa: ${identityUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleUserCreated: ${err.message}`);
       throw err;
@@ -666,37 +686,47 @@ class ReceiverV2 {
 
   async handleUserRegistered(header, body) {
     try {
-      const user = body?.user;
-      const session = body?.session;
-      if (!user || !session) throw new Error('Body missing user or session');
+      const customer = body?.customer;
+      if (!customer) throw new Error('Body missing customer element');
 
-      const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
-      const sessionId = ReceiverV2.getElementText(session, 'session_id');
-      const sessionName = ReceiverV2.getElementText(session, 'session_name');
+      const identityUuid = ReceiverV2.getElementText(customer, 'identity_uuid');
+      const email = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
+      const contact = customer.contact;
+      const firstName = ReceiverV2.getElementText(contact, 'first_name');
+      const lastName = ReceiverV2.getElementText(contact, 'last_name');
+      const sessionId = ReceiverV2.getElementText(customer, 'session_id');
+      const sessionTitle = ReceiverV2.getElementText(body, 'session_title');
       const paymentStatus = ReceiverV2.getElementText(body, 'payment_status');
 
-      const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
+      if (!identityUuid) throw new Error('Missing identity_uuid in user_registered message');
 
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert({
-            Master_UUID__c: masterUuid,
-            First_Name__c: ReceiverV2.getElementText(user, 'first_name'),
-            Last_Name__c: ReceiverV2.getElementText(user, 'last_name'),
-            Email__c: email
+            Master_UUID__c: identityUuid,
+            First_Name__c: firstName,
+            Last_Name__c: lastName,
+            Email__c: email,
           }, 'Master_UUID__c')
         );
 
         await this.sf.apiCall((conn) =>
           conn.sobject('Task').create({
-            Subject: `Sessie Inschrijving: ${sessionName}`,
+            Subject: `Sessie Inschrijving: ${sessionTitle || sessionId}`,
             Description: `ID: ${sessionId} | Status: ${paymentStatus}`,
             Status: 'Completed',
-            Master_UUID__c: masterUuid,
-            ActivityDate: new Date().toISOString().split('T')[0]
+            ActivityDate: new Date().toISOString().split('T')[0],
           })
         );
       }
+
+      await this.sender.sendSessionRegistrationConfirmed({
+        session_id: sessionId,
+        identity_uuid: identityUuid,
+        correlation_id: header.message_id,
+      });
+
+      console.log(`[receiver] User registered for session ${sessionId}, confirmed to Planning: ${identityUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleUserRegistered: ${err.message}`);
       throw err;
