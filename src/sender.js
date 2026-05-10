@@ -644,25 +644,21 @@ async sendWalletLeaseGrant(data) {
       header.ele('correlation_id').txt(correlationId);
 
       const body = root.ele('body');
-      body.ele('master_uuid').txt(data.master_uuid);
-
       const customer = body.ele('customer');
-      customer.ele('first_name').txt(data.customer.first_name);
-      customer.ele('last_name').txt(data.customer.last_name);
+      customer.ele('identity_uuid').txt(data.master_uuid || '');
       customer.ele('email').txt(data.customer.email);
+      customer.ele('date_of_birth').txt(data.customer.date_of_birth || '');
+      const contact = customer.ele('contact');
+      contact.ele('first_name').txt(data.customer.first_name || '');
+      contact.ele('last_name').txt(data.customer.last_name || '');
       customer.ele('type').txt(data.customer.type || 'private');
       if (data.customer.company_name) customer.ele('company_name').txt(data.customer.company_name);
       if (data.customer.vat_number)   customer.ele('vat_number').txt(data.customer.vat_number);
-
-      const address = body.ele('address');
-      address.ele('street').txt(data.address.street || '');
-      address.ele('number').txt(data.address.number || '');
-      address.ele('postal_code').txt(data.address.postal_code || '');
-      address.ele('city').txt(data.address.city || '');
-      address.ele('country').txt(data.address.country || 'BE');
-
-      const paymentDue = body.ele('payment_due');
-      paymentDue.ele('amount').txt(String(data.payment_due.amount || '0.00'));
+      if (data.customer.company_id)   customer.ele('company_id').txt(data.customer.company_id);
+      if (data.customer.badge_id)     customer.ele('badge_id').txt(data.customer.badge_id);
+      customer.ele('session_id').txt(data.session_id || '');
+      const paymentDue = customer.ele('payment_due');
+      paymentDue.ele('amount').att('currency', 'eur').txt(String(data.payment_due.amount || '0.00'));
       paymentDue.ele('status').txt(data.payment_due.status || 'unpaid');
 
       const xmlPayload = root.doc().end({ prettyPrint: true, indent: '  ' });
