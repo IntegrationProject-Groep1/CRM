@@ -548,7 +548,6 @@ class ReceiverV2 {
       if (!masterUuid) throw new Error('new_registration missing identity_uuid/master_uuid');
 
       const userData = {
-        User_ID__c: externalUserId,
         Master_UUID__c: masterUuid,
         
         First_Name__c: firstName,
@@ -1120,10 +1119,11 @@ class ReceiverV2 {
 }
 
 async handleWalletLeaseReturn(header, body) {
+  let leaseId = null;
   try {
     const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
     const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
-    const leaseId = ReceiverV2.getElementText(body, 'lease_id');
+    leaseId = ReceiverV2.getElementText(body, 'lease_id');
     const txCount = ReceiverV2.getElementText(body, 'transaction_count');
 
     console.log(`[lease-return] Ontvangen voor User: ${masterUuid}. Lease: ${leaseId}. Transacties: ${txCount}`);
