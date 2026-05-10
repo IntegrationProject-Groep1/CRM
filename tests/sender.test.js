@@ -762,27 +762,31 @@ describe('Frontend flow — buildUserUnregisteredXml', () => {
   beforeEach(() => { sender = new CRMSender(); });
 
   const baseData = () => ({
-    message_id: '3d6f0a7b-71ab-4fb8-99ee-65dbd4499999',
-    timestamp: '2026-04-04T10:00:00+02:00',
-    source: 'frontend.drupal',
-    receiver: 'crm.salesforce planning.outlook mailing.sendgrid',
-    correlation_id: '',
-    user_id: 'user-001',
-    session_id: 'sess-42',
-    body_timestamp: '2026-04-04T10:00:00+02:00',
+    identity_uuid: 'user-001',
+    email: 'test@example.com',
+    reason: 'User requested deletion'
   });
 
-  test('bouwt user.unregistered met namespace en verplichte velden', () => {
+  test('bouwt user.unregistered volgens XSD specificatie', () => {
     const xml = sender.buildUserUnregisteredXml(baseData());
-    expect(xml).toContain('urn:integration:planning:v1');
 
     const root = parser.parse(xml).message;
     expect(root.header.type).toBe('user.unregistered');
+    expect(root.header.source).toBe('crm');
     expect(root.header.version).toBe('1.0');
-    expect(root.header.source).toBe('frontend.drupal');
-    expect(root.header.receiver).toBe('crm.salesforce planning.outlook mailing.sendgrid');
-    expect(root.body.master_uuid).toBe('user-001');
-    expect(root.body.session_id).toBe('sess-42');
+    expect(root.body.identity_uuid).toBe('user-001');
+    expect(root.body.email).toBe('test@example.com');
+    expect(root.body.reason).toBe('User requested deletion');
+  });
+
+  test('bouwt user.unregistered zonder optionele velden', () => {
+    const xml = sender.buildUserUnregisteredXml({ identity_uuid: 'user-002' });
+
+    const root = parser.parse(xml).message;
+    expect(root.header.type).toBe('user.unregistered');
+    expect(root.body.identity_uuid).toBe('user-002');
+    expect(root.body.email).toBeUndefined();
+    expect(root.body.reason).toBeUndefined();
   });
 });
 
@@ -792,13 +796,9 @@ describe('Frontend flow — sendUserUnregisteredFanout', () => {
   beforeEach(() => { sender = new CRMSender(); });
 
   const data = {
-    message_id: '3d6f0a7b-71ab-4fb8-99ee-65dbd4499999',
-    timestamp: '2026-04-04T10:00:00+02:00',
-    source: 'frontend.drupal',
-    receiver: 'crm.salesforce planning.outlook mailing.sendgrid',
-    user_id: 'user-001',
-    session_id: 'sess-42',
-    body_timestamp: '2026-04-04T10:00:00+02:00',
+    identity_uuid: 'user-001',
+    email: 'test@example.com',
+    reason: 'User requested unregistration'
   };
 
   test('gooit error als channel niet geinitialiseerd is', async () => {

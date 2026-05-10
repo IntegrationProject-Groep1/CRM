@@ -485,27 +485,25 @@ class ReceiverV2 {
 
   async handleUserUnregistered(header, body) {
     try {
-      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
-      const sessionId = ReceiverV2.getElementText(body, 'session_id');
-      const bodyTimestamp = ReceiverV2.getElementText(body, 'timestamp');
+      const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid') ||
+        ReceiverV2.getElementText(body, 'master_uuid') ||
+        (header && header.master_uuid);
 
-      if (!masterUuid || !sessionId) {
-        console.log('[receiver] Missing master_uuid or session_id in user.unregistered body');
+      const email = ReceiverV2.getElementText(body, 'email');
+      const reason = ReceiverV2.getElementText(body, 'reason');
+
+      if (!masterUuid) {
+        console.log('[receiver] Missing master_uuid in user.unregistered body');
         return;
       }
 
       await this.sender.sendUserUnregisteredFanout({
-        message_id: header.message_id,
-        timestamp: header.timestamp,
-        source: header.source,
-        receiver: header.receiver,
-        correlation_id: ReceiverV2.getElementText(header, 'correlation_id') || '',
-        master_uuid: masterUuid,
-        session_id: sessionId,
-        body_timestamp: bodyTimestamp || header.timestamp,
+        identity_uuid: masterUuid,
+        email: email || '',
+        reason: reason || ''
       });
 
-      console.log(`[receiver] Forwarded user.unregistered for master_uuid=${masterUuid}, session_id=${sessionId}`);
+      console.log(`[receiver] Forwarded user.unregistered for identity_uuid=${masterUuid}`);
     } catch (err) {
       console.log(`[receiver] Error in handleUserUnregistered: ${err}`);
       throw err;
