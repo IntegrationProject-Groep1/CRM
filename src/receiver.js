@@ -48,7 +48,7 @@ const MESSAGE_TYPES = {
   REFUND_PROCESSED: 'refund_processed',
   INVOICE_REQUEST: 'invoice_request',
   INVOICE_CANCELLED: 'invoice_cancelled',
-  USER_UPDATED: 'user.updated',
+  USER_UPDATED: 'user_updated',
   USER_CHECKIN: 'user_checkin',
   DELETE_USER: 'delete_user',
   USER_DELETED: 'user_deleted',
@@ -1245,8 +1245,52 @@ async handleWalletLeaseReturn(header, body) {
     }
   }
 
-  async handleUserUpdated() {
-    console.log('[receiver] user.updated received');
+  async handleUserUpdated(header, body) {
+    try {
+      const customer = body?.customer;
+      if (!customer) throw new Error('Body missing customer element');
+
+      const identityUuid = ReceiverV2.getElementText(customer, 'identity_uuid');
+      const email = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
+      const contact = customer.contact;
+      const firstName = ReceiverV2.getElementText(contact, 'first_name');
+      const lastName = ReceiverV2.getElementText(contact, 'last_name');
+      const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
+      const rawType = ReceiverV2.getElementText(customer, 'type');
+      const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
+
+      if (!identityUuid) throw new Error('Missing identity_uuid in user_updated message');
+
+      if (this.sf.isConnected) {
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert({
+            Master_UUID__c: identityUuid,
+            Email__c: email,
+            First_Name__c: firstName,
+            Last_Name__c: lastName,
+            Birthdate__c: dateOfBirth || null,
+            User_Type__c: userType,
+          }, 'Master_UUID__c')
+        );
+      }
+
+      await this.sender.sendProfileUpdateToKassa({
+        identity_uuid: identityUuid,
+        email,
+        first_name: firstName,
+        last_name: lastName,
+        date_of_birth: dateOfBirth,
+        type: rawType,
+        company_name: ReceiverV2.getElementText(customer, 'company_name'),
+        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        company_id: ReceiverV2.getElementText(customer, 'company_id'),
+      });
+
+      console.log(`[receiver] User updated in Salesforce and forwarded to Kassa: ${identityUuid}`);
+    } catch (err) {
+      console.error(`[receiver] Error in handleUserUpdated: ${err.message}`);
+      throw err;
+    }
   }
 
   async handleUserCheckin(header, body) {
