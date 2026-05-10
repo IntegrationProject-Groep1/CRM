@@ -715,6 +715,7 @@ class ReceiverV2 {
             Subject: `Sessie Inschrijving: ${sessionTitle || sessionId}`,
             Description: `ID: ${sessionId} | Status: ${paymentStatus}`,
             Status: 'Completed',
+            Master_UUID__c: identityUuid,
             ActivityDate: new Date().toISOString().split('T')[0],
           })
         );
