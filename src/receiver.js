@@ -546,6 +546,7 @@ class ReceiverV2 {
       const masterUuid = await this.getOrCreateMasterUuid(email, header.source || 'frontend.drupal');
 
       const userData = {
+        User_ID__c: externalUserId,
         Master_UUID__c: masterUuid,
         
         First_Name__c: firstName,
