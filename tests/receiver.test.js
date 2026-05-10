@@ -76,23 +76,22 @@ function buildMsg(xmlString) {
 
 function buildFrontendUserUnregisteredXml(overrides = {}) {
   const headerTimestamp = overrides.headerTimestamp || new Date().toISOString();
-  const bodyTimestamp = overrides.bodyTimestamp || headerTimestamp;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<message xmlns="urn:integration:planning:v1">
+<message>
   <header>
     <message_id>${overrides.messageId || `msg-${Math.random().toString(36).slice(2)}`}</message_id>
     <timestamp>${headerTimestamp}</timestamp>
     <source>${overrides.source || 'frontend.drupal'}</source>
     <receiver>${overrides.receiver || 'crm.salesforce planning.outlook mailing.sendgrid'}</receiver>
     <type>user.unregistered</type>
-    <version>${overrides.version || '1.0'}</version>
+    <version>1.0</version>
     <correlation_id>${overrides.correlationId || ''}</correlation_id>
   </header>
   <body>
-    <master_uuid>${overrides.masterUuid || 'test-master-uuid-1234'}</master_uuid>
-    <session_id>${overrides.sessionId || 'sess-42'}</session_id>
-    <timestamp>${bodyTimestamp}</timestamp>
+    <identity_uuid>${overrides.identityUuid || 'test-master-uuid-1234'}</identity_uuid>
+    <email>${overrides.email || 'test@example.com'}</email>
+    <reason>${overrides.reason || 'User requested unregistration'}</reason>
   </body>
 </message>`;
 }
@@ -331,6 +330,87 @@ describe('validateXmlMessage', () => {
 });
 
 describe('handleMessage', () => {
+  test('user_created met customer tag wordt naar handleUserCreated gerouteerd', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = buildXml('user_created', `
+      <customer>
+        <identity_uuid>test-identity-1234</identity_uuid>
+        <email>john.doe@example.com</email>
+        <first_name>John</first_name>
+        <last_name>Doe</last_name>
+      </customer>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+
+  test('user.created met user tag blijft achterwaarts compatibel', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = buildXml('user.created', `
+      <user>
+        <master_uuid>test-master-uuid-1234</master_uuid>
+        <email>jane.doe@example.com</email>
+        <first_name>Jane</first_name>
+        <last_name>Doe</last_name>
+      </user>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+
+  test('user_registered met customer en session tag wordt naar handleUserRegistered gerouteerd', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = buildXml('user_registered', `
+      <customer>
+        <identity_uuid>test-identity-5678</identity_uuid>
+        <email>alice@example.com</email>
+        <first_name>Alice</first_name>
+        <last_name>Smith</last_name>
+      </customer>
+      <session>
+        <session_id>sess-001</session_id>
+        <session_name>Test Session</session_name>
+      </session>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+
+  test('user_registered met customerData.session_id fallback wordt naar handleUserRegistered gerouteerd', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = buildXml('user_registered', `
+      <customer>
+        <identity_uuid>test-identity-9012</identity_uuid>
+        <email>bob@example.com</email>
+        <first_name>Bob</first_name>
+        <last_name>Jones</last_name>
+        <session_id>sess-002</session_id>
+      </customer>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sf.apiCall).toHaveBeenCalled();
+  });
+
   test('ongeldige XML stuurt naar dead-letter en nackt', async () => {
     const receiver = makeReceiver();
     const msg = buildMsg('geen xml');
@@ -497,6 +577,52 @@ describe('handleNewRegistration', () => {
         Email__c: 'jan@example.com',
       }),
       'Master_UUID__c',
+    );
+  });
+
+  test('gebruikt identity_uuid uit contract als master uuid', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    const upsert = jest.fn().mockResolvedValue({ id: 'sf-member-1' });
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({ upsert }),
+    }));
+
+    const xml = buildXml('new_registration', `
+      <customer>
+        <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+        <email>jan@example.com</email>
+        <type>private</type>
+        <is_company_linked>false</is_company_linked>
+        <date_of_birth>1995-03-21</date_of_birth>
+        <contact>
+          <first_name>Jan</first_name>
+          <last_name>Peeters</last_name>
+        </contact>
+        <address>Nijverheidskaai 170, 1070 Brussel</address>
+        <session_id>sess-keynote-001</session_id>
+        <payment_due><amount currency="eur">25</amount><status>unpaid</status></payment_due>
+      </customer>
+    `);
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.getOrCreateMasterUuid).not.toHaveBeenCalled();
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        Master_UUID__c: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+        Street__c: 'Nijverheidskaai 170, 1070 Brussel',
+      }),
+      'Master_UUID__c',
+    );
+    expect(receiver.sender.sendNewRegistrationToKassa).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: expect.objectContaining({
+          master_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+          session_id: 'sess-keynote-001',
+        }),
+        session_id: 'sess-keynote-001',
+      }),
     );
   });
 });
@@ -740,26 +866,35 @@ describe('handlePlanningSessionEvent', () => {
 });
 
 describe('handleDeleteUser', () => {
-  test('zet Is_Deleted__c in Salesforce als verbonden', async () => {
+  test('verwijdert record uit Salesforce als verbonden', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
+    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('sf-member-1');
     receiver.sf.apiCall.mockResolvedValue({});
+    receiver.sender.sendLog = jest.fn().mockResolvedValue({});
 
     const xml = buildXml('delete_user', '<master_uuid>test-master-uuid-1234</master_uuid>');
 
     await receiver.handleMessage(buildMsg(xml));
 
-    expect(receiver.sf.apiCall).toHaveBeenCalled();
+    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('test-master-uuid-1234');
+    expect(receiver.sf.apiCall).toHaveBeenCalledWith(expect.any(Function));
+    expect(receiver.sender.sendLog).toHaveBeenCalledWith({
+      level: 'info',
+      action: 'delete_user',
+      message: 'User test-master-uuid-1234 definitief verwijderd uit CRM.'
+    });
   });
 
-  test('gebruikt user_id als master_uuid bij user_deleted berichten', async () => {
+  test('gebruikt identity_uuid als master_uuid bij user_deleted berichten', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
     receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('sf-member-1');
     receiver.sf.apiCall.mockResolvedValue({});
+    receiver.sender.sendLog = jest.fn().mockResolvedValue({});
 
     const xml = withoutMasterUuid(buildXml('user_deleted', `
-      <user_id>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</user_id>
+      <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
       <email>jan.depeet@mail.com</email>
       <reason>Account op verzoek van gebruiker verwijderd</reason>
     `));
@@ -768,6 +903,7 @@ describe('handleDeleteUser', () => {
 
     expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
     expect(receiver.sf.apiCall).toHaveBeenCalled();
+    expect(receiver.sender.sendLog).toHaveBeenCalled();
   });
 });
 
@@ -899,15 +1035,11 @@ describe('handleUserUnregistered', () => {
   test('frontend user.unregistered wordt via sender naar fanout gestuurd', async () => {
     await receiver.handleMessage(buildMsg(buildFrontendUserUnregisteredXml()));
 
-    expect(receiver.sender.sendUserUnregisteredFanout).toHaveBeenCalledWith(
-      expect.objectContaining({
-        message_id: expect.any(String),
-        source: 'frontend.drupal',
-        receiver: 'crm.salesforce planning.outlook mailing.sendgrid',
-        master_uuid: 'test-master-uuid-1234',
-        session_id: 'sess-42',
-      }),
-    );
+    expect(receiver.sender.sendUserUnregisteredFanout).toHaveBeenCalledWith({
+      identity_uuid: 'test-master-uuid-1234',
+      email: 'test@example.com',
+      reason: 'User requested unregistration'
+    });
   });
 
   test('user.unregistered met master_uuid wordt geaccepteerd met version 1.0', async () => {

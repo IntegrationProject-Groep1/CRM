@@ -48,7 +48,7 @@ const MESSAGE_TYPES = {
   REFUND_PROCESSED: 'refund_processed',
   INVOICE_REQUEST: 'invoice_request',
   INVOICE_CANCELLED: 'invoice_cancelled',
-  USER_UPDATED: 'user.updated',
+  USER_UPDATED: 'user_updated',
   USER_CHECKIN: 'user_checkin',
   DELETE_USER: 'delete_user',
   USER_DELETED: 'user_deleted',
@@ -336,7 +336,9 @@ class ReceiverV2 {
 
       const xsdMapping = {
         [MESSAGE_TYPES.USER_CREATED]: 'user_created.xsd',
+        'user_created': 'user_created.xsd',
         [MESSAGE_TYPES.USER_REGISTERED]: 'user_registered.xsd',
+        'user_registered': 'user_registered.xsd',
         [MESSAGE_TYPES.NEW_REGISTRATION]: source === 'kassa' ? 'new_registration_kassa.xsd' : 'new_registration_frontend.xsd',
         [MESSAGE_TYPES.USER_UNREGISTERED]: 'user_unregistered.xsd',
         [MESSAGE_TYPES.PAYMENT_REGISTERED]: source === 'kassa' ? 'payment_registered_kassa.xsd' : 'payment_registered_facturatie.xsd',
@@ -400,6 +402,8 @@ class ReceiverV2 {
     const handlers = {
       [MESSAGE_TYPES.USER_CREATED]: () => this.handleUserCreated(header, body),
       [MESSAGE_TYPES.USER_REGISTERED]: () => this.handleUserRegistered(header, body),
+      'user_created': () => this.handleUserCreated(header, body),
+      'user_registered': () => this.handleUserRegistered(header, body),
       [MESSAGE_TYPES.NEW_REGISTRATION]: () => this.handleNewRegistration(header, body),
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body, rawXml),
@@ -486,27 +490,25 @@ class ReceiverV2 {
 
   async handleUserUnregistered(header, body) {
     try {
-      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid');
-      const sessionId = ReceiverV2.getElementText(body, 'session_id');
-      const bodyTimestamp = ReceiverV2.getElementText(body, 'timestamp');
+      const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid') ||
+        ReceiverV2.getElementText(body, 'master_uuid') ||
+        (header && header.master_uuid);
 
-      if (!masterUuid || !sessionId) {
-        console.log('[receiver] Missing master_uuid or session_id in user.unregistered body');
+      const email = ReceiverV2.getElementText(body, 'email');
+      const reason = ReceiverV2.getElementText(body, 'reason');
+
+      if (!masterUuid) {
+        console.log('[receiver] Missing master_uuid in user.unregistered body');
         return;
       }
 
       await this.sender.sendUserUnregisteredFanout({
-        message_id: header.message_id,
-        timestamp: header.timestamp,
-        source: header.source,
-        receiver: header.receiver,
-        correlation_id: ReceiverV2.getElementText(header, 'correlation_id') || '',
-        master_uuid: masterUuid,
-        session_id: sessionId,
-        body_timestamp: bodyTimestamp || header.timestamp,
+        identity_uuid: masterUuid,
+        email: email || '',
+        reason: reason || ''
       });
 
-      console.log(`[receiver] Forwarded user.unregistered for master_uuid=${masterUuid}, session_id=${sessionId}`);
+      console.log(`[receiver] Forwarded user.unregistered for identity_uuid=${masterUuid}`);
     } catch (err) {
       console.log(`[receiver] Error in handleUserUnregistered: ${err}`);
       throw err;
@@ -520,15 +522,17 @@ class ReceiverV2 {
       const address = customer ? customer.address : null;
       const companyData = body ? body.company : null;
       const regFee = customer ? (customer.registration_fee || customer.payment_due) : (body ? body.payment_due : null);
-      const sessionId = body ? ReceiverV2.getElementText(body, 'session_id') : null;
 
       const getCustomerText = (key) =>
         ReceiverV2.getElementText(customer, key) || ReceiverV2.getElementText(contact, key);
 
       const email = getCustomerText('email');
+      const identityUuid = getCustomerText('identity_uuid') || getCustomerText('user_id');
+      const sessionId = getCustomerText('session_id') || ReceiverV2.getElementText(body, 'session_id');
       const firstName = getCustomerText('first_name');
       const lastName = getCustomerText('last_name');
-      const externalUserId = getCustomerText('identity_uuid') || getCustomerText('user_id');
+      const addressText = typeof address === 'string' ? address : null;
+      
       const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
       const rawType = getCustomerText('type');
       const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
@@ -543,17 +547,18 @@ class ReceiverV2 {
         : (amountVal || null);
 
       console.log(`[receiver] Processing new_registration for: ${email}`);
-      const masterUuid = await this.getOrCreateMasterUuid(email, header.source || 'frontend.drupal');
+      const masterUuid = identityUuid || await this.getOrCreateMasterUuid(email, header.source || 'frontend.drupal');
+      if (!masterUuid) throw new Error('new_registration missing identity_uuid/master_uuid');
 
       const userData = {
         Master_UUID__c: masterUuid,
-        User_ID__c: externalUserId,
+        
         First_Name__c: firstName,
         Last_Name__c: lastName,
         Email__c: email,
         Birthdate__c: getCustomerText('date_of_birth'),
         User_Type__c: userType,
-        Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+        Street__c: addressText || (address ? ReceiverV2.getElementText(address, 'street') : null),
         House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
         Postal_Code__c: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
         City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
@@ -562,9 +567,9 @@ class ReceiverV2 {
       };
 
       let companyId = null;
-      if ((isCompanyLinked || rawType === 'company') && companyData) {
-        const companyName = ReceiverV2.getElementText(companyData, 'name');
-        const companyVat = ReceiverV2.getElementText(companyData, 'vat_number');
+      if (isCompanyLinked || rawType === 'company') {
+        const companyName = getCustomerText('company_name') || ReceiverV2.getElementText(companyData, 'name');
+        const companyVat = getCustomerText('vat_number') || ReceiverV2.getElementText(companyData, 'vat_number');
         const companyEmail = ReceiverV2.getElementText(companyData, 'email');
 
         if (companyName && companyVat && this.sf.isConnected) {
@@ -574,7 +579,7 @@ class ReceiverV2 {
               Company_Name__c: companyName,
               VAT_Number__c: companyVat,
               Email__c: companyEmail || null,
-              Billing_Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+              Billing_Street__c: addressText || (address ? ReceiverV2.getElementText(address, 'street') : null),
               Billing_City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
             }, 'VAT_Number__c')
           );
@@ -585,6 +590,7 @@ class ReceiverV2 {
       if (companyId) userData.Account__c = companyId;
 
       if (this.sf.isConnected) {
+        console.log(`[receiver] Salesforce Member__c upsert fields: ${Object.keys(userData).join(', ')}`);
         await this.sf.apiCall((conn) => conn.sobject('Member__c').upsert(userData, 'Master_UUID__c'));
       }
 
@@ -596,8 +602,8 @@ class ReceiverV2 {
           first_name: firstName || '',
           last_name: lastName || '',
           type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
-          company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
-          vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+          company_name: getCustomerText('company_name') || ReceiverV2.getElementText(companyData, 'name'),
+          vat_number: getCustomerText('vat_number') || ReceiverV2.getElementText(companyData, 'vat_number'),
           session_id: sessionId || '',
         },
         session_id: sessionId || '',
@@ -614,20 +620,15 @@ class ReceiverV2 {
           first_name: firstName,
           last_name: lastName,
           email: email,
+          date_of_birth: getCustomerText('date_of_birth') || '',
           type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
-          company_name: companyData ? ReceiverV2.getElementText(companyData, 'name') : null,
-          vat_number: companyData ? ReceiverV2.getElementText(companyData, 'vat_number') : null,
+          company_name: getCustomerText('company_name') || ReceiverV2.getElementText(companyData, 'name'),
+          vat_number: getCustomerText('vat_number') || ReceiverV2.getElementText(companyData, 'vat_number'),
         },
-        address: {
-          street: address ? ReceiverV2.getElementText(address, 'street') : null,
-          number: address ? ReceiverV2.getElementText(address, 'number') : null,
-          postal_code: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
-          city: address ? ReceiverV2.getElementText(address, 'city') : null,
-          country: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() : null,
-        },
+        session_id: sessionId || '',
         payment_due: {
           amount: registrationAmount ? parseFloat(registrationAmount) : 0,
-          status: paymentStatus,
+          status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
         }
       };
       await this.sender.sendNewRegistrationToFacturatie(fossPayload);
@@ -640,15 +641,18 @@ class ReceiverV2 {
 
   async handleUserCreated(header, body) {
     try {
-      const user = body?.user;
-      if (!user) throw new Error('Body missing user element');
+      const userData = body?.customer || body?.user;
+      if (!userData) throw new Error('Body missing user element');
 
-      const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
-      const firstName = ReceiverV2.getElementText(user, 'first_name');
-      const lastName = ReceiverV2.getElementText(user, 'last_name');
-      const isCompany = ReceiverV2.getElementText(user, 'is_company') === 'true';
+      const identityUuid = ReceiverV2.getElementText(userData, 'identity_uuid') ||
+        ReceiverV2.getElementText(userData, 'master_uuid');
+      const email = (ReceiverV2.getElementText(userData, 'email') || '').toLowerCase().trim();
+      const firstName = ReceiverV2.getElementText(userData, 'first_name');
+      const lastName = ReceiverV2.getElementText(userData, 'last_name');
+      const isCompany = ReceiverV2.getElementText(userData, 'is_company') === 'true';
+      const sourceSystem = header?.source || 'frontend.drupal';
 
-      const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
+      const masterUuid = identityUuid || await this.getOrCreateMasterUuid(email, sourceSystem);
 
       if (this.sf.isConnected) {
         const sfData = {
@@ -668,23 +672,28 @@ class ReceiverV2 {
 
   async handleUserRegistered(header, body) {
     try {
-      const user = body?.user;
-      const session = body?.session;
-      if (!user || !session) throw new Error('Body missing user or session');
+      const customerData = body?.customer || body?.user;
+      const session = body?.session || customerData?.session;
+      const sessionId = ReceiverV2.getElementText(session, 'session_id') ||
+        ReceiverV2.getElementText(customerData, 'session_id');
+      const sessionName = ReceiverV2.getElementText(session, 'session_name') ||
+        ReceiverV2.getElementText(customerData, 'session_name');
 
-      const email = (ReceiverV2.getElementText(user, 'email') || '').toLowerCase().trim();
-      const sessionId = ReceiverV2.getElementText(session, 'session_id');
-      const sessionName = ReceiverV2.getElementText(session, 'session_name');
+      if (!customerData || !sessionId) throw new Error('Body missing user or session');
+
+      const email = (ReceiverV2.getElementText(customerData, 'email') || '').toLowerCase().trim();
+      const identityUuid = ReceiverV2.getElementText(customerData, 'identity_uuid') ||
+        ReceiverV2.getElementText(customerData, 'master_uuid');
+      const sourceSystem = header?.source || 'frontend.drupal';
+      const masterUuid = identityUuid || await this.getOrCreateMasterUuid(email, sourceSystem);
       const paymentStatus = ReceiverV2.getElementText(body, 'payment_status');
-
-      const masterUuid = await this.getOrCreateMasterUuid(email, 'frontend.drupal');
 
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert({
             Master_UUID__c: masterUuid,
-            First_Name__c: ReceiverV2.getElementText(user, 'first_name'),
-            Last_Name__c: ReceiverV2.getElementText(user, 'last_name'),
+            First_Name__c: ReceiverV2.getElementText(customerData, 'first_name'),
+            Last_Name__c: ReceiverV2.getElementText(customerData, 'last_name'),
             Email__c: email
           }, 'Master_UUID__c')
         );
@@ -1091,14 +1100,12 @@ class ReceiverV2 {
     );
 
     const leaseData = {
-      master_uuid: masterUuid,
-      badge_id: badgeId,
+      identity_uuid: masterUuid,
       current_balance: member.Wallet_Balance__c || 0.00,
-      status: 'approved',
-      timestamp: new Date().toISOString()
+      correlation_id: uuidv4()
     };
 
-    await this.sender.sendWalletLeaseApproved(leaseData);
+    await this.sender.sendWalletLeaseGrant(leaseData);
 
     console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Saldo: ${member.Wallet_Balance__c}`);
 
@@ -1299,8 +1306,52 @@ async handleWalletLeaseReturn(header, body) {
     }
   }
 
-  async handleUserUpdated() {
-    console.log('[receiver] user.updated received');
+  async handleUserUpdated(header, body) {
+    try {
+      const customer = body?.customer;
+      if (!customer) throw new Error('Body missing customer element');
+
+      const identityUuid = ReceiverV2.getElementText(customer, 'identity_uuid');
+      const email = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
+      const contact = customer.contact;
+      const firstName = ReceiverV2.getElementText(contact, 'first_name');
+      const lastName = ReceiverV2.getElementText(contact, 'last_name');
+      const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
+      const rawType = ReceiverV2.getElementText(customer, 'type');
+      const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
+
+      if (!identityUuid) throw new Error('Missing identity_uuid in user_updated message');
+
+      if (this.sf.isConnected) {
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert({
+            Master_UUID__c: identityUuid,
+            Email__c: email,
+            First_Name__c: firstName,
+            Last_Name__c: lastName,
+            Birthdate__c: dateOfBirth || null,
+            User_Type__c: userType,
+          }, 'Master_UUID__c')
+        );
+      }
+
+      await this.sender.sendProfileUpdateToKassa({
+        identity_uuid: identityUuid,
+        email,
+        first_name: firstName,
+        last_name: lastName,
+        date_of_birth: dateOfBirth,
+        type: rawType,
+        company_name: ReceiverV2.getElementText(customer, 'company_name'),
+        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        company_id: ReceiverV2.getElementText(customer, 'company_id'),
+      });
+
+      console.log(`[receiver] User updated in Salesforce and forwarded to Kassa: ${identityUuid}`);
+    } catch (err) {
+      console.error(`[receiver] Error in handleUserUpdated: ${err.message}`);
+      throw err;
+    }
   }
 
   async handleUserCheckin(header, body) {
@@ -1334,26 +1385,48 @@ async handleWalletLeaseReturn(header, body) {
   }
 
   async handleDeleteUser(header, body) {
+    let masterUuid;
     try {
-      const masterUuid = ReceiverV2.getElementText(body, 'master_uuid') ||
-        ReceiverV2.getElementText(body, 'user_id') ||
-        (header && header.master_uuid) || null;
+      // 1. UUID Extractie (nu inclusief identity_uuid voor XSD alignment)
+      masterUuid = ReceiverV2.getElementText(body, 'identity_uuid') || 
+                   ReceiverV2.getElementText(body, 'master_uuid') || 
+                   ReceiverV2.getElementText(body, 'user_id') || 
+                   header?.master_uuid;
 
       if (!masterUuid) {
-        console.log('[receiver] handleDeleteUser: no master_uuid found');
+        console.warn('[receiver] handleDeleteUser: Geen UUID gevonden.');
         return;
       }
 
-      if (this.sf.isConnected) {
-        const memberId = await this._findUserByMasterUuid(masterUuid);
-        if (memberId) {
-          await this.sf.apiCall((conn) =>
-            conn.sobject('Member__c').update({ Id: memberId, Is_Deleted__c: true, Status__c: 'Deleted' })
-          );
-        }
+      if (!this.sf.isConnected) {
+        throw new Error("Salesforce niet verbonden.");
       }
+
+      // 2. Zoek de record ID op basis van de Master_UUID__c
+      const memberId = await this._findUserByMasterUuid(masterUuid);
+      
+      if (!memberId) {
+        console.log(`[receiver] Delete overgeslagen: User ${masterUuid} bestaat niet in Salesforce.`);
+        return;
+      }
+
+      // 3. De actie: HARD DELETE
+      // Aangezien velden als Is_Deleted__c niet bestaan, verwijderen we het record echt.
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').destroy(memberId)
+      );
+
+      console.log(`[receiver] User ${masterUuid} (ID: ${memberId}) succesvol verwijderd uit Salesforce.`);
+
+      // 4. Bevestiging naar de sender
+      await this.sender.sendLog({
+        level: 'info',
+        action: 'delete_user',
+        message: `User ${masterUuid} definitief verwijderd uit CRM.`
+      });
+
     } catch (err) {
-      console.log(`[receiver] Error in handleDeleteUser: ${err}`);
+      console.error(`[receiver] Fout bij handleDeleteUser voor ${masterUuid || 'onbekend'}: ${err.message}`);
       throw err;
     }
   }

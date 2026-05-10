@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="message">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="header">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="type" type="xs:string" fixed="user.unregistered"/>
+              <xs:element name="source" type="xs:string" fixed="crm"/>
+              <xs:element name="version" type="xs:string" fixed="1.0"/>
+              <xs:element name="timestamp" type="xs:dateTime"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="body">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="identity_uuid" type="xs:string"/>
+              <xs:element name="email" type="xs:string" minOccurs="0"/>
+              <xs:element name="reason" type="xs:string" minOccurs="0"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
