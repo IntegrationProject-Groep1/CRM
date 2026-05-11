@@ -22,7 +22,7 @@ class CRMSender {
       'send_mailing': 'send_mailing.xsd',
       'log': 'log.xsd',
       'session_registration_confirmed': 'session_registration_confirmed.xsd',
-      'user.unregistered': 'user_deleted.xsd',
+      'user.unregistered': 'user_unregistered.xsd',
       'event_ended': 'event_ended.xsd',
       'payment_registered': 'payment_registered_facturatie.xsd', // Default to facturatie for passthrough
       'consumption_order': 'consumption_order.xsd',
@@ -717,22 +717,18 @@ async sendWalletLeaseGrant(data) {
 
   // ── user_unregistered (CRM → Fanout, section 5.2) ──────────────────────────
   buildUserUnregisteredXml(data) {
-    const root = create({ version: '1.0', encoding: 'UTF-8' })
-      .ele('message', { xmlns: 'urn:integration:planning:v1' });
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
     const header = root.ele('header');
-    header.ele('message_id').txt(data.message_id || uuidv4());
-    header.ele('timestamp').txt(data.timestamp || new Date().toISOString());
-    header.ele('source').txt(data.source || 'crm');
     header.ele('type').txt('user.unregistered');
+    header.ele('source').txt('crm');
     header.ele('version').txt('1.0');
-    header.ele('receiver').txt(data.receiver || '');
-    if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+    header.ele('timestamp').txt(new Date().toISOString());
 
     const body = root.ele('body');
-    body.ele('master_uuid').txt(data.user_id || data.master_uuid || '');
-    body.ele('session_id').txt(data.session_id);
-    body.ele('timestamp').txt(data.body_timestamp || data.timestamp || new Date().toISOString());
+    body.ele('identity_uuid').txt(data.identity_uuid || data.master_uuid);
+    if (data.email) body.ele('email').txt(data.email);
+    if (data.reason) body.ele('reason').txt(data.reason);
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
   }
