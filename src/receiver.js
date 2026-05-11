@@ -1131,12 +1131,12 @@ class ReceiverV2 {
   }
 
 async handleWalletLeaseReturn(header, body) {
-  let leaseId; // Declare at function scope
-  try {
-    const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
-    const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
-    leaseId = ReceiverV2.getElementText(body, 'lease_id'); // Now available in catch block
-    const txCount = ReceiverV2.getElementText(body, 'transaction_count');
+    let leaseId = 'ONBEKEND'; 
+    try {
+      const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+      const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
+      leaseId = ReceiverV2.getElementText(body, 'lease_id'); 
+      const txCount = ReceiverV2.getElementText(body, 'transaction_count');
 
       console.log(`[lease-return] Ontvangen voor User: ${masterUuid}. Lease: ${leaseId}. Transacties: ${txCount}`);
 
@@ -1177,50 +1177,15 @@ async handleWalletLeaseReturn(header, body) {
 
     } catch (err) {
       console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
+      
+      // Deze 'this' werkt nu omdat hij netjes binnen de catch van de class methode staat
       await this.sender.sendLog({
         level: 'error',
         action: 'wallet',
-        message: `CRITIEK: Kon lease-return voor ${leaseId || 'ONBEKEND'} niet verwerken! Error: ${err.message}`
+        message: `CRITIEK: Kon lease-return voor ${leaseId} niet verwerken! Error: ${err.message}`
       });
       throw err;
     }
-
-    const records = await this.sf.apiCall((conn) =>
-      conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
-    );
-
-    if (!records || records.length === 0) {
-      throw new Error(`User met UUID ${masterUuid} niet gevonden bij afsluiten lease.`);
-    }
-
-    const memberId = records[0].Id;
-
-    await this.sf.apiCall((conn) =>
-      conn.sobject('Member__c').update({
-        Id: memberId,
-        Wallet_Balance__c: parseFloat(finalBalance),
-        Wallet_Status__c: 'Active',
-        Last_Lease_ID__c: leaseId,
-        Last_Sync_At__c: new Date().toISOString()
-      })
-    );
-
-    await this.sender.sendLog({
-      level: 'info',
-      action: 'wallet',
-      message: `Lease ${leaseId} succesvol beëindigd voor ${masterUuid}. Nieuw saldo: ${finalBalance} (${txCount} transacties verwerkt).`
-    });
-
-    console.log(`[lease-return] Wallet succesvol vrijgegeven in CRM voor ${masterUuid}.`);
-
-  } catch (err) {
-    console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
-    await this.sender.sendLog({
-      level: 'error',
-      action: 'wallet',
-      message: `CRITIEK: Kon lease-return voor ${leaseId || 'UNKNOWN'} niet verwerken! Error: ${err.message}`
-    });
-    throw err;
   }
 
   async handleWalletTopupRequest(header, body) {
