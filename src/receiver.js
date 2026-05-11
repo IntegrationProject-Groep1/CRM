@@ -1103,7 +1103,7 @@ class ReceiverV2 {
         Last_Lease_At__c: new Date().toISOString()
       };
 
-      // Badge ID toevoegen als deze in de aanvraag zat (fixt linter error)
+      // Badge ID toevoegen (fixt linter error)
       if (badgeId) {
         updateFields.Badge_ID__c = badgeId;
       }
@@ -1117,7 +1117,7 @@ class ReceiverV2 {
         identity_uuid: masterUuid,
         current_balance: member.Wallet_Balance__c || 0.00,
         lease_id: generatedLeaseId,
-        correlation_id: header.message_id // Gebruik message_id van kassa als correlation_id
+        correlation_id: header.message_id 
       };
 
       await this.sender.sendWalletLeaseGrant(leaseData);
@@ -1128,38 +1128,6 @@ class ReceiverV2 {
       console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
       throw err; 
     }
-
-    const records = await this.sf.apiCall((conn) =>
-      conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
-    );
-
-    if (!records || records.length === 0) {
-      throw new Error(`User met UUID ${masterUuid} niet gevonden in CRM.`);
-    }
-
-    const member = records[0];
-
-    await this.sf.apiCall((conn) =>
-      conn.sobject('Member__c').update({
-        Id: member.Id,
-        Wallet_Status__c: 'Leased',
-        Last_Lease_At__c: new Date().toISOString()
-      })
-    );
-
-    const leaseData = {
-      identity_uuid: masterUuid,
-      current_balance: member.Wallet_Balance__c || 0.00,
-      correlation_id: uuidv4()
-    };
-
-    await this.sender.sendWalletLeaseGrant(leaseData);
-
-    console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Saldo: ${member.Wallet_Balance__c}`);
-
-  } catch (err) {
-    console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
-    throw err;
   }
 
 async handleWalletLeaseReturn(header, body) {
