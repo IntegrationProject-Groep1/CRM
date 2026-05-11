@@ -1071,14 +1071,62 @@ class ReceiverV2 {
   }
 
   async handleWalletLeaseRequest(header, body) {
-  try {
-    const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
-    const badgeId = ReceiverV2.getElementText(body, 'badge_id');
+    try {
+      const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+      const badgeId = ReceiverV2.getElementText(body, 'badge_id');
 
-    console.log(`[lease] Aanvraag ontvangen voor User: ${masterUuid}`);
+      console.log(`[lease] Aanvraag ontvangen voor User: ${masterUuid}`);
 
-    if (!this.sf.isConnected) {
-      throw new Error("Salesforce niet verbonden. Kan lease niet verstrekken.");
+      if (!this.sf.isConnected) {
+        throw new Error("Salesforce niet verbonden. Kan lease niet verstrekken.");
+      }
+
+      // 1. Haal huidige saldo en status op uit Salesforce
+      const records = await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
+      );
+
+      if (!records || records.length === 0) {
+        throw new Error(`User met UUID ${masterUuid} niet gevonden in CRM.`);
+      }
+
+      const member = records[0];
+      
+      // Genereer een unieke Lease ID voor deze sessie (Verplicht voor XSD)
+      const generatedLeaseId = `LEASE-${new Date().getFullYear()}-${uuidv4().substring(0, 8)}`.toUpperCase();
+
+      // 2. "Bevries" de wallet in Salesforce
+      const updateFields = {
+        Id: member.Id,
+        Wallet_Status__c: 'Leased',
+        Last_Lease_ID__c: generatedLeaseId,
+        Last_Lease_At__c: new Date().toISOString()
+      };
+
+      // Badge ID toevoegen als deze in de aanvraag zat (fixt linter error)
+      if (badgeId) {
+        updateFields.Badge_ID__c = badgeId;
+      }
+
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').update(updateFields)
+      );
+
+      // 3. Stuur het saldo terug naar de Kassa (Authority Transfer)
+      const leaseData = {
+        identity_uuid: masterUuid,
+        current_balance: member.Wallet_Balance__c || 0.00,
+        lease_id: generatedLeaseId,
+        correlation_id: header.message_id // Gebruik message_id van kassa als correlation_id
+      };
+
+      await this.sender.sendWalletLeaseGrant(leaseData);
+
+      console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Lease: ${generatedLeaseId}`);
+
+    } catch (err) {
+      console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
+      throw err; 
     }
 
     const records = await this.sf.apiCall((conn) =>
@@ -1113,7 +1161,6 @@ class ReceiverV2 {
     console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
     throw err;
   }
-}
 
 async handleWalletLeaseReturn(header, body) {
   let leaseId; // Declare at function scope
@@ -1123,10 +1170,51 @@ async handleWalletLeaseReturn(header, body) {
     leaseId = ReceiverV2.getElementText(body, 'lease_id'); // Now available in catch block
     const txCount = ReceiverV2.getElementText(body, 'transaction_count');
 
-    console.log(`[lease-return] Ontvangen voor User: ${masterUuid}. Lease: ${leaseId}. Transacties: ${txCount}`);
+      console.log(`[lease-return] Ontvangen voor User: ${masterUuid}. Lease: ${leaseId}. Transacties: ${txCount}`);
 
-    if (!this.sf.isConnected) {
-      throw new Error("Salesforce niet verbonden. Kan lease-return niet verwerken.");
+      if (!this.sf.isConnected) {
+        throw new Error("Salesforce niet verbonden. Kan lease-return niet verwerken.");
+      }
+
+      // 1. Zoek de gebruiker op in Salesforce
+      const records = await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
+      );
+
+      if (!records || records.length === 0) {
+        throw new Error(`User met UUID ${masterUuid} niet gevonden bij afsluiten lease.`);
+      }
+
+      const memberId = records[0].Id;
+
+      // 2. Update Salesforce: Saldo bijwerken en status op 'Active' zetten
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').update({
+          Id: memberId,
+          Wallet_Balance__c: parseFloat(finalBalance),
+          Wallet_Status__c: 'Active',
+          Last_Lease_ID__c: leaseId, 
+          Last_Sync_At__c: new Date().toISOString()
+        })
+      );
+
+      // 3. Log de succesvolle afhandeling
+      await this.sender.sendLog({
+        level: 'info',
+        action: 'wallet',
+        message: `Lease ${leaseId} succesvol beëindigd voor ${masterUuid}. Nieuw saldo: ${finalBalance} (${txCount} transacties).`
+      });
+
+      console.log(`[lease-return] Wallet succesvol vrijgegeven in CRM voor ${masterUuid}.`);
+
+    } catch (err) {
+      console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
+      await this.sender.sendLog({
+        level: 'error',
+        action: 'wallet',
+        message: `CRITIEK: Kon lease-return voor ${leaseId || 'ONBEKEND'} niet verwerken! Error: ${err.message}`
+      });
+      throw err;
     }
 
     const records = await this.sf.apiCall((conn) =>
@@ -1166,7 +1254,6 @@ async handleWalletLeaseReturn(header, body) {
     });
     throw err;
   }
-}
 
   async handleWalletTopupRequest(header, body) {
     try {
