@@ -116,7 +116,6 @@ class CRMSender {
     if (data.customer.company_id)   customer.ele('company_id').txt(data.customer.company_id);
     if (data.customer.badge_id)     customer.ele('badge_id').txt(data.customer.badge_id);
 
-    customer.ele('session_id').txt(data.session_id || data.customer.session_id || '');
     if (data.customer.session_title) customer.ele('session_title').txt(data.customer.session_title);
 
     const pd = data.payment_due || data.customer.payment_due;
@@ -677,7 +676,6 @@ async sendWalletLeaseGrant(data) {
       if (data.customer.vat_number)   customer.ele('vat_number').txt(data.customer.vat_number);
       if (data.customer.company_id)   customer.ele('company_id').txt(data.customer.company_id);
       if (data.customer.badge_id)     customer.ele('badge_id').txt(data.customer.badge_id);
-      customer.ele('session_id').txt(data.session_id || '');
       const paymentDue = customer.ele('payment_due');
       paymentDue.ele('amount').att('currency', 'eur').txt(String(data.payment_due.amount || '0.00'));
       paymentDue.ele('status').txt(data.payment_due.status || 'unpaid');
