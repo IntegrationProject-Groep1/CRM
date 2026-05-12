@@ -58,6 +58,7 @@ const MESSAGE_TYPES = {
   CANCEL_REGISTRATION: 'cancel_registration',
   WALLET_LEASE_REQUEST: 'wallet_lease_request',
   WALLET_LEASE_RETURN: 'wallet_lease_return',
+  WALLET_TOPUP_REQUEST: 'wallet_topup_request',
 };
 
 const LAZY_MASTER_UUID_TYPES = new Set([
@@ -144,7 +145,6 @@ class ReceiverV2 {
         this.connection = await amqp.connect(getAmqpOptions());
         this.channel = await this.connection.createChannel();
 
-        // --- DLX Setup ---
         await this.channel.assertExchange(DEAD_LETTER_EXCHANGE, 'fanout', { durable: true });
         await this.channel.assertQueue(DEAD_LETTER_QUEUE, { durable: true });
         await this.channel.bindQueue(DEAD_LETTER_QUEUE, DEAD_LETTER_EXCHANGE, '');
@@ -316,7 +316,7 @@ class ReceiverV2 {
       } catch (err) {
         console.log(`[receiver] XML parse error: ${err}`);
         await this.log('error', 'xml_validation', `Received invalid XML from RabbitMQ. Parse error: ${err.message}`);
-        this.channel.nack(msg, false, false); // Automatic move to DLX
+        this.channel.nack(msg, false, false);
         return;
       }
 
@@ -324,7 +324,7 @@ class ReceiverV2 {
       if (!basicValid) {
         console.log(`[basic-val] error: ${basicError}`);
         await this.log('error', 'xml_validation', `Received message with invalid structure. Error: ${basicError}`);
-        this.channel.nack(msg, false, false); // Automatic move to DLX
+        this.channel.nack(msg, false, false);
         return;
       }
 
@@ -334,7 +334,6 @@ class ReceiverV2 {
       const messageType = header.type;
       const source = header.source;
 
-      // --- XSD Validation ---
       const xsdMapping = {
         [MESSAGE_TYPES.USER_CREATED]: 'user_created.xsd',
         'user_created': 'user_created.xsd',
@@ -361,6 +360,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_RETURN]: 'wallet_lease_return.xsd',
+        [MESSAGE_TYPES.WALLET_TOPUP_REQUEST]: 'wallet_topup_request.xsd',
       };
 
       const xsdFile = xsdMapping[messageType];
@@ -370,7 +370,7 @@ class ReceiverV2 {
           const reason = `XSD_VALIDATION_ERROR: ${errors.join('; ')}`;
           console.log(`[receiver] ${reason} for ${messageType}`);
           await this.log('error', 'xml_validation', `Received ${messageType} from ${source}. Validation: Failure. Details: ${errors.join('; ')}`);
-          this.channel.nack(msg, false, false); // Automatic move to DLX
+          this.channel.nack(msg, false, false);
           return;
         }
         console.log(`[receiver] XSD validation passed for ${messageType}`);
@@ -388,7 +388,7 @@ class ReceiverV2 {
     } catch (err) {
       console.log(`[receiver] Unexpected error: ${err}`);
       await this.log('error', 'system_error', `Internal Error in Receiver: ${err.message}`);
-      this.channel.nack(msg, false, false); // Automatic move to DLX
+      this.channel.nack(msg, false, false);
     }
   }
 
@@ -429,6 +429,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.USER_CHECKIN]: () => this.handleUserCheckin(header, body),
       [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: () => this.handleWalletLeaseRequest(header, body),
       [MESSAGE_TYPES.WALLET_LEASE_RETURN]: () => this.handleWalletLeaseReturn(header, body),
+      [MESSAGE_TYPES.WALLET_TOPUP_REQUEST]: () => this.handleWalletTopupRequest(header, body),
     };
 
     const handler = handlers[msgType];
@@ -893,7 +894,6 @@ class ReceiverV2 {
         await this.sender.sendPaymentRegisteredToFacturatie(rawXml);
       }
 
-      // If this was a registration payment, notify Planning (section 21.1)
       if (paymentContext === 'registration' || paymentContext === 'session_registration') {
         const sessionId = ReceiverV2.getElementText(body, 'session_id') || (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
         if (sessionId && masterUuid) {
@@ -1071,111 +1071,183 @@ class ReceiverV2 {
   }
 
   async handleWalletLeaseRequest(header, body) {
-  try {
-    const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+    try {
+      const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+      const badgeId = ReceiverV2.getElementText(body, 'badge_id');
 
-    console.log(`[lease] Aanvraag ontvangen voor User: ${masterUuid}`);
+      console.log(`[lease] Aanvraag ontvangen voor User: ${masterUuid}`);
 
-    if (!this.sf.isConnected) {
-      throw new Error("Salesforce niet verbonden. Kan lease niet verstrekken.");
-    }
+      if (!this.sf.isConnected) {
+        throw new Error("Salesforce niet verbonden. Kan lease niet verstrekken.");
+      }
 
-    // 1. Haal huidige saldo en status op uit Salesforce
-    const records = await this.sf.apiCall((conn) =>
-      conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
-    );
+      // 1. Haal huidige saldo en status op uit Salesforce
+      const records = await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
+      );
 
-    if (!records || records.length === 0) {
-      throw new Error(`User met UUID ${masterUuid} niet gevonden in CRM.`);
-    }
+      if (!records || records.length === 0) {
+        throw new Error(`User met UUID ${masterUuid} niet gevonden in CRM.`);
+      }
 
-    const member = records[0];
+      const member = records[0];
+      
+      // Genereer een unieke Lease ID voor deze sessie (Verplicht voor XSD)
+      const generatedLeaseId = `LEASE-${new Date().getFullYear()}-${uuidv4().substring(0, 8)}`.toUpperCase();
 
-    // 2. "Bevries" de wallet in Salesforce
-    // We zetten de status op 'Leased' zodat het CRM weet dat de Kassa nu 'baas' is over het geld.
-    await this.sf.apiCall((conn) =>
-      conn.sobject('Member__c').update({
+      // 2. "Bevries" de wallet in Salesforce
+      const updateFields = {
         Id: member.Id,
         Wallet_Status__c: 'Leased',
+        Last_Lease_ID__c: generatedLeaseId,
         Last_Lease_At__c: new Date().toISOString()
-      })
-    );
+      };
 
-    // 3. Stuur het saldo terug naar de Kassa (Authority Transfer)
-    // Je hebt hiervoor een methode nodig in je sender.js (bijv. sendWalletLeaseApproved)
-    const leaseData = {
-      identity_uuid: masterUuid,
-      current_balance: member.Wallet_Balance__c || 0.00,
-      correlation_id: uuidv4()
-    };
+      // Badge ID toevoegen (fixt linter error)
+      if (badgeId) {
+        updateFields.Badge_ID__c = badgeId;
+      }
 
-    await this.sender.sendWalletLeaseGrant(leaseData);
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').update(updateFields)
+      );
 
-    console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Saldo: ${member.Wallet_Balance__c}`);
+      // 3. Stuur het saldo terug naar de Kassa (Authority Transfer)
+      const leaseData = {
+        identity_uuid: masterUuid,
+        current_balance: member.Wallet_Balance__c || 0.00,
+        lease_id: generatedLeaseId,
+        correlation_id: header.message_id 
+      };
 
-  } catch (err) {
-    console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
-    // Bij een error sturen we optioneel een 'denied' bericht naar de kassa
-    throw err; 
+      await this.sender.sendWalletLeaseGrant(leaseData);
+
+      console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Lease: ${generatedLeaseId}`);
+
+    } catch (err) {
+      console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
+      throw err; 
+    }
   }
-}
 
 async handleWalletLeaseReturn(header, body) {
-  let leaseId = null;
-  try {
-    const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
-    const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
-    leaseId = ReceiverV2.getElementText(body, 'lease_id');
-    const txCount = ReceiverV2.getElementText(body, 'transaction_count');
+    let leaseId = 'ONBEKEND'; 
+    try {
+      const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+      const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
+      leaseId = ReceiverV2.getElementText(body, 'lease_id'); 
+      const txCount = ReceiverV2.getElementText(body, 'transaction_count');
 
-    console.log(`[lease-return] Ontvangen voor User: ${masterUuid}. Lease: ${leaseId}. Transacties: ${txCount}`);
+      console.log(`[lease-return] Ontvangen voor User: ${masterUuid}. Lease: ${leaseId}. Transacties: ${txCount}`);
 
-    if (!this.sf.isConnected) {
-      throw new Error("Salesforce niet verbonden. Kan lease-return niet verwerken.");
+      if (!this.sf.isConnected) {
+        throw new Error("Salesforce niet verbonden. Kan lease-return niet verwerken.");
+      }
+
+      // 1. Zoek de gebruiker op in Salesforce
+      const records = await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
+      );
+
+      if (!records || records.length === 0) {
+        throw new Error(`User met UUID ${masterUuid} niet gevonden bij afsluiten lease.`);
+      }
+
+      const memberId = records[0].Id;
+
+      // 2. Update Salesforce: Saldo bijwerken en status op 'Active' zetten
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').update({
+          Id: memberId,
+          Wallet_Balance__c: parseFloat(finalBalance),
+          Wallet_Status__c: 'Active',
+          Last_Lease_ID__c: leaseId, 
+          Last_Sync_At__c: new Date().toISOString()
+        })
+      );
+
+      // 3. Log de succesvolle afhandeling
+      await this.sender.sendLog({
+        level: 'info',
+        action: 'wallet',
+        message: `Lease ${leaseId} succesvol beëindigd voor ${masterUuid}. Nieuw saldo: ${finalBalance} (${txCount} transacties).`
+      });
+
+      console.log(`[lease-return] Wallet succesvol vrijgegeven in CRM voor ${masterUuid}.`);
+
+    } catch (err) {
+      console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
+      
+      // Deze 'this' werkt nu omdat hij netjes binnen de catch van de class methode staat
+      await this.sender.sendLog({
+        level: 'error',
+        action: 'wallet',
+        message: `CRITIEK: Kon lease-return voor ${leaseId} niet verwerken! Error: ${err.message}`
+      });
+      throw err;
     }
-
-    // 1. Zoek de gebruiker op in Salesforce
-    const records = await this.sf.apiCall((conn) =>
-      conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
-    );
-
-    if (!records || records.length === 0) {
-      throw new Error(`User met UUID ${masterUuid} niet gevonden bij afsluiten lease.`);
-    }
-
-    const memberId = records[0].Id;
-
-    // 2. Update Salesforce: Saldo bijwerken en status op 'Active' zetten
-    await this.sf.apiCall((conn) =>
-      conn.sobject('Member__c').update({
-        Id: memberId,
-        Wallet_Balance__c: parseFloat(finalBalance),
-        Wallet_Status__c: 'Active', // De wallet is nu weer beschikbaar voor online transacties
-        Last_Lease_ID__c: leaseId,   // Optioneel: log welke lease als laatste is afgerond
-        Last_Sync_At__c: new Date().toISOString()
-      })
-    );
-
-    // 3. Log de succesvolle afhandeling
-    await this.sender.sendLog({
-      level: 'info',
-      action: 'wallet',
-      message: `Lease ${leaseId} succesvol beëindigd voor ${masterUuid}. Nieuw saldo: ${finalBalance} (${txCount} transacties verwerkt).`
-    });
-
-    console.log(`[lease-return] Wallet succesvol vrijgegeven in CRM voor ${masterUuid}.`);
-
-  } catch (err) {
-    console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
-    // Bij een kritieke fout (bijv. saldo niet kunnen updaten), log dit als een error
-    await this.sender.sendLog({
-      level: 'error',
-      action: 'wallet',
-      message: `CRITIEK: Kon lease-return voor ${leaseId} niet verwerken! Error: ${err.message}`
-    });
-    throw err;
   }
-}
+
+  async handleWalletTopupRequest(header, body) {
+    try {
+      const identityUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+      const topupAmount = parseFloat(ReceiverV2.getElementText(body, 'topup_amount') || 0);
+      const transactionId = ReceiverV2.getElementText(body, 'transaction_id') || header.message_id;
+
+      if (!identityUuid || isNaN(topupAmount) || topupAmount <= 0) {
+        console.log('[receiver] Invalid wallet_topup_request: missing identity_uuid or invalid amount');
+        return;
+      }
+
+      console.log(`[wallet-topup] Received topup request for ${identityUuid}: +€${topupAmount}`);
+
+      if (!this.sf.isConnected) {
+        throw new Error('Salesforce not connected. Cannot process wallet topup.');
+      }
+
+      const records = await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').find({ Master_UUID__c: identityUuid }, ['Id', 'Wallet_Balance__c']).limit(1)
+      );
+
+      if (!records || records.length === 0) {
+        throw new Error(`User with UUID ${identityUuid} not found in CRM.`);
+      }
+
+      const member = records[0];
+      const currentBalance = parseFloat(member.Wallet_Balance__c || 0);
+      const newBalance = Math.round((currentBalance + topupAmount) * 100) / 100;
+
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').update({
+          Id: member.Id,
+          Wallet_Balance__c: newBalance,
+        })
+      );
+
+      await this.sender.sendLog({
+        level: 'info',
+        action: 'wallet',
+        message: `Wallet topup processed for ${identityUuid}: +€${topupAmount}. New balance: €${newBalance}. Transaction: ${transactionId}.`,
+      });
+
+      await this.sender.sendWalletRemoteTopup({
+        identity_uuid: identityUuid,
+        add_amount: topupAmount,
+        reason: `online_topup:${transactionId}`,
+        correlation_id: header.message_id,
+      });
+
+      console.log(`[wallet-topup] Wallet updated for ${identityUuid}. New balance: €${newBalance}`);
+    } catch (err) {
+      console.error(`[receiver] Error in handleWalletTopupRequest: ${err.message}`);
+      await this.sender.sendLog({
+        level: 'error',
+        action: 'wallet',
+        message: `Failed to process wallet_topup_request: ${err.message}`,
+      });
+      throw err;
+    }
+  }
 
   async handleRefundProcessed(header, body) {
     try {
@@ -1414,7 +1486,6 @@ async handleWalletLeaseReturn(header, body) {
     try {
       const xmlContent = msg.content.toString();
       
-      // --- XSD Validation ---
       const { valid, errors } = validateXml(xmlContent, 'identity_user_created.xsd');
       if (!valid) {
         console.error(`[receiver] Identity event XSD Validation error: ${errors.join(', ')}`);
