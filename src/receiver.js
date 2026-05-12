@@ -28,6 +28,8 @@ const PLANNING_SESSION_ROUTING_KEYS = [
   'planning.session.updated',
   'planning.session.deleted',
 ];
+const PLANNING_SESSION_VIEW_RESPONSE_QUEUE = 'crm.planning.session.view.response';
+const PLANNING_SESSION_VIEW_RESPONSE_ROUTING_KEY = 'planning.to.crm.session.view.response';
 
 const MESSAGE_TYPES = {
   USER_CREATED: 'user.created',
@@ -59,6 +61,7 @@ const MESSAGE_TYPES = {
   WALLET_LEASE_REQUEST: 'wallet_lease_request',
   WALLET_LEASE_RETURN: 'wallet_lease_return',
   WALLET_TOPUP_REQUEST: 'wallet_topup_request',
+  SESSION_VIEW_RESPONSE: 'session_view_response',
 };
 
 const LAZY_MASTER_UUID_TYPES = new Set([
@@ -170,6 +173,12 @@ class ReceiverV2 {
           await this.channel.bindQueue(PLANNING_SESSION_QUEUE, PLANNING_EXCHANGE, routingKey);
         }
 
+        await this.channel.assertQueue(PLANNING_SESSION_VIEW_RESPONSE_QUEUE, {
+          durable: true,
+          arguments: { 'x-dead-letter-exchange': DEAD_LETTER_EXCHANGE },
+        });
+        await this.channel.bindQueue(PLANNING_SESSION_VIEW_RESPONSE_QUEUE, PLANNING_EXCHANGE, PLANNING_SESSION_VIEW_RESPONSE_ROUTING_KEY);
+
         await this.channel.prefetch(1);
 
         const consume = async (msg) => {
@@ -188,6 +197,7 @@ class ReceiverV2 {
         this.channel.consume(USER_CREATED_QUEUE, consume, { noAck: false });
         this.channel.consume(USER_REGISTERED_QUEUE, consume, { noAck: false });
         this.channel.consume(PLANNING_SESSION_QUEUE, consume, { noAck: false });
+        this.channel.consume(PLANNING_SESSION_VIEW_RESPONSE_QUEUE, consume, { noAck: false });
         this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => this.handleIdentityUserEvent(msg), { noAck: false });
 
         console.log(`[receiver] Connected to RabbitMQ with Auto-DLX, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${FACTURATIE_TO_CRM_QUEUE}, ${PLANNING_SESSION_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
@@ -361,6 +371,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_RETURN]: 'wallet_lease_return.xsd',
         [MESSAGE_TYPES.WALLET_TOPUP_REQUEST]: 'wallet_topup_request.xsd',
+        [MESSAGE_TYPES.SESSION_VIEW_RESPONSE]: 'session_view_response.xsd',
       };
 
       const xsdFile = xsdMapping[messageType];
@@ -430,6 +441,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: () => this.handleWalletLeaseRequest(header, body),
       [MESSAGE_TYPES.WALLET_LEASE_RETURN]: () => this.handleWalletLeaseReturn(header, body),
       [MESSAGE_TYPES.WALLET_TOPUP_REQUEST]: () => this.handleWalletTopupRequest(header, body),
+      [MESSAGE_TYPES.SESSION_VIEW_RESPONSE]: () => this.handleSessionViewResponse(header, body),
     };
 
     const handler = handlers[msgType];
@@ -959,6 +971,32 @@ class ReceiverV2 {
       }
     } catch (err) {
       console.log(`[receiver] Error in handlePlanningSessionEvent: ${err}`);
+      throw err;
+    }
+  }
+
+  async handleSessionViewResponse(header, body) {
+    try {
+      const sessionsEl = body && body.sessions ? body.sessions : null;
+      if (!sessionsEl) {
+        console.log('[receiver] session_view_response: no sessions element in body');
+        return;
+      }
+
+      const raw = sessionsEl.session;
+      const sessionList = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      console.log(`[receiver] session_view_response: received ${sessionList.length} session(s) (correlation: ${header.correlation_id || 'none'})`);
+
+      if (this.sf.isConnected) {
+        for (const session of sessionList) {
+          const sessionId = ReceiverV2.getElementText(session, 'session_id');
+          if (!sessionId) continue;
+          console.log(`[receiver] session_view_response: processed session ${sessionId}`);
+          // Extend here: upsert session data to a Salesforce custom object if required
+        }
+      }
+    } catch (err) {
+      console.log(`[receiver] Error in handleSessionViewResponse: ${err}`);
       throw err;
     }
   }
