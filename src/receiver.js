@@ -295,7 +295,7 @@ class ReceiverV2 {
           this.channel.sendToQueue('identity.user.create.request', Buffer.from(requestXml), {
             correlationId: correlationId,
             replyTo: replyQueueName,
-            contentType: 'application/xml'
+            contentType: 'application/xml',
           });
         })
         .catch((err) => {
@@ -505,7 +505,7 @@ class ReceiverV2 {
       await this.sender.sendUserUnregisteredFanout({
         identity_uuid: masterUuid,
         email: email || '',
-        reason: reason || ''
+        reason: reason || '',
       });
 
       console.log(`[receiver] Forwarded user.unregistered for identity_uuid=${masterUuid}`);
@@ -532,7 +532,7 @@ class ReceiverV2 {
       const firstName = getCustomerText('first_name');
       const lastName = getCustomerText('last_name');
       const addressText = typeof address === 'string' ? address : null;
-      
+
       const isCompanyLinked = getCustomerText('is_company_linked') === 'true';
       const rawType = getCustomerText('type');
       const userType = (isCompanyLinked || rawType === 'company') ? 'Bedrijf' : 'Particulier';
@@ -552,7 +552,6 @@ class ReceiverV2 {
 
       const userData = {
         Master_UUID__c: masterUuid,
-        
         First_Name__c: firstName,
         Last_Name__c: lastName,
         Email__c: email,
@@ -566,28 +565,11 @@ class ReceiverV2 {
         Badge_ID__c: getCustomerText('badge_id') || null,
       };
 
-      let companyId = null;
+      // Company data op Member zelf — geen Account object
       if (isCompanyLinked || rawType === 'company') {
-        const companyName = getCustomerText('company_name') || ReceiverV2.getElementText(companyData, 'name');
-        const companyVat = getCustomerText('vat_number') || ReceiverV2.getElementText(companyData, 'vat_number');
-        const companyEmail = ReceiverV2.getElementText(companyData, 'email');
-
-        if (companyName && companyVat && this.sf.isConnected) {
-          const result = await this.sf.apiCall((conn) =>
-            conn.sobject('Account').upsert({
-              Master_UUID__c: masterUuid,
-              Company_Name__c: companyName,
-              VAT_Number__c: companyVat,
-              Email__c: companyEmail || null,
-              Billing_Street__c: addressText || (address ? ReceiverV2.getElementText(address, 'street') : null),
-              Billing_City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
-            }, 'VAT_Number__c')
-          );
-          companyId = result.id || null;
-        }
+        userData.Company_Name__c = getCustomerText('company_name') || ReceiverV2.getElementText(companyData, 'name');
+        userData.VAT_Number__c = getCustomerText('vat_number') || ReceiverV2.getElementText(companyData, 'vat_number');
       }
-
-      if (companyId) userData.Account__c = companyId;
 
       if (this.sf.isConnected) {
         console.log(`[receiver] Salesforce Member__c upsert fields: ${Object.keys(userData).join(', ')}`);
@@ -629,7 +611,7 @@ class ReceiverV2 {
         payment_due: {
           amount: registrationAmount ? parseFloat(registrationAmount) : 0,
           status: paymentStatus === 'paid' ? 'paid' : 'unpaid',
-        }
+        },
       };
       await this.sender.sendNewRegistrationToFacturatie(fossPayload);
 
@@ -641,23 +623,27 @@ class ReceiverV2 {
 
   async handleUserCreated(header, body) {
     try {
-      const userData = body?.customer || body?.user;
-      if (!userData) throw new Error('Body missing user element');
+      const customer = body?.customer || body?.user;
+      if (!customer) throw new Error('Body missing user element');
 
-      const identityUuid = ReceiverV2.getElementText(userData, 'identity_uuid') ||
-        ReceiverV2.getElementText(userData, 'master_uuid');
-      const email = (ReceiverV2.getElementText(userData, 'email') || '').toLowerCase().trim();
-      const firstName = ReceiverV2.getElementText(userData, 'first_name');
-      const lastName = ReceiverV2.getElementText(userData, 'last_name');
-      const dateOfBirth = ReceiverV2.getElementText(userData, 'date_of_birth');
-      const isCompanyFlag = ReceiverV2.getElementText(userData, 'is_company') === 'true';
-      const rawType = ReceiverV2.getElementText(userData, 'type') || (isCompanyFlag ? 'company' : 'private');
+      const identityUuid = ReceiverV2.getElementText(customer, 'identity_uuid') ||
+        ReceiverV2.getElementText(customer, 'master_uuid');
+      const email = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
+      const firstName = ReceiverV2.getElementText(customer, 'first_name');
+      const lastName = ReceiverV2.getElementText(customer, 'last_name');
+      const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
+      const isCompanyFlag = ReceiverV2.getElementText(customer, 'is_company') === 'true';
+      const rawType = ReceiverV2.getElementText(customer, 'type') || (isCompanyFlag ? 'company' : 'private');
       const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
+      const sourceSystem = header?.source || 'frontend.drupal';
+
+      // masterUuid is altijd gevuld — ofwel uit XML, ofwel via identity service
+      const masterUuid = identityUuid || await this.getOrCreateMasterUuid(email, sourceSystem);
 
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert({
-            Master_UUID__c: identityUuid,
+            Master_UUID__c: masterUuid,
             First_Name__c: firstName,
             Last_Name__c: lastName,
             Email__c: email,
@@ -668,18 +654,18 @@ class ReceiverV2 {
       }
 
       await this.sender.sendProfileUpdateToKassa({
-        identity_uuid: identityUuid,
+        identity_uuid: masterUuid,
         email,
         first_name: firstName,
         last_name: lastName,
         date_of_birth: dateOfBirth,
         type: rawType,
-        company_name: ReceiverV2.getElementText(userData, 'company_name'),
-        vat_number: ReceiverV2.getElementText(userData, 'vat_number'),
-        company_id: ReceiverV2.getElementText(userData, 'company_id'),
+        company_name: ReceiverV2.getElementText(customer, 'company_name'),
+        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        company_id: ReceiverV2.getElementText(customer, 'company_id'),
       });
 
-      console.log(`[receiver] User created in Salesforce and forwarded to Kassa: ${identityUuid}`);
+      console.log(`[receiver] User created in Salesforce and forwarded to Kassa: ${masterUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleUserCreated: ${err.message}`);
       throw err;
@@ -710,16 +696,16 @@ class ReceiverV2 {
             Master_UUID__c: masterUuid,
             First_Name__c: ReceiverV2.getElementText(customerData, 'first_name'),
             Last_Name__c: ReceiverV2.getElementText(customerData, 'last_name'),
-            Email__c: email
+            Email__c: email,
           }, 'Master_UUID__c')
         );
 
+        // Task zonder WhoId — master_uuid in Description voor traceerbaarheid
         await this.sf.apiCall((conn) =>
           conn.sobject('Task').create({
             Subject: `Sessie Inschrijving: ${sessionName || sessionId}`,
-            Description: `ID: ${sessionId} | Status: ${paymentStatus}`,
+            Description: `ID: ${sessionId} | Status: ${paymentStatus} | Master UUID: ${masterUuid}`,
             Status: 'Completed',
-            Master_UUID__c: identityUuid,
             ActivityDate: new Date().toISOString().split('T')[0],
           })
         );
@@ -727,11 +713,11 @@ class ReceiverV2 {
 
       await this.sender.sendSessionRegistrationConfirmed({
         session_id: sessionId,
-        identity_uuid: identityUuid,
+        identity_uuid: masterUuid,
         correlation_id: header.message_id,
       });
 
-      console.log(`[receiver] User registered for session ${sessionId}, confirmed to Planning: ${identityUuid}`);
+      console.log(`[receiver] User registered for session ${sessionId}, confirmed to Planning: ${masterUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleUserRegistered: ${err.message}`);
       throw err;
@@ -753,7 +739,7 @@ class ReceiverV2 {
         VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
         VAT_Rate__c: parseFloat(ReceiverV2.getElementText(company, 'vat_rate') || 0),
         User_Type__c: 'Bedrijf',
-        Company_ID__c: header.message_id
+        Company_ID__c: header.message_id,
       };
 
       if (this.sf.isConnected) {
@@ -771,36 +757,36 @@ class ReceiverV2 {
       const companyUuid = header.master_uuid;
       if (!company || !companyUuid) return;
 
-      let accountId = null;
       if (this.sf.isConnected) {
-        const result = await this.sf.apiCall((conn) =>
-          conn.sobject('Account').upsert({
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').upsert({
             Master_UUID__c: companyUuid,
             Company_Name__c: ReceiverV2.getElementText(company, 'name'),
             VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
             Email__c: ReceiverV2.getElementText(company, 'email'),
-            User_Type__c: 'Bedrijf'
+            User_Type__c: 'Bedrijf',
           }, 'Master_UUID__c')
         );
-        accountId = result.id;
-      }
 
-      const membersNode = company.members?.member;
-      if (membersNode && accountId) {
-        const memberList = Array.isArray(membersNode) ? membersNode : [membersNode];
-        for (const memberData of memberList) {
-          const userUuid = ReceiverV2.getElementText(memberData, 'master_uuid');
-          const action = memberData.action;
-          if (!userUuid) continue;
+        // Bij action=remove: company velden leegmaken op het member record
+        const membersNode = company.members?.member;
+        if (membersNode) {
+          const memberList = Array.isArray(membersNode) ? membersNode : [membersNode];
+          for (const memberData of memberList) {
+            const userUuid = ReceiverV2.getElementText(memberData, 'master_uuid');
+            const action = memberData.action;
+            if (!userUuid) continue;
 
-          const memberSfId = await this._findUserByMasterUuid(userUuid);
-          if (memberSfId) {
-            await this.sf.apiCall((conn) =>
-              conn.sobject('Member__c').update({
-                Id: memberSfId,
-                Account__c: action === 'add' ? accountId : null
-              })
-            );
+            const memberSfId = await this._findUserByMasterUuid(userUuid);
+            if (memberSfId && action === 'remove') {
+              await this.sf.apiCall((conn) =>
+                conn.sobject('Member__c').update({
+                  Id: memberSfId,
+                  Company_Name__c: null,
+                  VAT_Number__c: null,
+                })
+              );
+            }
           }
         }
       }
@@ -816,13 +802,13 @@ class ReceiverV2 {
       if (!companyUuid) return;
 
       if (this.sf.isConnected) {
-        const records = await this.sf.apiCall((conn) =>
-          conn.sobject('Account').find({ Master_UUID__c: companyUuid }, ['Id']).limit(1)
-        );
-        const accountId = records && records.length > 0 ? records[0].Id : null;
-        if (accountId) {
+        const memberId = await this._findUserByMasterUuid(companyUuid);
+        if (memberId) {
           await this.sf.apiCall((conn) =>
-            conn.sobject('Account').update({ Id: accountId, Status__c: 'Inactive' })
+            conn.sobject('Member__c').update({
+              Id: memberId,
+              Status__c: 'Inactive',
+            })
           );
         }
       }
@@ -854,7 +840,7 @@ class ReceiverV2 {
           Id: memberId,
           Last_Invoice_URL__c: invoiceUrl,
           Last_Invoice_Due_Date__c: dueDate,
-          Last_Invoice_Number__c: invoiceNumber
+          Last_Invoice_Number__c: invoiceNumber,
         })
       );
     } catch (err) {
@@ -873,7 +859,7 @@ class ReceiverV2 {
           await this.sf.apiCall((conn) =>
             conn.sobject('Member__c').update({
               Id: memberId,
-              Status__c: 'Cancelled'
+              Payment_Status__c: 'Cancelled',
             })
           );
         }
@@ -924,15 +910,12 @@ class ReceiverV2 {
           await this.sender.sendSessionRegistrationConfirmed({
             session_id: sessionId,
             identity_uuid: masterUuid,
-            correlation_id: header.message_id
+            correlation_id: header.message_id,
           });
         }
       }
 
       if (this.sf.isConnected) {
-        let contactId = await this._findUserByMasterUuid(masterUuid);
-        if (!contactId && email) contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
     } catch (err) {
@@ -959,9 +942,6 @@ class ReceiverV2 {
       };
 
       if (this.sf.isConnected) {
-        let contactId = await this._findUserByMasterUuid(masterUuid);
-        if (!contactId && email) contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
     } catch (err) {
@@ -1004,9 +984,6 @@ class ReceiverV2 {
       };
 
       if (this.sf.isConnected) {
-        let contactId = await this._findUserByMasterUuid(masterUuid);
-        if (!contactId && email) contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
     } catch (err) {
@@ -1105,7 +1082,6 @@ class ReceiverV2 {
         throw new Error("Salesforce niet verbonden. Kan lease niet verstrekken.");
       }
 
-      // 1. Haal huidige saldo en status op uit Salesforce
       const records = await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
       );
@@ -1115,19 +1091,17 @@ class ReceiverV2 {
       }
 
       const member = records[0];
-      
-      // Genereer een unieke Lease ID voor deze sessie (Verplicht voor XSD)
+
+      // Genereer een unieke Lease ID voor deze sessie
       const generatedLeaseId = `LEASE-${new Date().getFullYear()}-${uuidv4().substring(0, 8)}`.toUpperCase();
 
-      // 2. "Bevries" de wallet in Salesforce
       const updateFields = {
         Id: member.Id,
         Wallet_Status__c: 'Leased',
         Last_Lease_ID__c: generatedLeaseId,
-        Last_Lease_At__c: new Date().toISOString()
+        Last_Lease_At__c: new Date().toISOString(),
       };
 
-      // Badge ID toevoegen (fixt linter error)
       if (badgeId) {
         updateFields.Badge_ID__c = badgeId;
       }
@@ -1136,30 +1110,28 @@ class ReceiverV2 {
         conn.sobject('Member__c').update(updateFields)
       );
 
-      // 3. Stuur het saldo terug naar de Kassa (Authority Transfer)
       const leaseData = {
         identity_uuid: masterUuid,
         current_balance: member.Wallet_Balance__c || 0.00,
         lease_id: generatedLeaseId,
-        correlation_id: header.message_id 
+        correlation_id: header.message_id,
       };
 
       await this.sender.sendWalletLeaseGrant(leaseData);
 
       console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Lease: ${generatedLeaseId}`);
-
     } catch (err) {
       console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
-      throw err; 
+      throw err;
     }
   }
 
   async handleWalletLeaseReturn(header, body) {
-    let leaseId = 'ONBEKEND'; 
+    let leaseId = 'ONBEKEND';
     try {
       const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
       const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
-      leaseId = ReceiverV2.getElementText(body, 'lease_id'); 
+      leaseId = ReceiverV2.getElementText(body, 'lease_id');
       const txCount = ReceiverV2.getElementText(body, 'transaction_count');
 
       console.log(`[lease-return] Ontvangen voor User: ${masterUuid}. Lease: ${leaseId}. Transacties: ${txCount}`);
@@ -1168,7 +1140,6 @@ class ReceiverV2 {
         throw new Error("Salesforce niet verbonden. Kan lease-return niet verwerken.");
       }
 
-      // 1. Zoek de gebruiker op in Salesforce
       const records = await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
       );
@@ -1179,34 +1150,29 @@ class ReceiverV2 {
 
       const memberId = records[0].Id;
 
-      // 2. Update Salesforce: Saldo bijwerken en status op 'Active' zetten
       await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').update({
           Id: memberId,
           Wallet_Balance__c: parseFloat(finalBalance),
           Wallet_Status__c: 'Active',
-          Last_Lease_ID__c: leaseId, 
-          Last_Sync_At__c: new Date().toISOString()
+          Last_Lease_ID__c: leaseId,
+          Last_Sync_At__c: new Date().toISOString(),
         })
       );
 
-      // 3. Log de succesvolle afhandeling
       await this.sender.sendLog({
         level: 'info',
         action: 'wallet',
-        message: `Lease ${leaseId} succesvol beëindigd voor ${masterUuid}. Nieuw saldo: ${finalBalance} (${txCount} transacties).`
+        message: `Lease ${leaseId} succesvol beëindigd voor ${masterUuid}. Nieuw saldo: ${finalBalance} (${txCount} transacties).`,
       });
 
       console.log(`[lease-return] Wallet succesvol vrijgegeven in CRM voor ${masterUuid}.`);
-
     } catch (err) {
       console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
-      
-      // Deze 'this' werkt nu omdat hij netjes binnen de catch van de class methode staat
       await this.sender.sendLog({
         level: 'error',
         action: 'wallet',
-        message: `CRITIEK: Kon lease-return voor ${leaseId} niet verwerken! Error: ${err.message}`
+        message: `CRITIEK: Kon lease-return voor ${leaseId} niet verwerken! Error: ${err.message}`,
       });
       throw err;
     }
@@ -1287,9 +1253,6 @@ class ReceiverV2 {
       };
 
       if (this.sf.isConnected) {
-        let contactId = await this._findUserByMasterUuid(masterUuid);
-        if (!contactId && email) contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
     } catch (err) {
@@ -1316,9 +1279,6 @@ class ReceiverV2 {
       };
 
       if (this.sf.isConnected) {
-        let contactId = await this._findUserByMasterUuid(masterUuid);
-        if (!contactId && email) contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
 
@@ -1330,18 +1290,18 @@ class ReceiverV2 {
           first_name: contact ? ReceiverV2.getElementText(contact, 'first_name') : '',
           last_name: contact ? ReceiverV2.getElementText(contact, 'last_name') : '',
           company_name: invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null,
-          vat_number:   invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null,
+          vat_number: invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null,
         },
         invoice: {
           amount: invoiceAmount,
           id: invoiceData ? ReceiverV2.getElementText(invoiceData, 'id') : null,
         },
         address: invoiceData ? {
-          street:      ReceiverV2.getElementText(invoiceData.address, 'street') || '',
-          number:      ReceiverV2.getElementText(invoiceData.address, 'number') || '',
+          street: ReceiverV2.getElementText(invoiceData.address, 'street') || '',
+          number: ReceiverV2.getElementText(invoiceData.address, 'number') || '',
           postal_code: ReceiverV2.getElementText(invoiceData.address, 'postal_code') || '',
-          city:        ReceiverV2.getElementText(invoiceData.address, 'city') || '',
-          country:     ReceiverV2.getElementText(invoiceData.address, 'country') || '',
+          city: ReceiverV2.getElementText(invoiceData.address, 'city') || '',
+          country: ReceiverV2.getElementText(invoiceData.address, 'country') || '',
         } : { street: '', number: '', postal_code: '', city: '', country: '' },
       });
     } catch (err) {
@@ -1366,6 +1326,7 @@ class ReceiverV2 {
 
       if (!identityUuid) throw new Error('Missing identity_uuid in user_updated message');
 
+      // identityUuid is hier veilig want we hebben de guard hierboven
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert({
@@ -1408,14 +1369,16 @@ class ReceiverV2 {
         throw new Error(`Salesforce niet verbonden. Check-in voor ${masterUuid} mislukt.`);
       }
 
+      // Task zonder WhoId — master_uuid in Description voor traceerbaarheid
+      const taskData = {
+        Subject: `Check-in: ${sessionId}`,
+        Description: `Sessie scan op ${checkinAt} | Master UUID: ${masterUuid}`,
+        Status: 'Completed',
+        ActivityDate: new Date().toISOString().split('T')[0],
+      };
+
       const result = await this.sf.apiCall((conn) =>
-        conn.sobject('Task').create({
-          Subject: `Check-in: ${sessionId}`,
-          Description: `Sessie scan op ${checkinAt}`,
-          Status: 'Completed',
-          Master_UUID__c: masterUuid,
-          ActivityDate: new Date().toISOString().split('T')[0]
-        })
+        conn.sobject('Task').create(taskData)
       );
 
       if (result && !result.success) {
@@ -1431,10 +1394,9 @@ class ReceiverV2 {
   async handleDeleteUser(header, body) {
     let masterUuid;
     try {
-      // 1. UUID Extractie (nu inclusief identity_uuid voor XSD alignment)
-      masterUuid = ReceiverV2.getElementText(body, 'identity_uuid') || 
-                   ReceiverV2.getElementText(body, 'master_uuid') || 
-                   ReceiverV2.getElementText(body, 'user_id') || 
+      masterUuid = ReceiverV2.getElementText(body, 'identity_uuid') ||
+                   ReceiverV2.getElementText(body, 'master_uuid') ||
+                   ReceiverV2.getElementText(body, 'user_id') ||
                    header?.master_uuid;
 
       if (!masterUuid) {
@@ -1446,29 +1408,24 @@ class ReceiverV2 {
         throw new Error("Salesforce niet verbonden.");
       }
 
-      // 2. Zoek de record ID op basis van de Master_UUID__c
       const memberId = await this._findUserByMasterUuid(masterUuid);
-      
+
       if (!memberId) {
         console.log(`[receiver] Delete overgeslagen: User ${masterUuid} bestaat niet in Salesforce.`);
         return;
       }
 
-      // 3. De actie: HARD DELETE
-      // Aangezien velden als Is_Deleted__c niet bestaan, verwijderen we het record echt.
       await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').destroy(memberId)
       );
 
       console.log(`[receiver] User ${masterUuid} (ID: ${memberId}) succesvol verwijderd uit Salesforce.`);
 
-      // 4. Bevestiging naar de sender
       await this.sender.sendLog({
         level: 'info',
         action: 'delete_user',
-        message: `User ${masterUuid} definitief verwijderd uit CRM.`
+        message: `User ${masterUuid} definitief verwijderd uit CRM.`,
       });
-
     } catch (err) {
       console.error(`[receiver] Fout bij handleDeleteUser voor ${masterUuid || 'onbekend'}: ${err.message}`);
       throw err;
@@ -1509,7 +1466,7 @@ class ReceiverV2 {
   async handleIdentityUserEvent(msg) {
     try {
       const xmlContent = msg.content.toString();
-      
+
       const { valid, errors } = validateXml(xmlContent, 'identity_user_created.xsd');
       if (!valid) {
         console.error(`[receiver] Identity event XSD Validation error: ${errors.join(', ')}`);
