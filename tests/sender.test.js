@@ -2,6 +2,7 @@
 
 process.env.RABBITMQ_USER = process.env.RABBITMQ_USER || 'test';
 process.env.RABBITMQ_PASS = process.env.RABBITMQ_PASS || 'test';
+process.env.RABBITMQ_PROTOCOL = process.env.RABBITMQ_PROTOCOL || 'amqps';
 
 /**
  * Tests for CRM sender XML building + async send methods (mocked RabbitMQ).
@@ -63,10 +64,10 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
       first_name: 'Jan',
       last_name: 'Peeters',
       user_id: 'u-42',
+      session_title: 'Keynote',
     },
     payment_due: { amount: '25.00', status: 'pending' },
     correlation_id: 'corr-abc',
-    session_id: 'sess-xyz',
   });
 
   test('header bevat correcte type en source', () => {
@@ -76,12 +77,12 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
     expect(String(root.header.version)).toBe('2.0');
   });
 
-  test('correlation_id wordt meegestuurd (v2.3) en session_id staat in customer', () => {
+  test('correlation_id wordt meegestuurd (v2.3) en session_title staat in customer', () => {
     const data = baseData();
     data.correlation_id = 'c1234567-89ab-cdef-0123-456789abcdef';
     const root = parser.parse(sender.buildNewRegistrationForKassaXml(data)).message;
     expect(root.header.correlation_id).toBe(data.correlation_id);
-    expect(root.body.customer.session_id).toBe('sess-xyz');
+    expect(root.body.customer.session_title).toBe('Keynote');
   });
 
   test('klantgegevens staan correct in body', () => {
