@@ -648,10 +648,10 @@ class ReceiverV2 {
       const email = (ReceiverV2.getElementText(userData, 'email') || '').toLowerCase().trim();
       const firstName = ReceiverV2.getElementText(userData, 'first_name');
       const lastName = ReceiverV2.getElementText(userData, 'last_name');
-      const isCompany = ReceiverV2.getElementText(userData, 'is_company') === 'true';
-      const sourceSystem = header?.source || 'frontend.drupal';
-
-      const masterUuid = identityUuid || await this.getOrCreateMasterUuid(email, sourceSystem);
+      const dateOfBirth = ReceiverV2.getElementText(userData, 'date_of_birth');
+      const rawType = ReceiverV2.getElementText(userData, 'type') ||
+        (ReceiverV2.getElementText(userData, 'is_company') === 'true' ? 'company' : 'private');
+      const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
 
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) =>
@@ -673,9 +673,9 @@ class ReceiverV2 {
         last_name: lastName,
         date_of_birth: dateOfBirth,
         type: rawType,
-        company_name: ReceiverV2.getElementText(customer, 'company_name'),
-        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
-        company_id: ReceiverV2.getElementText(customer, 'company_id'),
+        company_name: ReceiverV2.getElementText(userData, 'company_name'),
+        vat_number: ReceiverV2.getElementText(userData, 'vat_number'),
+        company_id: ReceiverV2.getElementText(userData, 'company_id'),
       });
 
       console.log(`[receiver] User created in Salesforce and forwarded to Kassa: ${identityUuid}`);
@@ -715,7 +715,7 @@ class ReceiverV2 {
 
         await this.sf.apiCall((conn) =>
           conn.sobject('Task').create({
-            Subject: `Sessie Inschrijving: ${sessionTitle || sessionId}`,
+            Subject: `Sessie Inschrijving: ${sessionName || sessionId}`,
             Description: `ID: ${sessionId} | Status: ${paymentStatus}`,
             Status: 'Completed',
             Master_UUID__c: identityUuid,
@@ -1097,6 +1097,7 @@ class ReceiverV2 {
   async handleWalletLeaseRequest(header, body) {
   try {
     const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
+    const badgeId = ReceiverV2.getElementText(body, 'badge_id');
 
     console.log(`[lease] Aanvraag ontvangen voor User: ${masterUuid}`);
 
