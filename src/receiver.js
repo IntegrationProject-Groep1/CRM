@@ -649,8 +649,8 @@ class ReceiverV2 {
       const firstName = ReceiverV2.getElementText(userData, 'first_name');
       const lastName = ReceiverV2.getElementText(userData, 'last_name');
       const dateOfBirth = ReceiverV2.getElementText(userData, 'date_of_birth');
-      const rawType = ReceiverV2.getElementText(userData, 'type') ||
-        (ReceiverV2.getElementText(userData, 'is_company') === 'true' ? 'company' : 'private');
+      const isCompanyFlag = ReceiverV2.getElementText(userData, 'is_company') === 'true';
+      const rawType = ReceiverV2.getElementText(userData, 'type') || (isCompanyFlag ? 'company' : 'private');
       const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
 
       if (this.sf.isConnected) {
