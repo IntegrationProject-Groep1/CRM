@@ -956,6 +956,24 @@ class ReceiverV2 {
           session_id: sessionId,
           ended_at: ReceiverV2.getElementText(body, 'end_time') || header.timestamp,
         });
+        return;
+      }
+
+      if (this.sf.isConnected) {
+        const title = ReceiverV2.getElementText(body, 'title');
+        const speaker = ReceiverV2.extractSpeaker(body);
+        const taskData = {
+          Subject: `${header.type === MESSAGE_TYPES.SESSION_CREATED ? 'Session created' : 'Session updated'}: ${title || sessionId}`,
+          Description: ReceiverV2.buildSessionDescription(body, speaker),
+          Status: 'Completed',
+          ActivityDate: new Date().toISOString().split('T')[0],
+        };
+
+        if (speaker.identity_uuid) {
+          taskData.Master_UUID__c = speaker.identity_uuid;
+        }
+
+        await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
     } catch (err) {
       console.log(`[receiver] Error in handlePlanningSessionEvent: ${err}`);
@@ -1546,6 +1564,40 @@ async handleWalletLeaseReturn(header, body) {
       return (typeof first === 'object' && first['#text'] !== undefined) ? first['#text'] : String(first);
     }
     return String(value);
+  }
+
+  static extractSpeaker(body) {
+    const speaker = body?.speaker;
+    const contact = speaker?.contact;
+
+    return {
+      identity_uuid: ReceiverV2.getElementText(speaker, 'identity_uuid'),
+      first_name: ReceiverV2.getElementText(contact, 'first_name'),
+      last_name: ReceiverV2.getElementText(contact, 'last_name'),
+      organisation: ReceiverV2.getElementText(speaker, 'organisation'),
+      email: ReceiverV2.getElementText(speaker, 'email'),
+    };
+  }
+
+  static buildSessionDescription(body, speaker = ReceiverV2.extractSpeaker(body)) {
+    const speakerName = [speaker.first_name, speaker.last_name].filter(Boolean).join(' ');
+    return [
+      `Session ID: ${ReceiverV2.getElementText(body, 'session_id')}`,
+      `Title: ${ReceiverV2.getElementText(body, 'title')}`,
+      `Start: ${ReceiverV2.getElementText(body, 'start_datetime')}`,
+      `End: ${ReceiverV2.getElementText(body, 'end_datetime')}`,
+      `Location: ${ReceiverV2.getElementText(body, 'location')}`,
+      `Type: ${ReceiverV2.getElementText(body, 'session_type')}`,
+      `Status: ${ReceiverV2.getElementText(body, 'status')}`,
+      `Attendees: ${ReceiverV2.getElementText(body, 'current_attendees')}/${ReceiverV2.getElementText(body, 'max_attendees')}`,
+      ReceiverV2.getElementText(body, 'change_reason')
+        ? `Change reason: ${ReceiverV2.getElementText(body, 'change_reason')}`
+        : null,
+      speakerName ? `Speaker: ${speakerName}` : null,
+      speaker.identity_uuid ? `Speaker UUID: ${speaker.identity_uuid}` : null,
+      speaker.organisation ? `Speaker organisation: ${speaker.organisation}` : null,
+      speaker.email ? `Speaker email: ${speaker.email}` : null,
+    ].filter(Boolean).join('\n');
   }
 
   async shutdown() {

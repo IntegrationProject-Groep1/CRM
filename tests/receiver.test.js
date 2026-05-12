@@ -812,11 +812,15 @@ describe('handleBadgeScanned', () => {
 });
 
 describe('handlePlanningSessionEvent', () => {
-  test.each(['session_created', 'session_updated', 'session_deleted'])(
-    'acknowledges %s zonder Salesforce side effects',
+  test.each(['session_created', 'session_updated'])(
+    'maakt Salesforce Task aan voor %s met speaker details',
     async (type) => {
       const receiver = makeReceiver();
       receiver.sf.isConnected = true;
+      const createTask = jest.fn().mockResolvedValue({ id: 'task-session-1' });
+      receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+        sobject: () => ({ create: createTask }),
+      }));
       const xml = withoutMasterUuid(buildXml(type, `
         <session_id>sess-keynote-001</session_id>
         <title>Keynote: AI in Healthcare</title>
@@ -827,15 +831,55 @@ describe('handlePlanningSessionEvent', () => {
         <status>published</status>
         <max_attendees>120</max_attendees>
         <current_attendees>0</current_attendees>
+        ${type === 'session_updated' ? '<change_reason>Spreker heeft 30 minuten vertraging door file</change_reason>' : ''}
+        <speaker>
+          <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+          <contact>
+            <first_name>Sarah</first_name>
+            <last_name>Leclercq</last_name>
+          </contact>
+          <organisation>UZ Brussel</organisation>
+          <email>s.leclercq@uzbrussel.be</email>
+        </speaker>
       `, { correlation_id: 'session-master-uuid-001' }));
 
       await receiver.handleMessage(buildMsg(xml));
 
       expect(receiver.channel.ack).toHaveBeenCalled();
       expect(receiver.channel.nack).not.toHaveBeenCalled();
-      expect(receiver.sf.apiCall).not.toHaveBeenCalled();
+      expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+        Subject: expect.stringContaining('Keynote: AI in Healthcare'),
+        Master_UUID__c: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+      }));
+      expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+        Description: expect.stringContaining('Speaker: Sarah Leclercq'),
+      }));
+      expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+        Description: expect.stringContaining('Speaker organisation: UZ Brussel'),
+      }));
+      expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+        Description: expect.stringContaining('Speaker email: s.leclercq@uzbrussel.be'),
+      }));
     }
   );
+
+  test('session_deleted behoudt forwarding naar Facturatie zonder Salesforce side effects', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    const xml = withoutMasterUuid(buildXml('session_deleted', `
+      <session_id>sess-keynote-001</session_id>
+      <reason>Sessie geannuleerd</reason>
+    `, { correlation_id: 'session-master-uuid-001' }));
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.channel.ack).toHaveBeenCalled();
+    expect(receiver.channel.nack).not.toHaveBeenCalled();
+    expect(receiver.sender.sendEventEndedToFacturatie).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 'sess-keynote-001',
+    }));
+    expect(receiver.sf.apiCall).not.toHaveBeenCalled();
+  });
 
   test('negeert session event zonder session_id maar acked bericht', async () => {
     const receiver = makeReceiver();
