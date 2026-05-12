@@ -1154,7 +1154,7 @@ class ReceiverV2 {
     }
   }
 
-async handleWalletLeaseReturn(header, body) {
+  async handleWalletLeaseReturn(header, body) {
     let leaseId = 'ONBEKEND'; 
     try {
       const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
