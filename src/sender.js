@@ -24,9 +24,10 @@ class CRMSender {
       'session_registration_confirmed': 'session_registration_confirmed.xsd',
       'user.unregistered': 'user_unregistered.xsd',
       'event_ended': 'event_ended.xsd',
-      'payment_registered': 'payment_registered_facturatie.xsd', // Default to facturatie for passthrough
+      'payment_registered': 'payment_registered_facturatie.xsd',
       'consumption_order': 'consumption_order.xsd',
-      'wallet_lease_grant': 'wallet_lease_grant.xsd'
+      'wallet_lease_grant': 'wallet_lease_grant.xsd',
+      'wallet_remote_topup': 'wallet_remote_topup.xsd'
     };
     this.messageTypeToLogAction = {
       'new_registration': 'registration',
@@ -43,7 +44,8 @@ class CRMSender {
       'refund_processed': 'refund',
       'badge_scanned': 'badge',
       'badge_assigned': 'badge',
-      'wallet_lease_grant': 'wallet'
+      'wallet_lease_grant': 'wallet',
+      'wallet_remote_topup': 'wallet'
     };
   }
 
@@ -84,9 +86,6 @@ class CRMSender {
     }
   }
 
-  // ── new_registration (CRM → Kassa, section 10.1) ────────────────────────────
-  // Body: customer{identity_uuid, email, date_of_birth, contact, type, ..., session_id, payment_due}
-  // session_id and payment_due are inside customer; no correlation_id per contract
   buildNewRegistrationForKassaXml(data) {
     const messageId = uuidv4();
     const timestamp = new Date().toISOString();
@@ -151,8 +150,6 @@ class CRMSender {
     }
   }
 
-  // ── profile_update (CRM → Kassa, section 10.2) ──────────────────────────────
-  // Body: identity_uuid, email, date_of_birth?, contact, type?, company_name?, vat_number?, company_id?, payment_due?
   buildProfileUpdateXml(data) {
     const messageId = uuidv4();
     const timestamp = new Date().toISOString();
@@ -210,8 +207,6 @@ class CRMSender {
     }
   }
 
-  // ── cancel_registration (CRM → Kassa, section 10.3) ─────────────────────────
-  // Body: identity_uuid, session_id, reason?; no correlation_id per contract §10.3
   buildCancelRegistrationXml(data) {
     const messageId = uuidv4();
     const timestamp = new Date().toISOString();
@@ -276,9 +271,6 @@ class CRMSender {
     }
   }
 
-  // ── invoice_request (CRM → Facturatie, section 11.1) ────────────────────────
-  // Body: identity_uuid + invoice_data{first_name, last_name, email, address, company_name?, vat_number?}
-  // correlation_id is REQUIRED (links to consumption_order message_id)
   buildInvoiceRequestXml(data) {
     const messageId = uuidv4();
     const timestamp = new Date().toISOString();
@@ -351,13 +343,10 @@ class CRMSender {
     header.ele('source').txt('crm');
     header.ele('type').txt('wallet_lease_grant');
     header.ele('version').txt('2.0');
-    // De correlation_id is verplicht en moet de message_id van de aanvraag zijn
     header.ele('correlation_id').txt(data.correlation_id);
 
     const body = root.ele('body');
     body.ele('identity_uuid').txt(data.identity_uuid);
-    
-    // Maak de balance aan met het verplichte attribuut 'currency'
     body.ele('current_balance', { currency: 'eur' })
       .txt(Number(data.current_balance).toFixed(2));
       
@@ -371,34 +360,22 @@ async sendWalletLeaseGrant(data) {
   
   try {
     const xmlPayload = this.buildWalletLeaseGrantXml(data);
-    
-    // 1. Valideer tegen de XSD
     this._validate(xmlPayload, 'wallet_lease_grant');
-    
-    const queue = 'kassa.incoming'; // De kassa luistert hierop voor inkomende CRM berichten
-    
-    // 2. Zorg dat de queue bestaat
-    await this.channel.assertQueue(queue, { 
-      durable: true, 
-      arguments: { 
-        'x-dead-letter-exchange': 'kassa.dlx', 
-        'x-dead-letter-routing-key': 'kassa.incoming.dlq' 
-      } 
+    const queue = 'kassa.incoming';
+    await this.channel.assertQueue(queue, {
+      durable: true,
+      arguments: {
+        'x-dead-letter-exchange': 'kassa.dlx',
+        'x-dead-letter-routing-key': 'kassa.incoming.dlq',
+      },
     });
-
-    // 3. Verstuur het bericht
     const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
       contentType: 'application/xml',
-      deliveryMode: 2, // Persistent
+      deliveryMode: 2,
     });
-
     if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
-    
     console.log(`[sender] Wallet Lease Grant verstuurd voor ${data.identity_uuid}`);
-    
-    // 4. Log de uitgaande actie
     await this._logOutbound('wallet_lease_grant', queue, data.correlation_id);
-    
     return { success: true, payload: xmlPayload };
   } catch (error) {
     console.error(`[sender] Failed to send wallet lease grant: ${error.message}`);
@@ -406,7 +383,55 @@ async sendWalletLeaseGrant(data) {
   }
 }
 
-  // ── consumption_order passthrough (CRM → Facturatie) ────────────────────────
+  buildWalletRemoteTopupXml(data) {
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(uuidv4());
+    header.ele('timestamp').txt(new Date().toISOString());
+    header.ele('source').txt('crm');
+    header.ele('type').txt('wallet_remote_topup');
+    header.ele('version').txt('2.0');
+    header.ele('correlation_id').txt(data.correlation_id || uuidv4());
+
+    const body = root.ele('body');
+    body.ele('identity_uuid').txt(data.identity_uuid);
+    body.ele('add_amount', { currency: 'eur' }).txt(Number(data.add_amount || 0).toFixed(2));
+    body.ele('reason').txt(data.reason || 'online_topup');
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendWalletRemoteTopup(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildWalletRemoteTopupXml(data);
+      this._validate(xmlPayload, 'wallet_remote_topup');
+
+      const queue = 'kassa.incoming';
+      await this.channel.assertQueue(queue, {
+        durable: true,
+        arguments: {
+          'x-dead-letter-exchange': 'kassa.dlx',
+          'x-dead-letter-routing-key': 'kassa.incoming.dlq',
+        },
+      });
+
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`[sender] Wallet remote topup sent to Kassa for ${data.identity_uuid}: +€${data.add_amount}`);
+      await this._logOutbound('wallet_remote_topup', queue, data.correlation_id);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.error(`[sender] Failed to send wallet remote topup: ${error.message}`);
+      throw error;
+    }
+  }
+
   async sendConsumptionOrderToFacturatie(xml) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
@@ -427,8 +452,6 @@ async sendWalletLeaseGrant(data) {
     }
   }
 
-  // ── send_mailing (CRM → Mailing, section 12.1) ──────────────────────────────
-  // Body: campaign_id, subject, template_id, mail_type, recipients[]{email, identity_uuid, contact}
   buildMailingSendXml(data) {
     const messageId = uuidv4();
     const timestamp = new Date().toISOString();
@@ -551,7 +574,6 @@ async sendWalletLeaseGrant(data) {
     }
   }
 
-  // ── payment_registered (CRM → Frontend/Facturatie passthrough) ──────────────
   async sendPaymentRegisteredToFrontend(xml) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
@@ -626,7 +648,6 @@ async sendWalletLeaseGrant(data) {
     }
   }
 
-  // ── new_registration (CRM → Facturatie, section 10.1 passthrough/enrichment) ─
   async sendNewRegistrationToFacturatie(data) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
@@ -715,7 +736,6 @@ async sendWalletLeaseGrant(data) {
     }
   }
 
-  // ── user_unregistered (CRM → Fanout, section 5.2) ──────────────────────────
   buildUserUnregisteredXml(data) {
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
