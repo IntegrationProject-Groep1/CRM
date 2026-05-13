@@ -116,7 +116,6 @@ class CRMSender {
   if (data.customer.company_id)   customer.ele('company_id').txt(data.customer.company_id);
   if (data.customer.badge_id)     customer.ele('badge_id').txt(data.customer.badge_id);
 
-  customer.ele('session_id').txt(data.session_id || data.customer.session_id || '');
   if (data.customer.session_title) customer.ele('session_title').txt(data.customer.session_title);
 
   const pd = data.payment_due || data.customer.payment_due;
