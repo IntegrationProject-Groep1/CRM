@@ -870,59 +870,73 @@ class ReceiverV2 {
   }
 
   async handlePaymentRegistered(header, body, rawXml = null) {
-    try {
-      const invoice = body ? body.invoice : null;
-      const transaction = body ? body.transaction : null;
-      const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
-      const email = ReceiverV2.getElementText(body, 'email') || (body?.customer ? ReceiverV2.getElementText(body.customer, 'email') : null);
-      const masterUuid = await this.resolveMasterUuid(header, body, { email });
+  try {
+    const invoice = body ? body.invoice : null;
+    const transaction = body ? body.transaction : null;
+    const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
+    const email = ReceiverV2.getElementText(body, 'email') || (body?.customer ? ReceiverV2.getElementText(body.customer, 'email') : null);
+    const masterUuid = await this.resolveMasterUuid(header, body, { email });
 
-      const amountVal = body?.amount_paid || (invoice ? invoice.amount_paid : null);
-      const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || '0.00');
-      const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(invoice, 'id');
-      const transactionId = transaction ? ReceiverV2.getElementText(transaction, 'id') : null;
-      const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') ||
-        (transaction ? ReceiverV2.getElementText(transaction, 'method') : null) || 'unknown';
-      const paidAt = transaction ? ReceiverV2.getElementText(transaction, 'timestamp') : null;
+    const amountVal = body?.amount_paid || (invoice ? invoice.amount_paid : null);
+    const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || '0.00');
+    const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(invoice, 'id');
+    const transactionId = transaction ? ReceiverV2.getElementText(transaction, 'id') : null;
+    const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') ||
+      (transaction ? ReceiverV2.getElementText(transaction, 'method') : null) || 'unknown';
+    const paidAt = transaction ? ReceiverV2.getElementText(transaction, 'timestamp') : null;
 
-      const taskData = {
-        Subject: `Payment registered [${paymentContext}] invoice: ${invoiceId || 'N/A'}`,
-        Description: [
-          `Context: ${paymentContext}`,
-          `Payment Method: ${paymentMethod}`,
-          transactionId ? `Transaction ID: ${transactionId}` : null,
-          `Amount Paid: ${amountPaid}`,
-          paidAt ? `Paid At: ${paidAt}` : null,
-          masterUuid ? `Master UUID: ${masterUuid}` : null,
-        ].filter(Boolean).join('\n'),
-        Status: 'Completed',
-        ActivityDate: new Date().toISOString().split('T')[0],
+    const taskData = {
+      Subject: `Payment registered [${paymentContext}] invoice: ${invoiceId || 'N/A'}`,
+      Description: [
+        `Context: ${paymentContext}`,
+        `Payment Method: ${paymentMethod}`,
+        transactionId ? `Transaction ID: ${transactionId}` : null,
+        `Amount Paid: ${amountPaid}`,
+        paidAt ? `Paid At: ${paidAt}` : null,
+        masterUuid ? `Master UUID: ${masterUuid}` : null,
+      ].filter(Boolean).join('\n'),
+      Status: 'Completed',
+      ActivityDate: new Date().toISOString().split('T')[0],
+    };
+
+   
+    if (header.source === 'kassa') {
+      const paymentData = {
+        identity_uuid: masterUuid,
+        invoice_id: invoiceId,
+        amount_paid: amountPaid,
+        payment_context: paymentContext,
+        transaction_id: transactionId,
+        payment_method: paymentMethod,
+        correlation_id: header.message_id
       };
 
-      if (header.source === 'kassa' && rawXml) {
-        await this.sender.sendPaymentRegisteredToFrontend(rawXml);
-        await this.sender.sendPaymentRegisteredToFacturatie(rawXml);
-      }
-
-      if (paymentContext === 'registration' || paymentContext === 'session_registration') {
-        const sessionId = ReceiverV2.getElementText(body, 'session_id') || (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
-        if (sessionId && masterUuid) {
-          await this.sender.sendSessionRegistrationConfirmed({
-            session_id: sessionId,
-            identity_uuid: masterUuid,
-            correlation_id: header.message_id,
-          });
-        }
-      }
-
-      if (this.sf.isConnected) {
-        await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-      }
-    } catch (err) {
-      console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
-      throw err;
+      await this.sender.sendPaymentRegisteredToFrontend(paymentData);
+      await this.sender.sendPaymentRegisteredToFacturatie(paymentData);
     }
+
+    if (paymentContext === 'registration' || paymentContext === 'session_registration') {
+      const sessionId = ReceiverV2.getElementText(body, 'session_id') || (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
+      if (sessionId && masterUuid) {
+        await this.sender.sendSessionRegistrationConfirmed({
+          session_id: sessionId,
+          identity_uuid: masterUuid,
+          correlation_id: header.message_id
+        });
+      }
+    }
+
+    if (this.sf.isConnected) {
+      let contactId = await this._findUserByMasterUuid(masterUuid);
+      if (!contactId && email) contactId = await this._findUserByEmail(email);
+      if (contactId) taskData.WhoId = contactId;
+      await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+    }
+  } catch (err) {
+    console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
+    throw err;
   }
+}
 
   async handleBadgeScanned(header, body) {
     try {
@@ -960,6 +974,24 @@ class ReceiverV2 {
           session_id: sessionId,
           ended_at: ReceiverV2.getElementText(body, 'end_time') || header.timestamp,
         });
+        return;
+      }
+
+      if (this.sf.isConnected) {
+        const title = ReceiverV2.getElementText(body, 'title');
+        const speaker = ReceiverV2.extractSpeaker(body);
+        const taskData = {
+          Subject: `${header.type === MESSAGE_TYPES.SESSION_CREATED ? 'Session created' : 'Session updated'}: ${title || sessionId}`,
+          Description: ReceiverV2.buildSessionDescription(body, speaker),
+          Status: 'Completed',
+          ActivityDate: new Date().toISOString().split('T')[0],
+        };
+
+        if (speaker.identity_uuid) {
+          taskData.Master_UUID__c = speaker.identity_uuid;
+        }
+
+        await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
     } catch (err) {
       console.log(`[receiver] Error in handlePlanningSessionEvent: ${err}`);
@@ -1527,6 +1559,40 @@ class ReceiverV2 {
       return (typeof first === 'object' && first['#text'] !== undefined) ? first['#text'] : String(first);
     }
     return String(value);
+  }
+
+  static extractSpeaker(body) {
+    const speaker = body?.speaker;
+    const contact = speaker?.contact;
+
+    return {
+      identity_uuid: ReceiverV2.getElementText(speaker, 'identity_uuid'),
+      first_name: ReceiverV2.getElementText(contact, 'first_name'),
+      last_name: ReceiverV2.getElementText(contact, 'last_name'),
+      organisation: ReceiverV2.getElementText(speaker, 'organisation'),
+      email: ReceiverV2.getElementText(speaker, 'email'),
+    };
+  }
+
+  static buildSessionDescription(body, speaker = ReceiverV2.extractSpeaker(body)) {
+    const speakerName = [speaker.first_name, speaker.last_name].filter(Boolean).join(' ');
+    return [
+      `Session ID: ${ReceiverV2.getElementText(body, 'session_id')}`,
+      `Title: ${ReceiverV2.getElementText(body, 'title')}`,
+      `Start: ${ReceiverV2.getElementText(body, 'start_datetime')}`,
+      `End: ${ReceiverV2.getElementText(body, 'end_datetime')}`,
+      `Location: ${ReceiverV2.getElementText(body, 'location')}`,
+      `Type: ${ReceiverV2.getElementText(body, 'session_type')}`,
+      `Status: ${ReceiverV2.getElementText(body, 'status')}`,
+      `Attendees: ${ReceiverV2.getElementText(body, 'current_attendees')}/${ReceiverV2.getElementText(body, 'max_attendees')}`,
+      ReceiverV2.getElementText(body, 'change_reason')
+        ? `Change reason: ${ReceiverV2.getElementText(body, 'change_reason')}`
+        : null,
+      speakerName ? `Speaker: ${speakerName}` : null,
+      speaker.identity_uuid ? `Speaker UUID: ${speaker.identity_uuid}` : null,
+      speaker.organisation ? `Speaker organisation: ${speaker.organisation}` : null,
+      speaker.email ? `Speaker email: ${speaker.email}` : null,
+    ].filter(Boolean).join('\n');
   }
 
   async shutdown() {
