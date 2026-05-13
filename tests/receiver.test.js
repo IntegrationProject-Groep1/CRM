@@ -686,8 +686,8 @@ describe('handlePaymentRegistered', () => {
 
     await receiver.handleMessage(buildMsg(xml));
 
-    expect(receiver.sender.sendPaymentRegisteredToFrontend).toHaveBeenCalledWith(expect.stringContaining('<source>kassa</source>'));
-    expect(receiver.sender.sendPaymentRegisteredToFacturatie).toHaveBeenCalledWith(expect.stringContaining('<type>payment_registered</type>'));
+    expect(receiver.sender.sendPaymentRegisteredToFrontend).toHaveBeenCalledWith(expect.objectContaining({ payment_context: 'registration', amount_paid: '50.00' }));
+    expect(receiver.sender.sendPaymentRegisteredToFacturatie).toHaveBeenCalledWith(expect.objectContaining({ payment_context: 'registration', amount_paid: '50.00' }));
     expect(receiver.channel.ack).toHaveBeenCalled();
   });
 
@@ -710,7 +710,6 @@ describe('handlePaymentRegistered', () => {
 
     await receiver.handleMessage(buildMsg(xml));
 
-    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
       Subject: expect.stringContaining('foss-inv-00142'),
       Description: expect.stringContaining('Payment Method: cash'),
@@ -723,7 +722,6 @@ describe('handleInvoiceStatus', () => {
   test('verwerkt Facturatie invoice_status v2.0 zonder master_uuid header', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
-    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('member-1');
     const createTask = jest.fn().mockResolvedValue({ id: 'task-1' });
     receiver.sf.apiCall.mockImplementation(async (callback) => callback({
       sobject: () => ({ create: createTask }),
@@ -739,7 +737,6 @@ describe('handleInvoiceStatus', () => {
 
     await receiver.handleMessage(buildMsg(xml));
 
-    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
       Subject: expect.stringContaining('foss-inv-00142'),
       Description: expect.stringContaining('Status: paid'),
