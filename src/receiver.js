@@ -339,6 +339,7 @@ class ReceiverV2 {
         'user_created': 'user_created.xsd',
         [MESSAGE_TYPES.USER_REGISTERED]: 'user_registered.xsd',
         'user_registered': 'user_registered.xsd',
+        'user.created': 'user_created.xsd',
         [MESSAGE_TYPES.NEW_REGISTRATION]: source === 'kassa' ? 'new_registration_kassa.xsd' : 'new_registration_frontend.xsd',
         [MESSAGE_TYPES.USER_UNREGISTERED]: 'user_unregistered.xsd',
         [MESSAGE_TYPES.PAYMENT_REGISTERED]: source === 'kassa' ? 'payment_registered_kassa.xsd' : 'payment_registered_facturatie.xsd',
@@ -403,6 +404,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.USER_CREATED]: () => this.handleUserCreated(header, body),
       [MESSAGE_TYPES.USER_REGISTERED]: () => this.handleUserRegistered(header, body),
       'user_created': () => this.handleUserCreated(header, body),
+      'user.created': () => this.handleUserCreated(header, body),
       'user_registered': () => this.handleUserRegistered(header, body),
       [MESSAGE_TYPES.NEW_REGISTRATION]: () => this.handleNewRegistration(header, body),
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
@@ -453,17 +455,17 @@ class ReceiverV2 {
     );
     return records && records.length > 0 ? records[0].Id : null;
   }
-
-  _getExistingMasterUuid(header, body) {
-    return (header && header.master_uuid) ||
-      ReceiverV2.getElementText(body, 'master_uuid') ||
-      ReceiverV2.getElementText(body, 'user_id') ||
-      ReceiverV2.getElementText(body?.user, 'master_uuid') ||
-      ReceiverV2.getElementText(body?.user, 'user_id') ||
-      ReceiverV2.getElementText(body?.customer, 'master_uuid') ||
-      ReceiverV2.getElementText(body?.company, 'master_uuid') ||
-      null;
-  }
+ _getExistingMasterUuid(header, body) {
+ return (header && header.master_uuid) ||
+    ReceiverV2.getElementText(body, 'identity_uuid') || // ✅ voeg dit toe
+    ReceiverV2.getElementText(body, 'master_uuid') ||
+    ReceiverV2.getElementText(body, 'user_id') ||
+    ReceiverV2.getElementText(body?.user, 'master_uuid') ||
+    ReceiverV2.getElementText(body?.user, 'user_id') ||
+    ReceiverV2.getElementText(body?.customer, 'master_uuid') ||
+    ReceiverV2.getElementText(body?.company, 'master_uuid') ||
+    null;
+}
 
   _getFallbackEmail(body, explicitEmail = null) {
     return explicitEmail ||
@@ -899,21 +901,27 @@ class ReceiverV2 {
       ActivityDate: new Date().toISOString().split('T')[0],
     };
 
-   
     if (header.source === 'kassa') {
-      const paymentData = {
-        identity_uuid: masterUuid,
-        invoice_id: invoiceId,
-        amount_paid: amountPaid,
-        payment_context: paymentContext,
-        transaction_id: transactionId,
-        payment_method: paymentMethod,
-        correlation_id: header.message_id
-      };
+  if (!masterUuid) {
+    console.log(`[receiver] Skipping payment forward: masterUuid could not be resolved`);
+  } else {
+    const VALID_PAYMENT_METHODS = ['company_link', 'on_site', 'online'];
+    const validPaymentMethod = VALID_PAYMENT_METHODS.includes(paymentMethod) ? paymentMethod : null;
 
-      await this.sender.sendPaymentRegisteredToFrontend(paymentData);
-      await this.sender.sendPaymentRegisteredToFacturatie(paymentData);
-    }
+    const paymentData = {
+      identity_uuid: masterUuid,
+      invoice_id: invoiceId,
+      amount_paid: amountPaid,
+      payment_context: paymentContext,
+      transaction_id: validPaymentMethod ? transactionId : null,
+      payment_method: validPaymentMethod,
+      correlation_id: header.message_id
+    };
+
+    await this.sender.sendPaymentRegisteredToFrontend(paymentData);
+    await this.sender.sendPaymentRegisteredToFacturatie(paymentData);
+  }
+}
 
     if (paymentContext === 'registration' || paymentContext === 'session_registration') {
       const sessionId = ReceiverV2.getElementText(body, 'session_id') || (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
