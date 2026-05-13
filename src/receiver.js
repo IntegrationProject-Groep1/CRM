@@ -935,15 +935,12 @@ class ReceiverV2 {
     }
 
     if (this.sf.isConnected) {
-      let contactId = await this._findUserByMasterUuid(masterUuid);
-      if (!contactId && email) contactId = await this._findUserByEmail(email);
-      if (contactId) taskData.WhoId = contactId;
-      await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-    }
-  } catch (err) {
-    console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
-    throw err;
-  }
+  await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+}
+} catch (err) {
+  console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
+  throw err;
+}
 }
 
   async handleBadgeScanned(header, body) {
