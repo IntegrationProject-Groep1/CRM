@@ -891,7 +891,15 @@ class ReceiverV2 {
 
       if (header.source === 'kassa' && rawXml) {
         await this.sender.sendPaymentRegisteredToFrontend(rawXml);
-        await this.sender.sendPaymentRegisteredToFacturatie(rawXml);
+        await this.sender.sendPaymentRegisteredToFacturatie({
+    identity_uuid: masterUuid,
+    invoice_id: invoiceId,
+    amount_paid: amountPaid,
+    payment_context: paymentContext,
+    transaction_id: transactionId,
+    payment_method: paymentMethod,
+    correlation_id: header.message_id
+  });
       }
 
       if (paymentContext === 'registration' || paymentContext === 'session_registration') {
