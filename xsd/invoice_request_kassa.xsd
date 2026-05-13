@@ -22,8 +22,9 @@
         </xs:complexType>
       </xs:element>
       <xs:element name="email"       type="xs:string"/>
-      <xs:element name="address"     type="AddressType"/>
-      <xs:element name="vat_number"  type="xs:string" minOccurs="0"/>
+      <xs:element name="address"      type="AddressType"/>
+      <xs:element name="company_name" type="xs:string" minOccurs="0"/>
+      <xs:element name="vat_number"   type="xs:string" minOccurs="0"/>
     </xs:sequence>
   </xs:complexType>
 
