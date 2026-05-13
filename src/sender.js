@@ -573,25 +573,27 @@ async sendWalletLeaseGrant(data) {
     }
   }
 
-  async sendPaymentRegisteredToFrontend(xml) {
-    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
-    try {
-      this._validate(xml, 'payment_registered');
-      const queue = 'frontend.incoming';
-      await this.channel.assertQueue(queue, { durable: true });
-      const ok = this.channel.sendToQueue(queue, Buffer.from(xml), {
-        contentType: 'application/xml',
-        deliveryMode: 2,
-      });
-      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
-      console.log(`Payment registered forwarded to Frontend queue "${queue}"`);
-      await this._logOutbound('payment_registered', queue, 'PASSTHROUGH');
-      return { success: true, queue, payload: xml };
-    } catch (error) {
-      console.log(`Failed to forward payment to Frontend: ${error}`);
-      throw error;
-    }
+async sendPaymentRegisteredToFrontend(data) {
+  if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+  try {
+    const xmlPayload = this.buildPaymentRegisteredXml(data);
+    this._validate(xmlPayload, 'payment_registered_facturatie');
+
+    const queue = 'frontend.incoming';
+    await this.channel.assertQueue(queue, { durable: true });
+    const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+      contentType: 'application/xml',
+      deliveryMode: 2,
+    });
+    if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+    console.log(`Payment registered forwarded to Frontend queue "${queue}"`);
+    await this._logOutbound('payment_registered', queue, data.correlation_id);
+    return { success: true, queue, payload: xmlPayload };
+  } catch (error) {
+    console.log(`Failed to forward payment to Frontend: ${error}`);
+    throw error;
   }
+}
 
   // Voeg deze builder toe aan de CRMSender klasse
 buildPaymentRegisteredXml(data) {

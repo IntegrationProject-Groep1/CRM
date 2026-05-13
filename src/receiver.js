@@ -860,70 +860,73 @@ class ReceiverV2 {
   }
 
   async handlePaymentRegistered(header, body, rawXml = null) {
-    try {
-      const invoice = body ? body.invoice : null;
-      const transaction = body ? body.transaction : null;
-      const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
-      const email = ReceiverV2.getElementText(body, 'email') || (body?.customer ? ReceiverV2.getElementText(body.customer, 'email') : null);
-      const masterUuid = await this.resolveMasterUuid(header, body, { email });
+  try {
+    const invoice = body ? body.invoice : null;
+    const transaction = body ? body.transaction : null;
+    const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
+    const email = ReceiverV2.getElementText(body, 'email') || (body?.customer ? ReceiverV2.getElementText(body.customer, 'email') : null);
+    const masterUuid = await this.resolveMasterUuid(header, body, { email });
 
-      const amountVal = body?.amount_paid || (invoice ? invoice.amount_paid : null);
-      const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || '0.00');
-      const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(invoice, 'id');
-      const transactionId = transaction ? ReceiverV2.getElementText(transaction, 'id') : null;
-      const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') ||
-        (transaction ? ReceiverV2.getElementText(transaction, 'method') : null) || 'unknown';
-      const paidAt = transaction ? ReceiverV2.getElementText(transaction, 'timestamp') : null;
+    const amountVal = body?.amount_paid || (invoice ? invoice.amount_paid : null);
+    const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || '0.00');
+    const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(invoice, 'id');
+    const transactionId = transaction ? ReceiverV2.getElementText(transaction, 'id') : null;
+    const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') ||
+      (transaction ? ReceiverV2.getElementText(transaction, 'method') : null) || 'unknown';
+    const paidAt = transaction ? ReceiverV2.getElementText(transaction, 'timestamp') : null;
 
-      const taskData = {
-        Subject: `Payment registered [${paymentContext}] invoice: ${invoiceId || 'N/A'}`,
-        Description: [
-          `Context: ${paymentContext}`,
-          `Payment Method: ${paymentMethod}`,
-          transactionId ? `Transaction ID: ${transactionId}` : null,
-          `Amount Paid: ${amountPaid}`,
-          paidAt ? `Paid At: ${paidAt}` : null,
-          masterUuid ? `Master UUID: ${masterUuid}` : null,
-        ].filter(Boolean).join('\n'),
-        Status: 'Completed',
-        ActivityDate: new Date().toISOString().split('T')[0],
+    const taskData = {
+      Subject: `Payment registered [${paymentContext}] invoice: ${invoiceId || 'N/A'}`,
+      Description: [
+        `Context: ${paymentContext}`,
+        `Payment Method: ${paymentMethod}`,
+        transactionId ? `Transaction ID: ${transactionId}` : null,
+        `Amount Paid: ${amountPaid}`,
+        paidAt ? `Paid At: ${paidAt}` : null,
+        masterUuid ? `Master UUID: ${masterUuid}` : null,
+      ].filter(Boolean).join('\n'),
+      Status: 'Completed',
+      ActivityDate: new Date().toISOString().split('T')[0],
+    };
+
+   
+    if (header.source === 'kassa') {
+      const paymentData = {
+        identity_uuid: masterUuid,
+        invoice_id: invoiceId,
+        amount_paid: amountPaid,
+        payment_context: paymentContext,
+        transaction_id: transactionId,
+        payment_method: paymentMethod,
+        correlation_id: header.message_id
       };
 
-      if (header.source === 'kassa' && rawXml) {
-        await this.sender.sendPaymentRegisteredToFrontend(rawXml);
-        await this.sender.sendPaymentRegisteredToFacturatie({
-    identity_uuid: masterUuid,
-    invoice_id: invoiceId,
-    amount_paid: amountPaid,
-    payment_context: paymentContext,
-    transaction_id: transactionId,
-    payment_method: paymentMethod,
-    correlation_id: header.message_id
-  });
-      }
-
-      if (paymentContext === 'registration' || paymentContext === 'session_registration') {
-        const sessionId = ReceiverV2.getElementText(body, 'session_id') || (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
-        if (sessionId && masterUuid) {
-          await this.sender.sendSessionRegistrationConfirmed({
-            session_id: sessionId,
-            identity_uuid: masterUuid,
-            correlation_id: header.message_id
-          });
-        }
-      }
-
-      if (this.sf.isConnected) {
-        let contactId = await this._findUserByMasterUuid(masterUuid);
-        if (!contactId && email) contactId = await this._findUserByEmail(email);
-        if (contactId) taskData.WhoId = contactId;
-        await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-      }
-    } catch (err) {
-      console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
-      throw err;
+      await this.sender.sendPaymentRegisteredToFrontend(paymentData);
+      await this.sender.sendPaymentRegisteredToFacturatie(paymentData);
     }
+
+    if (paymentContext === 'registration' || paymentContext === 'session_registration') {
+      const sessionId = ReceiverV2.getElementText(body, 'session_id') || (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
+      if (sessionId && masterUuid) {
+        await this.sender.sendSessionRegistrationConfirmed({
+          session_id: sessionId,
+          identity_uuid: masterUuid,
+          correlation_id: header.message_id
+        });
+      }
+    }
+
+    if (this.sf.isConnected) {
+      let contactId = await this._findUserByMasterUuid(masterUuid);
+      if (!contactId && email) contactId = await this._findUserByEmail(email);
+      if (contactId) taskData.WhoId = contactId;
+      await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
+    }
+  } catch (err) {
+    console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
+    throw err;
   }
+}
 
   async handleBadgeScanned(header, body) {
     try {
