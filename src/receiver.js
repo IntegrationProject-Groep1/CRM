@@ -871,7 +871,7 @@ class ReceiverV2 {
     }
   }
 
-  async handlePaymentRegistered(header, body, rawXml = null) {
+  async handlePaymentRegistered(header, body) {
   try {
     const invoice = body ? body.invoice : null;
     const transaction = body ? body.transaction : null;
