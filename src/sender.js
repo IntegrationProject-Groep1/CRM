@@ -280,7 +280,7 @@ class CRMSender {
   const header = root.ele('header');
   header.ele('message_id').txt(messageId);
   header.ele('timestamp').txt(timestamp);
-  header.ele('source').txt('crm'); // ✅ fixed value in XSD
+  header.ele('source').txt('kassa'); // ✅ fixed value in XSD
   header.ele('type').txt('invoice_request');
   header.ele('version').txt('2.0');
   header.ele('correlation_id').txt(data.correlation_id || uuidv4());
