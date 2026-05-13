@@ -574,46 +574,77 @@ async sendWalletLeaseGrant(data) {
     }
   }
 
-  async sendPaymentRegisteredToFrontend(xml) {
-    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
-    try {
-      this._validate(xml, 'payment_registered');
-      const queue = 'frontend.incoming';
-      await this.channel.assertQueue(queue, { durable: true });
-      const ok = this.channel.sendToQueue(queue, Buffer.from(xml), {
-        contentType: 'application/xml',
-        deliveryMode: 2,
-      });
-      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
-      console.log(`Payment registered forwarded to Frontend queue "${queue}"`);
-      await this._logOutbound('payment_registered', queue, 'PASSTHROUGH');
-      return { success: true, queue, payload: xml };
-    } catch (error) {
-      console.log(`Failed to forward payment to Frontend: ${error}`);
-      throw error;
-    }
+  buildPaymentRegisteredXml(data) {
+  const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+  const header = root.ele('header');
+  header.ele('message_id').txt(uuidv4());
+  header.ele('timestamp').txt(new Date().toISOString());
+  header.ele('source').txt('facturatie');
+  header.ele('type').txt('payment_registered');
+  header.ele('version').txt('2.0');
+  if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+
+  const body = root.ele('body');
+  body.ele('identity_uuid').txt(data.identity_uuid || '');
+
+  const invoice = body.ele('invoice');
+  invoice.ele('id').txt(data.invoice_id || '');
+  invoice.ele('amount_paid', { currency: 'eur' }).txt(String(data.amount_paid || '0.00'));
+  invoice.ele('status').txt(data.status || 'paid');
+
+  body.ele('payment_context').txt(data.payment_context || 'consumption');
+
+  if (data.transaction_id && data.payment_method) {
+    const trans = body.ele('transaction');
+    trans.ele('id').txt(data.transaction_id);
+    trans.ele('payment_method').txt(data.payment_method);
   }
 
-  async sendPaymentRegisteredToFacturatie(xml) {
-    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
-    try {
-      this._validate(xml, 'payment_registered');
-      const queue = 'facturatie.incoming';
-      await this.channel.assertQueue(queue, { durable: true });
-      const ok = this.channel.sendToQueue(queue, Buffer.from(xml), {
-        contentType: 'application/xml',
-        deliveryMode: 2,
-      });
-      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
-      console.log(`Payment registered forwarded to Facturatie queue "${queue}"`);
-      await this._logOutbound('payment_registered', queue, 'PASSTHROUGH');
-      return { success: true, queue, payload: xml };
-    } catch (error) {
-      console.log(`Failed to forward payment to Facturatie: ${error}`);
-      throw error;
-    }
-  }
+  return root.doc().end({ prettyPrint: true, indent: '  ' });
+}
 
+async sendPaymentRegisteredToFrontend(data) {
+  if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+  try {
+    const xmlPayload = this.buildPaymentRegisteredXml(data);
+    this._validate(xmlPayload, 'payment_registered');
+    const queue = 'frontend.incoming';
+    await this.channel.assertQueue(queue, { durable: true });
+    const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+      contentType: 'application/xml',
+      deliveryMode: 2,
+    });
+    if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+    console.log(`Payment registered forwarded to Frontend queue "${queue}"`);
+    await this._logOutbound('payment_registered', queue, data.correlation_id);
+    return { success: true, queue, payload: xmlPayload };
+  } catch (error) {
+    console.log(`Failed to forward payment to Frontend: ${error}`);
+    throw error;
+  }
+}
+
+async sendPaymentRegisteredToFacturatie(data) {
+  if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+  try {
+    const xmlPayload = this.buildPaymentRegisteredXml(data);
+    this._validate(xmlPayload, 'payment_registered');
+    const queue = 'facturatie.incoming';
+    await this.channel.assertQueue(queue, { durable: true });
+    const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+      contentType: 'application/xml',
+      deliveryMode: 2,
+    });
+    if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+    console.log(`Payment registered forwarded to Facturatie queue "${queue}"`);
+    await this._logOutbound('payment_registered', queue, data.correlation_id);
+    return { success: true, queue, payload: xmlPayload };
+  } catch (error) {
+    console.log(`Failed to forward payment to Facturatie: ${error}`);
+    throw error;
+  }
+}
   async sendEventEndedToFacturatie(data) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
     try {
