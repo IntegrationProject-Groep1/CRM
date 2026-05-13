@@ -272,41 +272,40 @@ class CRMSender {
   }
 
   buildInvoiceRequestXml(data) {
-    const messageId = uuidv4();
-    const timestamp = new Date().toISOString();
+  const messageId = uuidv4();
+  const timestamp = new Date().toISOString();
 
-    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+  const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
-    const header = root.ele('header');
-    header.ele('message_id').txt(messageId);
-    header.ele('timestamp').txt(timestamp);
-    header.ele('source').txt('crm');
-    header.ele('type').txt('invoice_request');
-    header.ele('version').txt('2.0');
-    header.ele('correlation_id').txt(data.correlation_id || uuidv4());
+  const header = root.ele('header');
+  header.ele('message_id').txt(messageId);
+  header.ele('timestamp').txt(timestamp);
+  header.ele('source').txt('kassa'); // ✅ fixed value in XSD
+  header.ele('type').txt('invoice_request');
+  header.ele('version').txt('2.0');
+  header.ele('correlation_id').txt(data.correlation_id || uuidv4());
 
-    const body = root.ele('body');
-    body.ele('identity_uuid').txt(data.master_uuid || data.user_id || data.identity_uuid || '');
+  const body = root.ele('body');
+  body.ele('identity_uuid').txt(data.master_uuid || data.user_id || data.identity_uuid || '');
 
-    const invoiceData = body.ele('invoice_data');
-    const contact = invoiceData.ele('contact');
-    contact.ele('first_name').txt(data.customer?.first_name || '');
-    contact.ele('last_name').txt(data.customer?.last_name || '');
-    
-    invoiceData.ele('email').txt(data.customer?.email || '');
+  const invoiceData = body.ele('invoice_data');
+  const contact = invoiceData.ele('contact');
+  contact.ele('first_name').txt(data.customer?.first_name || '');
+  contact.ele('last_name').txt(data.customer?.last_name || '');
 
-    const address = invoiceData.ele('address');
-    address.ele('street').txt(data.address?.street || data.customer?.address?.street || '');
-    address.ele('number').txt(data.address?.number || data.customer?.address?.number || '');
-    address.ele('postal_code').txt(data.address?.postal_code || data.customer?.address?.postal_code || '');
-    address.ele('city').txt(data.address?.city || data.customer?.address?.city || '');
-    address.ele('country').txt(data.address?.country || data.customer?.address?.country || '');
+  invoiceData.ele('email').txt(data.customer?.email || '');
 
-    if (data.customer?.company_name) invoiceData.ele('company_name').txt(data.customer.company_name);
-    if (data.customer?.vat_number)   invoiceData.ele('vat_number').txt(data.customer.vat_number);
+  const address = invoiceData.ele('address');
+  address.ele('street').txt(data.address?.street || '');
+  address.ele('number').txt(data.address?.number || '');
+  address.ele('postal_code').txt(data.address?.postal_code || '');
+  address.ele('city').txt(data.address?.city || '');
+  address.ele('country').txt(data.address?.country || '');
 
-    return root.doc().end({ prettyPrint: true, indent: '  ' });
-  }
+  if (data.customer?.vat_number) invoiceData.ele('vat_number').txt(data.customer.vat_number); // ✅ geen company_name
+
+  return root.doc().end({ prettyPrint: true, indent: '  ' });
+}
 
   async sendInvoiceRequest(data) {
     if (!this.channel) {
