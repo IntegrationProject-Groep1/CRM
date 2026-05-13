@@ -302,7 +302,8 @@ class CRMSender {
   address.ele('city').txt(data.address?.city || '');
   address.ele('country').txt(data.address?.country || '');
 
-  if (data.customer?.vat_number) invoiceData.ele('vat_number').txt(data.customer.vat_number); // ✅ geen company_name
+  if (data.customer?.company_name) invoiceData.ele('company_name').txt(data.customer.company_name);
+  if (data.customer?.vat_number)   invoiceData.ele('vat_number').txt(data.customer.vat_number);
   
   return root.doc().end({ prettyPrint: true, indent: '  ' });
 }
