@@ -435,6 +435,60 @@ describe('handleMessage', () => {
 
     expect(receiver.channel.ack).toHaveBeenCalled();
   });
+
+  test('tijdelijke Salesforce timeout wordt naar retry queue gezet en geackt', async () => {
+    const receiver = makeReceiver();
+    const msg = buildMsg(buildXml('mailing_status', `
+      <mailing_id>mail-1</mailing_id>
+      <status>delivered</status>
+      <delivered>10</delivered>
+      <bounced>0</bounced>
+    `));
+    msg.fields.routingKey = 'crm.incoming';
+    receiver.routeMessage = jest.fn().mockRejectedValue(Object.assign(
+      new Error('Salesforce request timeout'),
+      { isSalesforceError: true }
+    ));
+
+    await receiver.handleMessage(msg);
+
+    expect(receiver.channel.sendToQueue).toHaveBeenCalledWith(
+      'crm.incoming.retry',
+      msg.content,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-crm-original-queue': 'crm.incoming',
+          'x-crm-retry-count': 1,
+        }),
+      })
+    );
+    expect(receiver.channel.ack).toHaveBeenCalledWith(msg);
+    expect(receiver.channel.nack).not.toHaveBeenCalled();
+  });
+
+  test('tijdelijke fout gaat na max retries naar dead-letter', async () => {
+    const receiver = makeReceiver();
+    const msg = buildMsg(buildXml('mailing_status', `
+      <mailing_id>mail-1</mailing_id>
+      <status>delivered</status>
+      <delivered>10</delivered>
+      <bounced>0</bounced>
+    `));
+    msg.properties = {
+      headers: {
+        'x-crm-original-queue': 'crm.incoming',
+        'x-crm-retry-count': 288,
+      },
+    };
+    receiver.routeMessage = jest.fn().mockRejectedValue(Object.assign(
+      new Error('Salesforce request timeout'),
+      { isSalesforceError: true }
+    ));
+
+    await receiver.handleMessage(msg);
+
+    expect(receiver.channel.nack).toHaveBeenCalledWith(msg, false, false);
+  });
 });
 
 describe('handleSendInvoice', () => {
@@ -686,8 +740,8 @@ describe('handlePaymentRegistered', () => {
 
     await receiver.handleMessage(buildMsg(xml));
 
-    expect(receiver.sender.sendPaymentRegisteredToFrontend).toHaveBeenCalledWith(expect.stringContaining('<source>kassa</source>'));
-    expect(receiver.sender.sendPaymentRegisteredToFacturatie).toHaveBeenCalledWith(expect.stringContaining('<type>payment_registered</type>'));
+    expect(receiver.sender.sendPaymentRegisteredToFrontend).toHaveBeenCalledWith(expect.objectContaining({ payment_context: 'registration', amount_paid: '50.00' }));
+    expect(receiver.sender.sendPaymentRegisteredToFacturatie).toHaveBeenCalledWith(expect.objectContaining({ payment_context: 'registration', amount_paid: '50.00' }));
     expect(receiver.channel.ack).toHaveBeenCalled();
   });
 
@@ -710,7 +764,6 @@ describe('handlePaymentRegistered', () => {
 
     await receiver.handleMessage(buildMsg(xml));
 
-    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
       Subject: expect.stringContaining('foss-inv-00142'),
       Description: expect.stringContaining('Payment Method: cash'),
@@ -723,7 +776,6 @@ describe('handleInvoiceStatus', () => {
   test('verwerkt Facturatie invoice_status v2.0 zonder master_uuid header', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
-    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('member-1');
     const createTask = jest.fn().mockResolvedValue({ id: 'task-1' });
     receiver.sf.apiCall.mockImplementation(async (callback) => callback({
       sobject: () => ({ create: createTask }),
@@ -739,7 +791,6 @@ describe('handleInvoiceStatus', () => {
 
     await receiver.handleMessage(buildMsg(xml));
 
-    expect(receiver._findUserByMasterUuid).toHaveBeenCalledWith('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
       Subject: expect.stringContaining('foss-inv-00142'),
       Description: expect.stringContaining('Status: paid'),
@@ -812,11 +863,15 @@ describe('handleBadgeScanned', () => {
 });
 
 describe('handlePlanningSessionEvent', () => {
-  test.each(['session_created', 'session_updated', 'session_deleted'])(
-    'acknowledges %s zonder Salesforce side effects',
+  test.each(['session_created', 'session_updated'])(
+    'maakt Salesforce Task aan voor %s met speaker details',
     async (type) => {
       const receiver = makeReceiver();
       receiver.sf.isConnected = true;
+      const createTask = jest.fn().mockResolvedValue({ id: 'task-session-1' });
+      receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+        sobject: () => ({ create: createTask }),
+      }));
       const xml = withoutMasterUuid(buildXml(type, `
         <session_id>sess-keynote-001</session_id>
         <title>Keynote: AI in Healthcare</title>
@@ -827,15 +882,55 @@ describe('handlePlanningSessionEvent', () => {
         <status>published</status>
         <max_attendees>120</max_attendees>
         <current_attendees>0</current_attendees>
+        ${type === 'session_updated' ? '<change_reason>Spreker heeft 30 minuten vertraging door file</change_reason>' : ''}
+        <speaker>
+          <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+          <contact>
+            <first_name>Sarah</first_name>
+            <last_name>Leclercq</last_name>
+          </contact>
+          <organisation>UZ Brussel</organisation>
+          <email>s.leclercq@uzbrussel.be</email>
+        </speaker>
       `, { correlation_id: 'session-master-uuid-001' }));
 
       await receiver.handleMessage(buildMsg(xml));
 
       expect(receiver.channel.ack).toHaveBeenCalled();
       expect(receiver.channel.nack).not.toHaveBeenCalled();
-      expect(receiver.sf.apiCall).not.toHaveBeenCalled();
+      expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+        Subject: expect.stringContaining('Keynote: AI in Healthcare'),
+        Master_UUID__c: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+      }));
+      expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+        Description: expect.stringContaining('Speaker: Sarah Leclercq'),
+      }));
+      expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+        Description: expect.stringContaining('Speaker organisation: UZ Brussel'),
+      }));
+      expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+        Description: expect.stringContaining('Speaker email: s.leclercq@uzbrussel.be'),
+      }));
     }
   );
+
+  test('session_deleted behoudt forwarding naar Facturatie zonder Salesforce side effects', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    const xml = withoutMasterUuid(buildXml('session_deleted', `
+      <session_id>sess-keynote-001</session_id>
+      <reason>Sessie geannuleerd</reason>
+    `, { correlation_id: 'session-master-uuid-001' }));
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.channel.ack).toHaveBeenCalled();
+    expect(receiver.channel.nack).not.toHaveBeenCalled();
+    expect(receiver.sender.sendEventEndedToFacturatie).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 'sess-keynote-001',
+    }));
+    expect(receiver.sf.apiCall).not.toHaveBeenCalled();
+  });
 
   test('negeert session event zonder session_id maar acked bericht', async () => {
     const receiver = makeReceiver();

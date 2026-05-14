@@ -116,9 +116,15 @@ class SFConnection {
       if (String(err).includes('INVALID_SESSION_ID')) {
         console.log('[SF Connection] Session expired, refreshing...');
         if (await this.refresh()) {
-          return await fn(this.connection);
+          try {
+            return await fn(this.connection);
+          } catch (retryErr) {
+            retryErr.isSalesforceError = true;
+            throw retryErr;
+          }
         }
       }
+      err.isSalesforceError = true;
       throw err;
     }
   }

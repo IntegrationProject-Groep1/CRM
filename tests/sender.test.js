@@ -2,6 +2,7 @@
 
 process.env.RABBITMQ_USER = process.env.RABBITMQ_USER || 'test';
 process.env.RABBITMQ_PASS = process.env.RABBITMQ_PASS || 'test';
+process.env.RABBITMQ_PROTOCOL = process.env.RABBITMQ_PROTOCOL || 'amqps';
 
 /**
  * Tests for CRM sender XML building + async send methods (mocked RabbitMQ).
@@ -63,10 +64,10 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
       first_name: 'Jan',
       last_name: 'Peeters',
       user_id: 'u-42',
+      session_title: 'Keynote',
     },
     payment_due: { amount: '25.00', status: 'pending' },
     correlation_id: 'corr-abc',
-    session_id: 'sess-xyz',
   });
 
   test('header bevat correcte type en source', () => {
@@ -76,12 +77,12 @@ describe('Registratie flow — buildNewRegistrationForKassaXml', () => {
     expect(String(root.header.version)).toBe('2.0');
   });
 
-  test('correlation_id wordt meegestuurd (v2.3) en session_id staat in customer', () => {
+  test('correlation_id wordt meegestuurd (v2.3) en session_title staat in customer', () => {
     const data = baseData();
     data.correlation_id = 'c1234567-89ab-cdef-0123-456789abcdef';
     const root = parser.parse(sender.buildNewRegistrationForKassaXml(data)).message;
     expect(root.header.correlation_id).toBe(data.correlation_id);
-    expect(root.body.customer.session_id).toBe('sess-xyz');
+    expect(root.body.customer.session_title).toBe('Keynote');
   });
 
   test('klantgegevens staan correct in body', () => {
@@ -168,32 +169,38 @@ describe('Betaling flow - payment_registered forwarding', () => {
 
   beforeEach(() => { sender = new CRMSender(); });
 
-  const xml = '<message><header><type>payment_registered</type></header></message>';
+  const paymentData = {
+    identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+    invoice_id: 'INV-001',
+    amount_paid: '25.00',
+    payment_context: 'consumption',
+    correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
+  };
 
-  test('stuurt raw payment_registered XML naar facturatie.incoming', async () => {
+  test('stuurt payment_registered XML naar facturatie.incoming', async () => {
     const ch = attachMockChannel(sender);
-    const result = await sender.sendPaymentRegisteredToFacturatie(xml);
+    const result = await sender.sendPaymentRegisteredToFacturatie(paymentData);
 
     expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
     expect(ch.sendToQueue).toHaveBeenCalledWith(
       'facturatie.incoming',
-      Buffer.from(xml),
+      expect.any(Buffer),
       expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
     );
-    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming', payload: xml });
+    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming' });
   });
 
-  test('stuurt raw payment_registered XML naar frontend.incoming', async () => {
+  test('stuurt payment_registered XML naar frontend.incoming', async () => {
     const ch = attachMockChannel(sender);
-    const result = await sender.sendPaymentRegisteredToFrontend(xml);
+    const result = await sender.sendPaymentRegisteredToFrontend(paymentData);
 
     expect(ch.assertQueue).toHaveBeenCalledWith('frontend.incoming', { durable: true });
     expect(ch.sendToQueue).toHaveBeenCalledWith(
       'frontend.incoming',
-      Buffer.from(xml),
+      expect.any(Buffer),
       expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
     );
-    expect(result).toMatchObject({ success: true, queue: 'frontend.incoming', payload: xml });
+    expect(result).toMatchObject({ success: true, queue: 'frontend.incoming' });
   });
 });
 
