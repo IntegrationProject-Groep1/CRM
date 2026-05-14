@@ -7,6 +7,11 @@ const libxmljs = require('libxmljs2');
 
 const XSD_DIR = path.join(__dirname, '..', 'xsd');
 const schemaCache = new Map();
+const XML_PARSE_OPTIONS = {
+  noent: false,
+  dtdload: false,
+  nonet: true,
+};
 
 /**
  * Validates an XML string against a given XSD schema.
@@ -16,7 +21,7 @@ const schemaCache = new Map();
  */
 function validateXml(xmlString, schemaName) {
   try {
-    const xmlDoc = libxmljs.parseXml(xmlString);
+    const xmlDoc = libxmljs.parseXml(xmlString, XML_PARSE_OPTIONS);
     let xsdDoc = schemaCache.get(schemaName);
 
     if (!xsdDoc) {
@@ -28,7 +33,7 @@ function validateXml(xmlString, schemaName) {
         };
       }
       const xsdSource = fs.readFileSync(xsdPath, 'utf8');
-      xsdDoc = libxmljs.parseXml(xsdSource);
+      xsdDoc = libxmljs.parseXml(xsdSource, XML_PARSE_OPTIONS);
       schemaCache.set(schemaName, xsdDoc);
     }
 
