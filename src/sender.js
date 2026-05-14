@@ -28,7 +28,6 @@ class CRMSender {
       'consumption_order': 'consumption_order.xsd',
       'wallet_lease_grant': 'wallet_lease_grant.xsd',
       'wallet_remote_topup': 'wallet_remote_topup.xsd',
-      'session_view_request': 'session_view_request.xsd'
     };
     this.messageTypeToLogAction = {
       'new_registration': 'registration',
@@ -47,7 +46,6 @@ class CRMSender {
       'badge_assigned': 'badge',
       'wallet_lease_grant': 'wallet',
       'wallet_remote_topup': 'wallet',
-      'session_view_request': 'session'
     };
   }
 
@@ -772,47 +770,6 @@ async sendWalletLeaseGrant(data) {
     if (!ok) console.log(`[sender] Warning: write buffer full for exchange "${exchange}"`);
     console.log(`User unregistered broadcast via exchange "${exchange}"`);
     return { success: true, exchange, queues };
-  }
-
-  async sendSessionViewRequest(data = {}) {
-    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
-    try {
-      const messageId = uuidv4();
-      const timestamp = new Date().toISOString();
-      const correlationId = data.correlation_id || uuidv4();
-
-      const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
-      const header = root.ele('header');
-      header.ele('message_id').txt(messageId);
-      header.ele('timestamp').txt(timestamp);
-      header.ele('source').txt('crm');
-      header.ele('type').txt('session_view_request');
-      header.ele('version').txt('2.0');
-      header.ele('correlation_id').txt(correlationId);
-
-      const body = root.ele('body');
-      if (data.session_id) {
-        body.ele('session_id').txt(data.session_id);
-      }
-
-      const xmlPayload = root.doc().end({ prettyPrint: true, indent: '  ' });
-      this._validate(xmlPayload, 'session_view_request');
-
-      const exchange = 'calendar.exchange';
-      const routingKey = 'crm.to.planning.session.view';
-      await this.channel.assertExchange(exchange, 'topic', { durable: true });
-      const ok = this.channel.publish(exchange, routingKey, Buffer.from(xmlPayload), {
-        contentType: 'application/xml',
-        deliveryMode: 2,
-      });
-      if (!ok) console.log(`[sender] Warning: write buffer full for exchange "${exchange}"`);
-      console.log(`Session view request sent to Planning via "${exchange}" [${routingKey}]`);
-      await this._logOutbound('session_view_request', exchange, correlationId);
-      return correlationId;
-    } catch (error) {
-      console.log(`Failed to send session view request: ${error}`);
-      throw error;
-    }
   }
 
   async close() {
