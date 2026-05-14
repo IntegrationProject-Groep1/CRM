@@ -435,6 +435,60 @@ describe('handleMessage', () => {
 
     expect(receiver.channel.ack).toHaveBeenCalled();
   });
+
+  test('tijdelijke Salesforce timeout wordt naar retry queue gezet en geackt', async () => {
+    const receiver = makeReceiver();
+    const msg = buildMsg(buildXml('mailing_status', `
+      <mailing_id>mail-1</mailing_id>
+      <status>delivered</status>
+      <delivered>10</delivered>
+      <bounced>0</bounced>
+    `));
+    msg.fields.routingKey = 'crm.incoming';
+    receiver.routeMessage = jest.fn().mockRejectedValue(Object.assign(
+      new Error('Salesforce request timeout'),
+      { isSalesforceError: true }
+    ));
+
+    await receiver.handleMessage(msg);
+
+    expect(receiver.channel.sendToQueue).toHaveBeenCalledWith(
+      'crm.incoming.retry',
+      msg.content,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-crm-original-queue': 'crm.incoming',
+          'x-crm-retry-count': 1,
+        }),
+      })
+    );
+    expect(receiver.channel.ack).toHaveBeenCalledWith(msg);
+    expect(receiver.channel.nack).not.toHaveBeenCalled();
+  });
+
+  test('tijdelijke fout gaat na max retries naar dead-letter', async () => {
+    const receiver = makeReceiver();
+    const msg = buildMsg(buildXml('mailing_status', `
+      <mailing_id>mail-1</mailing_id>
+      <status>delivered</status>
+      <delivered>10</delivered>
+      <bounced>0</bounced>
+    `));
+    msg.properties = {
+      headers: {
+        'x-crm-original-queue': 'crm.incoming',
+        'x-crm-retry-count': 288,
+      },
+    };
+    receiver.routeMessage = jest.fn().mockRejectedValue(Object.assign(
+      new Error('Salesforce request timeout'),
+      { isSalesforceError: true }
+    ));
+
+    await receiver.handleMessage(msg);
+
+    expect(receiver.channel.nack).toHaveBeenCalledWith(msg, false, false);
+  });
 });
 
 describe('handleSendInvoice', () => {

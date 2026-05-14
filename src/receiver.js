@@ -17,6 +17,8 @@ const KASSA_QUEUE = 'kassa.payments';
 const FACTURATIE_TO_CRM_QUEUE = 'facturatie.to.crm';
 const DEAD_LETTER_EXCHANGE = 'crm.dlx';
 const DEAD_LETTER_QUEUE = 'crm.dead-letter';
+const RETRY_DELAY_MS = Number(process.env.CRM_RETRY_DELAY_MS || 300000);
+const MAX_RETRY_ATTEMPTS = Number(process.env.CRM_MAX_RETRY_ATTEMPTS || 288);
 const USER_REGISTERED_QUEUE = 'user.registered';
 const USER_CREATED_QUEUE = 'user.created';
 const IDENTITY_EVENTS_EXCHANGE = 'user.events';
@@ -93,6 +95,15 @@ const TYPES_ACCEPTING_V1 = new Set([
 ]);
 
 const BASE_HEADER_FIELDS = ['message_id', 'version', 'type', 'timestamp', 'source'];
+const RETRYABLE_QUEUES = [
+  QUEUE_NAME,
+  KASSA_QUEUE,
+  FACTURATIE_TO_CRM_QUEUE,
+  USER_CREATED_QUEUE,
+  USER_REGISTERED_QUEUE,
+  PLANNING_SESSION_QUEUE,
+  IDENTITY_EVENTS_QUEUE,
+];
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -136,6 +147,108 @@ class ReceiverV2 {
     }
   }
 
+  getRetryQueueName(queueName) {
+    return `${queueName}.retry`;
+  }
+
+  async assertRetryQueues() {
+    for (const queueName of RETRYABLE_QUEUES) {
+      await this.channel.assertQueue(this.getRetryQueueName(queueName), {
+        durable: true,
+        arguments: {
+          'x-message-ttl': RETRY_DELAY_MS,
+          'x-dead-letter-exchange': '',
+          'x-dead-letter-routing-key': queueName,
+        },
+      });
+    }
+  }
+
+  getOriginalQueueName(msg) {
+    const headers = msg.properties?.headers || {};
+    return headers['x-crm-original-queue'] || msg.crmQueueName || msg.fields?.routingKey || QUEUE_NAME;
+  }
+
+  getRetryCount(msg) {
+    const headers = msg.properties?.headers || {};
+    return Number(headers['x-crm-retry-count'] || 0);
+  }
+
+  isRetryableError(err) {
+    const text = `${err?.code || ''} ${err?.name || ''} ${err?.message || err || ''}`.toLowerCase();
+    const permanentSalesforceMarkers = [
+      'field_custom_validation_exception',
+      'required_field_missing',
+      'invalid_field',
+      'invalid_type',
+      'malformed_id',
+      'duplicate_value',
+      'not_found',
+      'entity_is_deleted',
+      'bad request',
+    ];
+    const temporaryErrorMarkers = [
+      'timeout',
+      'timed out',
+      'etimedout',
+      'econnreset',
+      'econnrefused',
+      'enotfound',
+      'eai_again',
+      'socket hang up',
+      'network',
+      'server unavailable',
+      'service unavailable',
+      'too many requests',
+      'request_limit_exceeded',
+      'unable_to_lock_row',
+      'invalid_session_id',
+      'salesforce niet verbonden',
+      'salesforce not connected',
+    ];
+
+    if (permanentSalesforceMarkers.some((marker) => text.includes(marker))) return false;
+
+    return Boolean(err?.isSalesforceError) ||
+      text.includes('identity service timeout') ||
+      temporaryErrorMarkers.some((marker) => text.includes(marker));
+  }
+
+  async retryOrDeadLetter(msg, err, context = 'message_processing') {
+    const retryCount = this.getRetryCount(msg);
+    const originalQueue = this.getOriginalQueueName(msg);
+
+    if (!this.isRetryableError(err) || retryCount >= MAX_RETRY_ATTEMPTS) {
+      if (retryCount >= MAX_RETRY_ATTEMPTS) {
+        console.log(`[receiver] Max retries reached for ${originalQueue}; sending to dead-letter: ${err.message}`);
+        await this.log('error', context, `Max retries reached for ${originalQueue}. Error: ${err.message}`);
+      }
+      this.channel.nack(msg, false, false);
+      return;
+    }
+
+    const nextRetryCount = retryCount + 1;
+    const retryQueue = this.getRetryQueueName(originalQueue);
+    const headers = {
+      ...(msg.properties?.headers || {}),
+      'x-crm-original-queue': originalQueue,
+      'x-crm-retry-count': nextRetryCount,
+      'x-crm-last-error': err.message,
+    };
+
+    this.channel.sendToQueue(retryQueue, msg.content, {
+      ...msg.properties,
+      headers,
+      persistent: true,
+      deliveryMode: 2,
+      expiration: String(RETRY_DELAY_MS),
+    });
+
+    this.channel.ack(msg);
+    console.log(`[receiver] Temporary error; retry ${nextRetryCount}/${MAX_RETRY_ATTEMPTS} queued for ${originalQueue}: ${err.message}`);
+    await this.log('warning', context, `Temporary error; retry ${nextRetryCount}/${MAX_RETRY_ATTEMPTS} queued for ${originalQueue}. Error: ${err.message}`);
+  }
+
   async connectRabbitMQ() {
     const maxRetries = 5;
     let retryCount = 0;
@@ -170,10 +283,13 @@ class ReceiverV2 {
           await this.channel.bindQueue(PLANNING_SESSION_QUEUE, PLANNING_EXCHANGE, routingKey);
         }
 
+        await this.assertRetryQueues();
+
         await this.channel.prefetch(1);
 
-        const consume = async (msg) => {
+        const createConsumer = (queueName) => async (msg) => {
           if (msg) {
+            msg.crmQueueName = queueName;
             try {
               await this.handleMessage(msg);
             } catch (err) {
@@ -182,13 +298,16 @@ class ReceiverV2 {
           }
         };
 
-        this.channel.consume(QUEUE_NAME, consume, { noAck: false });
-        this.channel.consume(KASSA_QUEUE, consume, { noAck: false });
-        this.channel.consume(FACTURATIE_TO_CRM_QUEUE, consume, { noAck: false });
-        this.channel.consume(USER_CREATED_QUEUE, consume, { noAck: false });
-        this.channel.consume(USER_REGISTERED_QUEUE, consume, { noAck: false });
-        this.channel.consume(PLANNING_SESSION_QUEUE, consume, { noAck: false });
-        this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => this.handleIdentityUserEvent(msg), { noAck: false });
+        this.channel.consume(QUEUE_NAME, createConsumer(QUEUE_NAME), { noAck: false });
+        this.channel.consume(KASSA_QUEUE, createConsumer(KASSA_QUEUE), { noAck: false });
+        this.channel.consume(FACTURATIE_TO_CRM_QUEUE, createConsumer(FACTURATIE_TO_CRM_QUEUE), { noAck: false });
+        this.channel.consume(USER_CREATED_QUEUE, createConsumer(USER_CREATED_QUEUE), { noAck: false });
+        this.channel.consume(USER_REGISTERED_QUEUE, createConsumer(USER_REGISTERED_QUEUE), { noAck: false });
+        this.channel.consume(PLANNING_SESSION_QUEUE, createConsumer(PLANNING_SESSION_QUEUE), { noAck: false });
+        this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => {
+          if (msg) msg.crmQueueName = IDENTITY_EVENTS_QUEUE;
+          return this.handleIdentityUserEvent(msg);
+        }, { noAck: false });
 
         console.log(`[receiver] Connected to RabbitMQ with Auto-DLX, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${FACTURATIE_TO_CRM_QUEUE}, ${PLANNING_SESSION_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
 
@@ -389,7 +508,7 @@ class ReceiverV2 {
     } catch (err) {
       console.log(`[receiver] Unexpected error: ${err}`);
       await this.log('error', 'system_error', `Internal Error in Receiver: ${err.message}`);
-      this.channel.nack(msg, false, false);
+      await this.retryOrDeadLetter(msg, err, 'system_error');
     }
   }
 
@@ -1551,7 +1670,7 @@ class ReceiverV2 {
     } catch (err) {
       console.error(`[receiver] Identity Fanout error: ${err.message}`);
       await this.log('error', 'system_error', `Internal Error in handleIdentityUserEvent: ${err.message}`);
-      this.channel.nack(msg, false, false);
+      await this.retryOrDeadLetter(msg, err, 'identity_user_event');
     }
   }
 
