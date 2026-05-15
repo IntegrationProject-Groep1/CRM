@@ -1396,36 +1396,78 @@ class ReceiverV2 {
   }
 
   async handleRefundProcessed(header, body) {
-    try {
-      const refund = body ? body.refund : null;
-      const email = ReceiverV2.getElementText(body, 'email');
-      const masterUuid = await this.resolveMasterUuid(header, body, { email });
+  try {
+    const refund = body ? body.refund : null;
+    const email = ReceiverV2.getElementText(body, 'email');
+    const masterUuid = await this.resolveMasterUuid(header, body, { email });
 
-      const taskData = {
-        Subject: `Refund processed: ${ReceiverV2.getElementText(refund, 'amount')}`,
-        Description: `Reason: ${ReceiverV2.getElementText(refund, 'reason')}\nMaster UUID: ${masterUuid}`,
-        Status: 'Completed',
-        ActivityDate: new Date().toISOString().split('T')[0],
-      };
+    const taskData = {
+      Subject: `Refund processed: ${ReceiverV2.getElementText(refund, 'amount')}`,
+      Description: `Reason: ${ReceiverV2.getElementText(refund, 'reason')}\nMaster UUID: ${masterUuid}`,
+      Status: 'Completed',
+      ActivityDate: new Date().toISOString().split('T')[0],
+    };
 
-      if (this.sf.isConnected) {
-        await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-      }
-    } catch (err) {
-      console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
-      throw err;
+    if (this.sf.isConnected) {
+      await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
     }
+
+    // Check of er een invoice_request was voor deze order
+    const originalTransactionId = ReceiverV2.getElementText(refund, 'original_transaction_id');
+    if (originalTransactionId && this.sf.isConnected) {
+      const consumption = await this.sf.apiCall((conn) =>
+        conn.sobject('Consumption__c')
+          .findOne({ Consumption_ID__c: originalTransactionId }, ['Invoice_Req__c'])
+      );
+
+      if (consumption?.Invoice_Req__c) {
+        const refundItems = body?.items?.item
+          ? Array.isArray(body.items.item) ? body.items.item : [body.items.item]
+          : [];
+
+        const items = refundItems.map((item) => ({
+          sku: ReceiverV2.getElementText(item, 'sku'),
+          description: ReceiverV2.getElementText(item, 'description'),
+          quantity: parseInt(ReceiverV2.getElementText(item, 'quantity')),
+          unit_price: ReceiverV2.getElementText(item, 'unit_price'),
+          total_amount: ReceiverV2.getElementText(item, 'total_amount'),
+          vat_rate: ReceiverV2.getElementText(item, 'vat_rate'),
+          session_id: ReceiverV2.getElementText(item, 'session_id'),
+        }));
+
+        await this.sender.sendInvoiceRequest({
+          correlation_id: consumption.Invoice_Req__c,
+          identity_uuid: masterUuid,
+          reason: ReceiverV2.getElementText(refund, 'reason'),
+          items: items.length > 0 ? items : undefined,
+        });
+      }
+    }
+
+  } catch (err) {
+    console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
+    throw err;
   }
+}
 
-  async handleInvoiceRequestFromKassa(header, body) {
-    try {
-      const invoiceData = body ? body.invoice_data : null;
-      const contact = invoiceData ? invoiceData.contact : null;
-      const email = ReceiverV2.getElementText(body, 'email') || (invoiceData ? ReceiverV2.getElementText(invoiceData, 'email') : null);
-      const masterUuid = await this.resolveMasterUuid(header, body, { email });
+ async handleInvoiceRequestFromKassa(header, body) {
+  try {
+    const invoiceData = body ? body.invoice_data : null;
+    const contact = invoiceData ? invoiceData.contact : null;
+    const email = ReceiverV2.getElementText(body, 'email') || (invoiceData ? ReceiverV2.getElementText(invoiceData, 'email') : null);
+    const masterUuid = await this.resolveMasterUuid(header, body, { email });
 
-      const amountPaidRaw = invoiceData ? ReceiverV2.getElementText(invoiceData, 'amount_paid') : null;
-      const invoiceAmount = amountPaidRaw ? parseFloat(amountPaidRaw) : 0;
+    const amountPaidRaw = invoiceData ? ReceiverV2.getElementText(invoiceData, 'amount_paid') : null;
+    const invoiceAmount = amountPaidRaw ? parseFloat(amountPaidRaw) : 0;
+
+    if (this.sf.isConnected) {
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Consumption__c')
+          .upsert({
+            Consumption_ID__c: ReceiverV2.getElementText(invoiceData, 'id'),
+            Invoice_Req__c: header.correlation_id || header.message_id,
+          }, 'Consumption_ID__c')
+      );
 
       const taskData = {
         Subject: `Invoice request [Kassa]`,
@@ -1433,38 +1475,36 @@ class ReceiverV2 {
         Status: 'Completed',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
-
-      if (this.sf.isConnected) {
-        await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-      }
-
-      await this.sender.sendInvoiceRequest({
-        master_uuid: masterUuid,
-        correlation_id: header.correlation_id || header.message_id,
-        customer: {
-          email: email || '',
-          first_name: contact ? ReceiverV2.getElementText(contact, 'first_name') : '',
-          last_name: contact ? ReceiverV2.getElementText(contact, 'last_name') : '',
-          company_name: invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null,
-          vat_number: invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null,
-        },
-        invoice: {
-          amount: invoiceAmount,
-          id: invoiceData ? ReceiverV2.getElementText(invoiceData, 'id') : null,
-        },
-        address: invoiceData ? {
-          street: ReceiverV2.getElementText(invoiceData.address, 'street') || '',
-          number: ReceiverV2.getElementText(invoiceData.address, 'number') || '',
-          postal_code: ReceiverV2.getElementText(invoiceData.address, 'postal_code') || '',
-          city: ReceiverV2.getElementText(invoiceData.address, 'city') || '',
-          country: ReceiverV2.getElementText(invoiceData.address, 'country') || '',
-        } : { street: '', number: '', postal_code: '', city: '', country: '' },
-      });
-    } catch (err) {
-      console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
-      throw err;
+      await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
     }
+
+    await this.sender.sendInvoiceRequest({
+      master_uuid: masterUuid,
+      correlation_id: header.correlation_id || header.message_id,
+      customer: {
+        email: email || '',
+        first_name: contact ? ReceiverV2.getElementText(contact, 'first_name') : '',
+        last_name: contact ? ReceiverV2.getElementText(contact, 'last_name') : '',
+        company_name: invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null,
+        vat_number: invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null,
+      },
+      invoice: {
+        amount: invoiceAmount,
+        id: invoiceData ? ReceiverV2.getElementText(invoiceData, 'id') : null,
+      },
+      address: invoiceData ? {
+        street: ReceiverV2.getElementText(invoiceData.address, 'street') || '',
+        number: ReceiverV2.getElementText(invoiceData.address, 'number') || '',
+        postal_code: ReceiverV2.getElementText(invoiceData.address, 'postal_code') || '',
+        city: ReceiverV2.getElementText(invoiceData.address, 'city') || '',
+        country: ReceiverV2.getElementText(invoiceData.address, 'country') || '',
+      } : { street: '', number: '', postal_code: '', city: '', country: '' },
+    });
+  } catch (err) {
+    console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
+    throw err;
   }
+}
 
   async handleUserUpdated(header, body) {
     try {
