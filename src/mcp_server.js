@@ -39,7 +39,7 @@ function createMcpServer() {
 
   server.tool(
     'list_members',
-    "List CRM members (Member__c). Optionally filter by search term, user type ('Bedrijf'/'Particulier'), or status.",
+    "List CRM members (Member__c). Optionally filter by search term, user type ('Bedrijf'/'Particulier'), or status. Member__c = full member record (the business-entity view of a person). NOT the same as a Drupal login account (use frontend__list_users) or a FossBilling billing client (use facturatie__list_clients).",
     {
       limit: z.number().int().min(1).max(200).optional().default(50),
       search: z.string().optional(),
@@ -66,7 +66,7 @@ function createMcpServer() {
 
   server.tool(
     'get_member',
-    'Get full details for a CRM member by their Master_UUID (identity UUID from the identity service).',
+    'Get full details for a CRM member by their Master_UUID (identity UUID from the identity service). Returns the Salesforce Member__c record — the business-entity view of a person. NOT a Drupal login account (use frontend__get_user_by_uuid for that) and NOT a FossBilling billing client.',
     { master_uuid: z.string() },
     async ({ master_uuid }) => {
       try {
@@ -81,7 +81,7 @@ function createMcpServer() {
 
   server.tool(
     'get_member_by_email',
-    'Find a CRM member by their exact email address.',
+    'Find a CRM member by their exact email address. Returns the Member__c record (full profile). The same email may also exist as a Drupal user (frontend__get_user_by_email) and as a FossBilling billing client (facturatie__get_client_by_email) — three different concepts with different IDs.',
     { email: z.string() },
     async ({ email }) => {
       try {
@@ -96,7 +96,7 @@ function createMcpServer() {
 
   server.tool(
     'search_members',
-    'Search CRM members by partial name, email, or company name.',
+    'Search CRM members by partial name, email, or company name. Searches Salesforce Member__c (full profile view). For Drupal account search use frontend__search_users; for billing-client search use facturatie__search_clients.',
     {
       query: z.string(),
       limit: z.number().int().min(1).max(100).optional().default(25),
@@ -157,7 +157,7 @@ function createMcpServer() {
 
   server.tool(
     'get_member_wallet',
-    'Get wallet balance, status, and lease info for a member by their Master_UUID.',
+    "Get wallet balance, status, and lease info for a member by their Master_UUID. CRITICAL: if Wallet_Status__c='Leased', the Wallet_Balance__c field is STALE — Kassa holds the live balance for the duration of the lease. ALWAYS also call kassa__get_wallet_by_master_uuid when Wallet_Status__c='Leased' and report the Kassa value as the live balance, with the CRM cached value and Last_Lease_ID__c for traceability.",
     { master_uuid: z.string() },
     async ({ master_uuid }) => {
       try {
@@ -172,7 +172,7 @@ function createMcpServer() {
 
   server.tool(
     'list_active_leases',
-    "List all members whose wallet is currently 'Leased' — wallet control has been transferred to Kassa for on-site spending.",
+    "List all members whose wallet is currently 'Leased' — wallet control has been transferred to Kassa for on-site spending. For each member returned here, the LIVE balance is in Kassa (use kassa__get_wallet_by_master_uuid), not in the CRM record shown.",
     { limit: z.number().int().min(1).max(200).optional().default(100) },
     async ({ limit }) => {
       try {
@@ -186,7 +186,7 @@ function createMcpServer() {
 
   server.tool(
     'get_wallet_stats',
-    'Aggregate wallet statistics: total balance in system, average, max, count per wallet status.',
+    'Aggregate wallet statistics: total balance in system, average, max, count per wallet status. Numbers are based on CRM cached balances — leased wallets reflect the last-synced value, not live spending. For an exact live total during an event reconcile with kassa__get_all_wallets.',
     {},
     async () => {
       try {
@@ -213,7 +213,7 @@ function createMcpServer() {
 
   server.tool(
     'get_member_invoice_info',
-    'Get the last invoice URL, due date, and invoice number stored on a member record.',
+    'Returns the LAST invoice URL/number/due-date cached on the CRM member record. May be stale. For the current and complete invoice history use facturatie__get_client_invoices (look up the FossBilling client_id first via facturatie__get_client_by_email or via facturatie__get_company_billing_account).',
     { master_uuid: z.string() },
     async ({ master_uuid }) => {
       try {
@@ -244,7 +244,7 @@ function createMcpServer() {
 
   server.tool(
     'list_consumptions',
-    'List Consumption__c records (bar/catering items ordered at events, linked to members).',
+    'List Consumption__c records (bar/catering items ordered at events, linked to members). The CRM master record of consumption items, populated post-event. For LIVE POS orders during the event use kassa__get_recent_orders; for items pending invoicing use facturatie__get_pending_consumptions.',
     { limit: z.number().int().min(1).max(200).optional().default(50) },
     async ({ limit }) => {
       try {
@@ -302,7 +302,7 @@ function createMcpServer() {
 
   server.tool(
     'get_recent_tasks',
-    'Get recent Salesforce Task records — the CRM activity log covering check-ins, payments, session registrations, invoices, refunds, and badge scans.',
+    'Get recent Salesforce Task records — the CURATED human-readable CRM activity log covering check-ins, payments, session registrations, invoices, refunds, and badge scans. For the raw event stream of the same events use monitoring__get_logs_by_action.',
     { limit: z.number().int().min(1).max(100).optional().default(20) },
     async ({ limit }) => {
       try {
