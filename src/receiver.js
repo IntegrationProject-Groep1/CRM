@@ -1435,7 +1435,7 @@ class ReceiverV2 {
           session_id: ReceiverV2.getElementText(item, 'session_id'),
         }));
 
-        await this.sender.sendInvoiceCancelledToFacturatie({
+        await this.sender.sendInvoiceRequest({
           correlation_id: consumption.Invoice_Req__c,
           identity_uuid: masterUuid,
           reason: ReceiverV2.getElementText(refund, 'reason'),
