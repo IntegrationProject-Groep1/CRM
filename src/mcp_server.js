@@ -411,8 +411,8 @@ app.post('/mcp', async (req, res) => {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   const server = createMcpServer();
   res.on('close', async () => {
-    try { await transport.close(); } catch (_) {}
-    try { await server.close(); } catch (_) {}
+    try { await transport.close(); } catch (_) { /* ignore */ }
+    try { await server.close(); } catch (_) { /* ignore */ }
   });
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
