@@ -7,6 +7,7 @@ services:
       - "3000:3000"
     depends_on:
       rabbitmq_broker:
+        condition: service_healthy
 
   crm_mcp:
     build: .
@@ -23,8 +24,6 @@ services:
       SF_ACCESS_TOKEN: ${SF_ACCESS_TOKEN:-}
       SF_API_VERSION: ${SF_API_VERSION:-v60.0}
       PORT: "8008"
-        condition: service_healthy
-    restart: on-failure
 
   rabbitmq_broker:
     image: rabbitmq:3-management
