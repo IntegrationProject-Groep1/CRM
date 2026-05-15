@@ -7,6 +7,22 @@ services:
       - "3000:3000"
     depends_on:
       rabbitmq_broker:
+
+  crm_mcp:
+    build: .
+    command: node src/mcp_server.js
+    container_name: crm_mcp
+    restart: unless-stopped
+    ports:
+      - "${MCP_CRM_PORT:-8008}:8008"
+    environment:
+      SF_INSTANCE_URL: ${SF_INSTANCE_URL}
+      SF_CLIENT_ID: ${SF_CLIENT_ID}
+      SF_CLIENT_SECRET: ${SF_CLIENT_SECRET}
+      SF_REFRESH_TOKEN: ${SF_REFRESH_TOKEN}
+      SF_ACCESS_TOKEN: ${SF_ACCESS_TOKEN:-}
+      SF_API_VERSION: ${SF_API_VERSION:-v60.0}
+      PORT: "8008"
         condition: service_healthy
     restart: on-failure
 
