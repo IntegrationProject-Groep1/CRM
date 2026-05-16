@@ -123,7 +123,7 @@ function createMcpServer() {
 
   server.tool(
     'get_members_by_type',
-    "Get members filtered by type, newest first. Returns: id, name, email, company, VAT, status, CreatedDate.",
+    "Get members filtered by membership type ('Bedrijf' = company, 'Particulier' = individual). Returns name, email, company, VAT, status, CRM UUID. Use this when you need to list all company members or all individual members.",
     {
       user_type: z.enum(['Bedrijf', 'Particulier']).describe("'Bedrijf' = company members, 'Particulier' = individual/private members."),
       limit: z.number().int().min(1).max(200).optional().default(100).describe("Max results (default 100, max 200)."),
@@ -221,16 +221,28 @@ function createMcpServer() {
   // ── INVOICES ─────────────────────────────────────────────────────
 
   server.tool(
-    'get_member_invoice_info',
-    'Returns the last invoice URL/number/due-date CACHED on the CRM record — may be stale. For full invoice history use facturatie__get_invoices_by_email instead.',
-    { master_uuid: z.string().describe("The member's Master_UUID__c. Get it via search_members first — never guess.") },
-    async ({ master_uuid }) => {
+    'update_member_status',
+    "Update a member's Status__c in Salesforce. WRITE OPERATION — confirm with admin before calling. Valid values: 'Active', 'Inactive', 'Cancelled', 'Pending'.",
+    {
+      master_uuid: z.string().describe("Member's Master_UUID__c. Use search_members to find it — never guess."),
+      status: z.enum(['Active', 'Inactive', 'Cancelled', 'Pending']).describe("New Status__c value."),
+    },
+    async ({ master_uuid, status }) => {
       try {
         const records = await soql(
-          `SELECT ${_SF_ID}, ${_SF_INVOICE} FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
+          `SELECT Id, First_Name__c, Last_Name__c, Email__c FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
         );
-        if (!records.length) return ok({ error: `No member found: ${master_uuid}` });
-        return ok(records[0]);
+        if (!records.length) return ok({ error: `No member found for UUID: ${master_uuid}` });
+        const { Id, First_Name__c, Last_Name__c, Email__c } = records[0];
+        await sf.apiCall((conn) => conn.sobject('Member__c').update({ Id, Status__c: status }));
+        return ok({
+          success: true,
+          master_uuid,
+          name: `${First_Name__c} ${Last_Name__c}`,
+          email: Email__c,
+          status,
+          message: `Member status updated to '${status}'.`,
+        });
       } catch (e) { return sfErr(e); }
     }
   );
@@ -284,7 +296,7 @@ function createMcpServer() {
 
   server.tool(
     'get_consumption_stats',
-    'Aggregate consumption statistics: total items, total revenue, top products by revenue.',
+    'Aggregate consumption statistics across all members: total items sold, total revenue, and a ranked breakdown of top products by revenue. Useful for event sales analysis — NOT real-time POS data (use kassa__get_sales_summary for live POS figures).',
     {},
     async () => {
       try {
@@ -355,52 +367,6 @@ function createMcpServer() {
   );
 
   // ── OVERVIEW & HEALTH ─────────────────────────────────────────────
-
-  server.tool(
-    'discover_salesforce_schema',
-    'List available Salesforce objects and the actual fields on Member__c and Consumption__c. Use this to debug why CRM queries return no results — confirms whether the expected custom objects and fields exist in this Salesforce org.',
-    {},
-    async () => {
-      try {
-        if (!sf.isConnected) throw new Error('Salesforce not connected');
-        // Query Member__c for one record to see what fields come back
-        const memberSample = await soql('SELECT FIELDS(ALL) FROM Member__c LIMIT 1').catch(() => null);
-        // If FIELDS(ALL) is not available (non-Enterprise), fall back to known fields
-        const memberCheck = await soql(`SELECT Id, Master_UUID__c, Email__c, First_Name__c, Last_Name__c, Wallet_Balance__c, Wallet_Status__c FROM Member__c LIMIT 1`).catch((e) => ({ error: e.message }));
-        const consumptionCheck = await soql('SELECT Id, Consumption_ID__c, Product_Name__c FROM Consumption__c LIMIT 1').catch((e) => ({ error: e.message }));
-        const taskCheck = await soql('SELECT Id, Subject FROM Task LIMIT 1').catch((e) => ({ error: e.message }));
-        const memberCount = await soql('SELECT COUNT(Id) FROM Member__c').catch(() => [{ expr0: 'error' }]);
-
-        return ok({
-          member_object_accessible: !Array.isArray(memberCheck) || memberCheck.length >= 0,
-          consumption_object_accessible: !consumptionCheck?.error,
-          task_object_accessible: !taskCheck?.error,
-          member_count: memberCount[0]?.expr0 ?? 'error',
-          member_field_check: memberCheck,
-          consumption_field_check: consumptionCheck,
-          member_full_record_sample: memberSample,
-        });
-      } catch (e) { return sfErr(e); }
-    }
-  );
-
-  server.tool(
-    'check_salesforce_status',
-    'Check whether the Salesforce connection is active and credentials are valid.',
-    {},
-    async () => {
-      try {
-        const healthy = await sf.healthCheck();
-        return ok({
-          status: healthy ? 'connected' : 'disconnected',
-          instance_url: sf.getInstanceUrl(),
-          auth_method: sf.authMethod,
-        });
-      } catch (e) {
-        return ok({ status: 'error', error: e?.message || String(e) });
-      }
-    }
-  );
 
   server.tool(
     'get_crm_overview',
