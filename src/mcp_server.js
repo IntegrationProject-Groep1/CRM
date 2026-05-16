@@ -39,7 +39,7 @@ function createMcpServer() {
 
   server.tool(
     'list_members',
-    "List CRM members (Member__c). Optionally filter by search term, user type ('Bedrijf'/'Particulier'), or status. Member__c = full member record (the business-entity view of a person). NOT the same as a Drupal login account (use frontend__list_users) or a FossBilling billing client (use facturatie__list_clients).",
+    "List CRM members (Member__c). Optionally filter by search term, user type ('Bedrijf'/'Particulier'), or status. Authoritative source for person identity — use for any question about who a person is.",
     {
       limit: z.number().int().min(1).max(200).optional().default(50),
       search: z.string().optional(),
@@ -66,7 +66,7 @@ function createMcpServer() {
 
   server.tool(
     'get_member',
-    'Get full details for a CRM member by their Master_UUID (identity UUID from the identity service). Returns the Salesforce Member__c record — the business-entity view of a person. NOT a Drupal login account (use frontend__get_user_by_uuid for that) and NOT a FossBilling billing client.',
+    'Get full details for a CRM member by their Master_UUID (identity UUID from the identity service). Authoritative source for person identity and full member profile.',
     { master_uuid: z.string() },
     async ({ master_uuid }) => {
       try {
@@ -81,7 +81,7 @@ function createMcpServer() {
 
   server.tool(
     'get_member_by_email',
-    'Find a CRM member by their exact email address. Returns the Member__c record (full profile). The same email may also exist as a Drupal user (frontend__get_user_by_email) and as a FossBilling billing client (facturatie__get_client_by_email) — three different concepts with different IDs.',
+    'Find a CRM member by their exact email address. Returns the full Member__c profile. Primary tool for any person lookup by email.',
     { email: z.string() },
     async ({ email }) => {
       try {
@@ -96,7 +96,7 @@ function createMcpServer() {
 
   server.tool(
     'search_members',
-    'Search CRM members by partial name, email, or company name. Searches Salesforce Member__c (full profile view). For Drupal account search use frontend__search_users; for billing-client search use facturatie__search_clients.',
+    'Search CRM members by partial name, email, or company name. Primary tool for person search.',
     {
       query: z.string(),
       limit: z.number().int().min(1).max(100).optional().default(25),
