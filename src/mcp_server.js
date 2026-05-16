@@ -48,12 +48,12 @@ function createMcpServer() {
 
   server.tool(
     'list_members',
-    "List CRM members (Member__c). Optionally filter by search term, user type ('Bedrijf'/'Particulier'), or status. Authoritative source for person identity — use for any question about who a person is.",
+    "List CRM members (Member__c), newest first. Optionally filter by search term, user type ('Bedrijf'/'Particulier'), or status. Default limit 50. Use limit:5 for 'show latest members'. Authoritative source for person identity. Returns: id, Master_UUID__c, name, email, User_Type__c, Status__c, CreatedDate.",
     {
-      limit: z.number().int().min(1).max(200).optional().default(50),
-      search: z.string().optional(),
-      user_type: z.enum(['Bedrijf', 'Particulier']).optional(),
-      status: z.string().optional(),
+      limit: z.number().int().min(1).max(200).optional().default(50).describe("Max members to return (default 50). Use 5 for 'show latest members'."),
+      search: z.string().optional().describe("Partial name, email, or company name to filter by. Case-insensitive LIKE match."),
+      user_type: z.enum(['Bedrijf', 'Particulier']).optional().describe("Filter by type: 'Bedrijf' = company, 'Particulier' = individual."),
+      status: z.string().optional().describe("Filter by status, e.g. 'Active', 'Inactive', 'Pending'."),
     },
     async ({ limit, search, user_type, status }) => {
       try {
@@ -66,7 +66,7 @@ function createMcpServer() {
         }
         const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
         const records = await soql(
-          `SELECT ${_SF_CORE}, Badge_ID__c, Wallet_Balance__c, Wallet_Status__c, Payment_Status__c FROM Member__c ${w} LIMIT ${limit}`
+          `SELECT ${_SF_CORE}, Badge_ID__c, Wallet_Balance__c, Wallet_Status__c, Payment_Status__c, CreatedDate FROM Member__c ${w} ORDER BY CreatedDate DESC LIMIT ${limit}`
         );
         return ok({ members: records, count: records.length });
       } catch (e) { return sfErr(e); }
@@ -75,8 +75,8 @@ function createMcpServer() {
 
   server.tool(
     'get_member',
-    'Get full details for a CRM member by their Master_UUID (identity UUID from the identity service). Authoritative source for person identity and full member profile.',
-    { master_uuid: z.string() },
+    'Get full details for a CRM member by their Master_UUID. Use search_members or list_members first to find the UUID — never guess it. Returns: full profile, wallet, invoice info, address.',
+    { master_uuid: z.string().describe("The member's Master_UUID__c from Salesforce (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx). Get it via search_members or list_members — never invent a value.") },
     async ({ master_uuid }) => {
       try {
         const records = await soql(
@@ -90,8 +90,8 @@ function createMcpServer() {
 
   server.tool(
     'get_member_by_email',
-    'Find a CRM member by their exact email address. Returns the full Member__c profile. Primary tool for any person lookup by email.',
-    { email: z.string() },
+    'Find a CRM member by their exact email address. Primary tool for any person lookup by email. Returns full Member__c profile including wallet status.',
+    { email: z.string().describe("The member's exact email address (e.g. 'john@example.com'). Must match exactly — use search_members for partial matches.") },
     async ({ email }) => {
       try {
         const records = await soql(
@@ -105,10 +105,10 @@ function createMcpServer() {
 
   server.tool(
     'search_members',
-    'Search CRM members by partial name, email, or company name. Primary tool for person search.',
+    'Search CRM members by partial name, email, or company name. Primary tool for person search. Use this when you have a name fragment and need the master_uuid.',
     {
-      query: z.string(),
-      limit: z.number().int().min(1).max(100).optional().default(25),
+      query: z.string().describe("Name fragment, email, or company name to search. Case-insensitive partial match. Example: 'jan', 'smith', 'acme'."),
+      limit: z.number().int().min(1).max(100).optional().default(25).describe("Max results (default 25, max 100)."),
     },
     async ({ query, limit }) => {
       try {
@@ -123,15 +123,15 @@ function createMcpServer() {
 
   server.tool(
     'get_members_by_type',
-    "Get members filtered by type. user_type: 'Bedrijf' (company) or 'Particulier' (individual).",
+    "Get members filtered by type, newest first. Returns: id, name, email, company, VAT, status, CreatedDate.",
     {
-      user_type: z.enum(['Bedrijf', 'Particulier']),
-      limit: z.number().int().min(1).max(200).optional().default(100),
+      user_type: z.enum(['Bedrijf', 'Particulier']).describe("'Bedrijf' = company members, 'Particulier' = individual/private members."),
+      limit: z.number().int().min(1).max(200).optional().default(100).describe("Max results (default 100, max 200)."),
     },
     async ({ user_type, limit }) => {
       try {
         const records = await soql(
-          `SELECT Id, Master_UUID__c, First_Name__c, Last_Name__c, Email__c, Company_Name__c, VAT_Number__c, Status__c FROM Member__c WHERE User_Type__c = '${esc(user_type)}' LIMIT ${limit}`
+          `SELECT Id, Master_UUID__c, First_Name__c, Last_Name__c, Email__c, Company_Name__c, VAT_Number__c, Status__c, CreatedDate FROM Member__c WHERE User_Type__c = '${esc(user_type)}' ORDER BY CreatedDate DESC LIMIT ${limit}`
         );
         return ok({ members: records, count: records.length, user_type });
       } catch (e) { return sfErr(e); }
@@ -166,8 +166,8 @@ function createMcpServer() {
 
   server.tool(
     'get_member_wallet',
-    "Get wallet balance, status, and lease info for a member by their Master_UUID. CRITICAL: if Wallet_Status__c='Leased', the Wallet_Balance__c field is STALE — Kassa holds the live balance for the duration of the lease. ALWAYS also call kassa__get_wallet_by_master_uuid when Wallet_Status__c='Leased' and report the Kassa value as the live balance, with the CRM cached value and Last_Lease_ID__c for traceability.",
-    { master_uuid: z.string() },
+    "Get wallet balance, status, and lease info for a member. CRITICAL: if Wallet_Status__c='Leased', Wallet_Balance__c is STALE — you MUST also call kassa__get_wallet_by_master_uuid and report the Kassa value as the live balance.",
+    { master_uuid: z.string().describe("The member's Master_UUID__c. Get it via search_members or list_members first — never guess.") },
     async ({ master_uuid }) => {
       try {
         const records = await soql(
@@ -181,8 +181,8 @@ function createMcpServer() {
 
   server.tool(
     'list_active_leases',
-    "List all members whose wallet is currently 'Leased' — wallet control has been transferred to Kassa for on-site spending. For each member returned here, the LIVE balance is in Kassa (use kassa__get_wallet_by_master_uuid), not in the CRM record shown.",
-    { limit: z.number().int().min(1).max(200).optional().default(100) },
+    "List all members whose wallet is currently 'Leased' — wallet control is in Kassa. For each member here, use kassa__get_wallet_by_master_uuid to get the live balance.",
+    { limit: z.number().int().min(1).max(200).optional().default(100).describe("Max leased wallets to return (default 100).") },
     async ({ limit }) => {
       try {
         const records = await soql(
@@ -222,8 +222,8 @@ function createMcpServer() {
 
   server.tool(
     'get_member_invoice_info',
-    'Returns the LAST invoice URL/number/due-date cached on the CRM member record. May be stale. For the current and complete invoice history use facturatie__get_client_invoices (look up the FossBilling client_id first via facturatie__get_client_by_email or via facturatie__get_company_billing_account).',
-    { master_uuid: z.string() },
+    'Returns the last invoice URL/number/due-date CACHED on the CRM record — may be stale. For full invoice history use facturatie__get_invoices_by_email instead.',
+    { master_uuid: z.string().describe("The member's Master_UUID__c. Get it via search_members first — never guess.") },
     async ({ master_uuid }) => {
       try {
         const records = await soql(
@@ -237,8 +237,8 @@ function createMcpServer() {
 
   server.tool(
     'get_members_with_cancelled_payment',
-    "List members whose payment has been cancelled (Payment_Status__c = 'Cancelled').",
-    { limit: z.number().int().min(1).max(200).optional().default(100) },
+    "List members whose payment has been cancelled (Payment_Status__c = 'Cancelled'). Returns: name, email, last invoice number, due date.",
+    { limit: z.number().int().min(1).max(200).optional().default(100).describe("Max results (default 100).") },
     async ({ limit }) => {
       try {
         const records = await soql(
@@ -253,12 +253,12 @@ function createMcpServer() {
 
   server.tool(
     'list_consumptions',
-    'List Consumption__c records (bar/catering items ordered at events, linked to members). The CRM master record of consumption items, populated post-event. For LIVE POS orders during the event use kassa__get_recent_orders; for items pending invoicing use facturatie__get_pending_consumptions.',
-    { limit: z.number().int().min(1).max(200).optional().default(50) },
+    'List Consumption__c records (bar/catering items, post-event master data). For live POS orders use kassa__get_recent_orders. For pending invoicing use facturatie__get_pending_consumptions.',
+    { limit: z.number().int().min(1).max(200).optional().default(50).describe("Max consumption records to return (default 50, newest first).") },
     async ({ limit }) => {
       try {
         const records = await soql(
-          `SELECT Id, Consumption_ID__c, Product_Name__c, Quantity__c, Total_Amount__c, Price_Per_Unit__c, Product_SKU__c, VAT_Rate__c, Member__c FROM Consumption__c LIMIT ${limit}`
+          `SELECT Id, Consumption_ID__c, Product_Name__c, Quantity__c, Total_Amount__c, Price_Per_Unit__c, Product_SKU__c, VAT_Rate__c, Member__c, CreatedDate FROM Consumption__c ORDER BY CreatedDate DESC LIMIT ${limit}`
         );
         return ok({ consumptions: records, count: records.length });
       } catch (e) { return sfErr(e); }
@@ -267,15 +267,15 @@ function createMcpServer() {
 
   server.tool(
     'get_member_consumptions',
-    'Get all consumption items linked to a specific member. Provide the Salesforce Member Id (Id field, e.g. from get_member).',
+    'Get all consumption items for a specific member by Salesforce Id. Get the Id from get_member (the Id field, starting with a 3-character prefix like "a0B").',
     {
-      member_sf_id: z.string(),
-      limit: z.number().int().min(1).max(200).optional().default(50),
+      member_sf_id: z.string().describe("Salesforce record Id of the Member__c object (the 'Id' field from get_member, NOT Master_UUID__c). Example format: 'a0Bxx000000xxxx'."),
+      limit: z.number().int().min(1).max(200).optional().default(50).describe("Max consumption records (default 50, newest first)."),
     },
     async ({ member_sf_id, limit }) => {
       try {
         const records = await soql(
-          `SELECT Id, Consumption_ID__c, Product_Name__c, Quantity__c, Total_Amount__c, Price_Per_Unit__c, Product_SKU__c, VAT_Rate__c FROM Consumption__c WHERE Member__c = '${esc(member_sf_id)}' LIMIT ${limit}`
+          `SELECT Id, Consumption_ID__c, Product_Name__c, Quantity__c, Total_Amount__c, Price_Per_Unit__c, Product_SKU__c, VAT_Rate__c, CreatedDate FROM Consumption__c WHERE Member__c = '${esc(member_sf_id)}' ORDER BY CreatedDate DESC LIMIT ${limit}`
         );
         return ok({ consumptions: records, count: records.length, member_sf_id });
       } catch (e) { return sfErr(e); }
@@ -311,8 +311,8 @@ function createMcpServer() {
 
   server.tool(
     'get_recent_tasks',
-    'Get recent Salesforce Task records — the CURATED human-readable CRM activity log covering check-ins, payments, session registrations, invoices, refunds, and badge scans. For the raw event stream of the same events use monitoring__get_logs_by_action.',
-    { limit: z.number().int().min(1).max(100).optional().default(20) },
+    'Get recent Salesforce Task records — curated human-readable activity log (check-ins, payments, registrations, invoices, badge scans). For raw event stream use monitoring__get_logs_by_action.',
+    { limit: z.number().int().min(1).max(100).optional().default(20).describe("Max tasks to return (default 20, newest first).") },
     async ({ limit }) => {
       try {
         const records = await soql(
@@ -325,10 +325,10 @@ function createMcpServer() {
 
   server.tool(
     'get_tasks_by_subject',
-    "Filter Task records by a keyword in the Subject. Useful keywords: 'Check-in', 'Payment registered', 'Invoice', 'Session', 'Badge', 'Refund', 'Sessie Inschrijving'.",
+    "Filter Task records by keyword in Subject. Useful values: 'Check-in', 'Payment registered', 'Invoice', 'Session', 'Badge', 'Refund', 'Sessie Inschrijving'.",
     {
-      keyword: z.string(),
-      limit: z.number().int().min(1).max(100).optional().default(25),
+      keyword: z.string().describe("Text to search in Task Subject. Partial match. Examples: 'Check-in', 'Refund', 'Badge'."),
+      limit: z.number().int().min(1).max(100).optional().default(25).describe("Max tasks (default 25, newest first)."),
     },
     async ({ keyword, limit }) => {
       try {
@@ -342,8 +342,8 @@ function createMcpServer() {
 
   server.tool(
     'get_checkin_tasks',
-    "Get all check-in activity records (Tasks with Subject starting with 'Check-in:').",
-    { limit: z.number().int().min(1).max(100).optional().default(50) },
+    "Get all check-in activity records (Tasks with Subject starting with 'Check-in:'). Returns: subject, description, date, created.",
+    { limit: z.number().int().min(1).max(100).optional().default(50).describe("Max check-in records (default 50, newest first).") },
     async ({ limit }) => {
       try {
         const records = await soql(
