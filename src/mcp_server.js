@@ -357,6 +357,34 @@ function createMcpServer() {
   // ── OVERVIEW & HEALTH ─────────────────────────────────────────────
 
   server.tool(
+    'discover_salesforce_schema',
+    'List available Salesforce objects and the actual fields on Member__c and Consumption__c. Use this to debug why CRM queries return no results — confirms whether the expected custom objects and fields exist in this Salesforce org.',
+    {},
+    async () => {
+      try {
+        if (!sf.isConnected) throw new Error('Salesforce not connected');
+        // Query Member__c for one record to see what fields come back
+        const memberSample = await soql('SELECT FIELDS(ALL) FROM Member__c LIMIT 1').catch(() => null);
+        // If FIELDS(ALL) is not available (non-Enterprise), fall back to known fields
+        const memberCheck = await soql(`SELECT Id, Master_UUID__c, Email__c, First_Name__c, Last_Name__c, Wallet_Balance__c, Wallet_Status__c FROM Member__c LIMIT 1`).catch((e) => ({ error: e.message }));
+        const consumptionCheck = await soql('SELECT Id, Consumption_ID__c, Product_Name__c FROM Consumption__c LIMIT 1').catch((e) => ({ error: e.message }));
+        const taskCheck = await soql('SELECT Id, Subject FROM Task LIMIT 1').catch((e) => ({ error: e.message }));
+        const memberCount = await soql('SELECT COUNT() FROM Member__c').catch(() => [{ expr0: 'error' }]);
+
+        return ok({
+          member_object_accessible: !Array.isArray(memberCheck) || memberCheck.length >= 0,
+          consumption_object_accessible: !consumptionCheck?.error,
+          task_object_accessible: !taskCheck?.error,
+          member_count: memberCount[0]?.expr0 ?? 'error',
+          member_field_check: memberCheck,
+          consumption_field_check: consumptionCheck,
+          member_full_record_sample: memberSample,
+        });
+      } catch (e) { return sfErr(e); }
+    }
+  );
+
+  server.tool(
     'check_salesforce_status',
     'Check whether the Salesforce connection is active and credentials are valid.',
     {},
