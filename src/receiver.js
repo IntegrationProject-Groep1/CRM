@@ -783,7 +783,6 @@ class ReceiverV2 {
         type: rawType,
         company_name: ReceiverV2.getElementText(customer, 'company_name'),
         vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
-        company_id: ReceiverV2.getElementText(customer, 'company_id'),
       });
 
       console.log(`[receiver] User created in Salesforce and forwarded to Kassa: ${masterUuid}`);
@@ -1545,7 +1544,6 @@ class ReceiverV2 {
         type: rawType,
         company_name: ReceiverV2.getElementText(customer, 'company_name'),
         vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
-        company_id: ReceiverV2.getElementText(customer, 'company_id'),
       });
 
       console.log(`[receiver] User updated in Salesforce and forwarded to Kassa: ${identityUuid}`);
