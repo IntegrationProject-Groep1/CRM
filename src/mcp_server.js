@@ -25,8 +25,17 @@ async function soql(query) {
 }
 
 function esc(val) {
-  return String(val).replace(/'/g, "\\'");
+  return String(val)
+    .replace(/\\/g, '\\\\')  // backslash first, then quote
+    .replace(/'/g, "\\'");
 }
+
+// Reusable SOQL field lists
+const _SF_ID   = 'Id, Master_UUID__c, First_Name__c, Last_Name__c, Email__c';
+const _SF_CORE = `${_SF_ID}, User_Type__c, Status__c, Company_Name__c`;
+const _SF_WALLET = 'Wallet_Balance__c, Wallet_Status__c, Last_Lease_ID__c, Last_Lease_At__c, Last_Sync_At__c';
+const _SF_INVOICE = 'Last_Invoice_URL__c, Last_Invoice_Due_Date__c, Last_Invoice_Number__c, Payment_Status__c';
+const _SF_FULL = `${_SF_CORE}, Birthdate__c, VAT_Number__c, Company_ID__c, Badge_ID__c, Street__c, House_Number__c, Postal_Code__c, City__c, Country_Code__c, ${_SF_WALLET}, ${_SF_INVOICE}`;
 
 // ─────────────────────────────────────────────
 //  Tool registration
@@ -57,7 +66,7 @@ function createMcpServer() {
         }
         const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
         const records = await soql(
-          `SELECT Id, Master_UUID__c, First_Name__c, Last_Name__c, Email__c, User_Type__c, Status__c, Company_Name__c, Badge_ID__c, Wallet_Balance__c, Wallet_Status__c, Payment_Status__c FROM Member__c ${w} LIMIT ${limit}`
+          `SELECT ${_SF_CORE}, Badge_ID__c, Wallet_Balance__c, Wallet_Status__c, Payment_Status__c FROM Member__c ${w} LIMIT ${limit}`
         );
         return ok({ members: records, count: records.length });
       } catch (e) { return sfErr(e); }
@@ -71,7 +80,7 @@ function createMcpServer() {
     async ({ master_uuid }) => {
       try {
         const records = await soql(
-          `SELECT Id, Master_UUID__c, First_Name__c, Last_Name__c, Email__c, Birthdate__c, User_Type__c, Status__c, Company_Name__c, VAT_Number__c, Company_ID__c, Badge_ID__c, Street__c, House_Number__c, Postal_Code__c, City__c, Country_Code__c, Wallet_Balance__c, Wallet_Status__c, Last_Lease_ID__c, Last_Lease_At__c, Payment_Status__c, Last_Invoice_URL__c, Last_Invoice_Due_Date__c, Last_Invoice_Number__c, Last_Sync_At__c FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
+          `SELECT ${_SF_FULL} FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
         );
         if (!records.length) return ok({ error: `No member found with Master_UUID: ${master_uuid}` });
         return ok(records[0]);
@@ -86,7 +95,7 @@ function createMcpServer() {
     async ({ email }) => {
       try {
         const records = await soql(
-          `SELECT Id, Master_UUID__c, First_Name__c, Last_Name__c, Email__c, User_Type__c, Status__c, Company_Name__c, Wallet_Balance__c, Wallet_Status__c, Payment_Status__c FROM Member__c WHERE Email__c = '${esc(email.toLowerCase())}' LIMIT 1`
+          `SELECT ${_SF_CORE}, Wallet_Balance__c, Wallet_Status__c, Payment_Status__c FROM Member__c WHERE Email__c = '${esc(email.toLowerCase())}' LIMIT 1`
         );
         if (!records.length) return ok({ error: `No member found with email: ${email}` });
         return ok(records[0]);
@@ -105,7 +114,7 @@ function createMcpServer() {
       try {
         const q = esc(query);
         const records = await soql(
-          `SELECT Id, Master_UUID__c, First_Name__c, Last_Name__c, Email__c, User_Type__c, Company_Name__c, Status__c FROM Member__c WHERE Email__c LIKE '%${q}%' OR First_Name__c LIKE '%${q}%' OR Last_Name__c LIKE '%${q}%' OR Company_Name__c LIKE '%${q}%' LIMIT ${limit}`
+          `SELECT ${_SF_ID}, User_Type__c, Company_Name__c, Status__c FROM Member__c WHERE Email__c LIKE '%${q}%' OR First_Name__c LIKE '%${q}%' OR Last_Name__c LIKE '%${q}%' OR Company_Name__c LIKE '%${q}%' LIMIT ${limit}`
         );
         return ok({ members: records, count: records.length, query });
       } catch (e) { return sfErr(e); }
@@ -162,7 +171,7 @@ function createMcpServer() {
     async ({ master_uuid }) => {
       try {
         const records = await soql(
-          `SELECT Master_UUID__c, Email__c, First_Name__c, Last_Name__c, Wallet_Balance__c, Wallet_Status__c, Last_Lease_ID__c, Last_Lease_At__c, Last_Sync_At__c FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
+          `SELECT ${_SF_ID}, ${_SF_WALLET} FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
         );
         if (!records.length) return ok({ error: `No member found: ${master_uuid}` });
         return ok(records[0]);
@@ -177,7 +186,7 @@ function createMcpServer() {
     async ({ limit }) => {
       try {
         const records = await soql(
-          `SELECT Master_UUID__c, Email__c, First_Name__c, Last_Name__c, Wallet_Balance__c, Last_Lease_ID__c, Last_Lease_At__c FROM Member__c WHERE Wallet_Status__c = 'Leased' LIMIT ${limit}`
+          `SELECT ${_SF_ID}, Wallet_Balance__c, Last_Lease_ID__c, Last_Lease_At__c FROM Member__c WHERE Wallet_Status__c = 'Leased' LIMIT ${limit}`
         );
         return ok({ leased_wallets: records, count: records.length });
       } catch (e) { return sfErr(e); }
@@ -218,7 +227,7 @@ function createMcpServer() {
     async ({ master_uuid }) => {
       try {
         const records = await soql(
-          `SELECT Master_UUID__c, Email__c, First_Name__c, Last_Name__c, Last_Invoice_URL__c, Last_Invoice_Due_Date__c, Last_Invoice_Number__c, Payment_Status__c FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
+          `SELECT ${_SF_ID}, ${_SF_INVOICE} FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
         );
         if (!records.length) return ok({ error: `No member found: ${master_uuid}` });
         return ok(records[0]);
