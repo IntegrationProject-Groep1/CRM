@@ -951,23 +951,23 @@ class ReceiverV2 {
       if (!identityUuid) throw new Error('Missing identity_uuid in company_member_removed');
       if (!vatNumber) throw new Error('Missing vat_number in company_member_removed');
 
-      if (this.sf.isConnected) {
-        const memberId = await this._findUserByMasterUuid(identityUuid);
-        if (!memberId) {
-          console.warn(`[receiver] company_member_removed: no Member__c found for ${identityUuid}`);
-          return;
-        }
+      if (!this.sf.isConnected) throw new Error('Salesforce not connected');
 
-        await this.sf.apiCall((conn) =>
-          conn.sobject('Member__c').update({
-            Id: memberId,
-            Company_Name__c: null,
-            VAT_Number__c: null,
-          })
-        );
-
-        console.log(`[receiver] Member ${identityUuid} unlinked from company ${vatNumber}`);
+      const memberId = await this._findUserByMasterUuid(identityUuid);
+      if (!memberId) {
+        console.warn(`[receiver] company_member_removed: no Member__c found for ${identityUuid}`);
+        return;
       }
+
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').update({
+          Id: memberId,
+          Company_Name__c: null,
+          VAT_Number__c: null,
+        })
+      );
+
+      console.log(`[receiver] Member ${identityUuid} unlinked from company ${vatNumber}`);
     } catch (err) {
       console.error(`[receiver] Error in handleCompanyMemberRemoved: ${err.message}`);
       throw err;
