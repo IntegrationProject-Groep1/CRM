@@ -145,11 +145,11 @@ function createMcpServer() {
     async () => {
       try {
         const [total, byType, byStatus, withBadge, withWallet] = await Promise.all([
-          soql('SELECT COUNT() FROM Member__c'),
+          soql('SELECT COUNT(Id) FROM Member__c'),
           soql('SELECT User_Type__c, COUNT(Id) FROM Member__c GROUP BY User_Type__c'),
           soql('SELECT Status__c, COUNT(Id) FROM Member__c GROUP BY Status__c'),
-          soql('SELECT COUNT() FROM Member__c WHERE Badge_ID__c != null'),
-          soql('SELECT COUNT() FROM Member__c WHERE Wallet_Balance__c != null'),
+          soql('SELECT COUNT(Id) FROM Member__c WHERE Badge_ID__c != null'),
+          soql('SELECT COUNT(Id) FROM Member__c WHERE Wallet_Balance__c != null'),
         ]);
         return ok({
           total_members: total[0]?.expr0 ?? 0,
@@ -369,7 +369,7 @@ function createMcpServer() {
         const memberCheck = await soql(`SELECT Id, Master_UUID__c, Email__c, First_Name__c, Last_Name__c, Wallet_Balance__c, Wallet_Status__c FROM Member__c LIMIT 1`).catch((e) => ({ error: e.message }));
         const consumptionCheck = await soql('SELECT Id, Consumption_ID__c, Product_Name__c FROM Consumption__c LIMIT 1').catch((e) => ({ error: e.message }));
         const taskCheck = await soql('SELECT Id, Subject FROM Task LIMIT 1').catch((e) => ({ error: e.message }));
-        const memberCount = await soql('SELECT COUNT() FROM Member__c').catch(() => [{ expr0: 'error' }]);
+        const memberCount = await soql('SELECT COUNT(Id) FROM Member__c').catch(() => [{ expr0: 'error' }]);
 
         return ok({
           member_object_accessible: !Array.isArray(memberCheck) || memberCheck.length >= 0,
@@ -412,7 +412,7 @@ function createMcpServer() {
           soql('SELECT User_Type__c, COUNT(Id) FROM Member__c GROUP BY User_Type__c'),
           soql('SELECT Wallet_Status__c, COUNT(Id), SUM(Wallet_Balance__c) FROM Member__c WHERE Wallet_Status__c != null GROUP BY Wallet_Status__c'),
           soql('SELECT COUNT(Id), SUM(Wallet_Balance__c) FROM Member__c WHERE Wallet_Balance__c != null'),
-          soql("SELECT COUNT() FROM Member__c WHERE Wallet_Status__c = 'Leased'"),
+          soql("SELECT COUNT(Id) FROM Member__c WHERE Wallet_Status__c = 'Leased'"),
           soql('SELECT Subject, ActivityDate, CreatedDate FROM Task ORDER BY CreatedDate DESC LIMIT 5'),
         ]);
 
