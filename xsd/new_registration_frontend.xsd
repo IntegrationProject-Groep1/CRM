@@ -46,7 +46,6 @@
                 </xs:sequence></xs:complexType>
               </xs:element>
               <xs:element name="address" type="xs:string"/>
-              <xs:element name="company_id" type="xs:string" minOccurs="0"/>
               <xs:element name="payment_due">
                 <xs:complexType><xs:sequence>
                   <xs:element name="amount">

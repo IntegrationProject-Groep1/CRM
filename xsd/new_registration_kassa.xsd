@@ -44,7 +44,6 @@
               </xs:element>
               <xs:element name="company_name" type="xs:string" minOccurs="0"/>
               <xs:element name="vat_number"   type="xs:string" minOccurs="0"/>
-              <xs:element name="company_id"   type="xs:string" minOccurs="0"/>
               <xs:element name="badge_id"     type="xs:string" minOccurs="0"/>
               <!-- session_title: optioneel maar aanbevolen voor Kassa-display -->
               <xs:element name="session_title"  type="xs:string" minOccurs="0"/>

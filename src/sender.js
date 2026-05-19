@@ -115,7 +115,6 @@ class CRMSender {
   customer.ele('type').txt(data.customer.type || 'private');
   if (data.customer.company_name) customer.ele('company_name').txt(data.customer.company_name);
   if (data.customer.vat_number)   customer.ele('vat_number').txt(data.customer.vat_number);
-  if (data.customer.company_id)   customer.ele('company_id').txt(data.customer.company_id);
   if (data.customer.badge_id)     customer.ele('badge_id').txt(data.customer.badge_id);
 
   if (data.customer.session_title) customer.ele('session_title').txt(data.customer.session_title);
@@ -176,7 +175,6 @@ class CRMSender {
     if (data.type)         body.ele('type').txt(data.type);
     if (data.company_name) body.ele('company_name').txt(data.company_name);
     if (data.vat_number)   body.ele('vat_number').txt(data.vat_number);
-    if (data.company_id)   body.ele('company_id').txt(data.company_id);
 
     if (data.payment_due) {
       const paymentDue = body.ele('payment_due');
@@ -705,7 +703,6 @@ async sendPaymentRegisteredToFacturatie(data) {
       customer.ele('type').txt(data.customer.type || 'private');
       if (data.customer.company_name) customer.ele('company_name').txt(data.customer.company_name);
       if (data.customer.vat_number)   customer.ele('vat_number').txt(data.customer.vat_number);
-      if (data.customer.company_id)   customer.ele('company_id').txt(data.customer.company_id);
       if (data.customer.badge_id)     customer.ele('badge_id').txt(data.customer.badge_id);
       const paymentDue = customer.ele('payment_due');
       paymentDue.ele('amount').att('currency', 'eur').txt(String(data.payment_due.amount || '0.00'));

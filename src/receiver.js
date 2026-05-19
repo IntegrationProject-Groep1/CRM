@@ -57,6 +57,7 @@ const MESSAGE_TYPES = {
   COMPANY_REGISTRATION: 'company_registration',
   COMPANY_UPDATE: 'company_update',
   COMPANY_DELETE: 'company_delete',
+  COMPANY_MEMBER_REMOVED: 'company_member_removed',
   CANCEL_REGISTRATION: 'cancel_registration',
   WALLET_LEASE_REQUEST: 'wallet_lease_request',
   WALLET_LEASE_RETURN: 'wallet_lease_return',
@@ -478,6 +479,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.USER_DELETED]: 'user_deleted.xsd',
         [MESSAGE_TYPES.USER_CHECKIN]: 'user_checkin.xsd',
         [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
+        [MESSAGE_TYPES.COMPANY_MEMBER_REMOVED]: 'company_member_removed.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_RETURN]: 'wallet_lease_return.xsd',
         [MESSAGE_TYPES.WALLET_TOPUP_REQUEST]: 'wallet_topup_request.xsd',
@@ -543,6 +545,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.COMPANY_REGISTRATION]: () => this.handleCompanyRegistration(header, body),
       [MESSAGE_TYPES.COMPANY_UPDATE]: () => this.handleCompanyUpdate(header, body),
       [MESSAGE_TYPES.COMPANY_DELETE]: () => this.handleCompanyDelete(header, body),
+      [MESSAGE_TYPES.COMPANY_MEMBER_REMOVED]: () => this.handleCompanyMemberRemoved(header, body),
       [MESSAGE_TYPES.CANCEL_REGISTRATION]: () => this.handleCancelRegistration(header, body),
       [MESSAGE_TYPES.SESSION_CREATED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handlePlanningSessionEvent(header, body),
@@ -783,7 +786,6 @@ class ReceiverV2 {
         type: rawType,
         company_name: ReceiverV2.getElementText(customer, 'company_name'),
         vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
-        company_id: ReceiverV2.getElementText(customer, 'company_id'),
       });
 
       console.log(`[receiver] User created in Salesforce and forwarded to Kassa: ${masterUuid}`);
@@ -860,7 +862,6 @@ class ReceiverV2 {
         VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
         VAT_Rate__c: parseFloat(ReceiverV2.getElementText(company, 'vat_rate') || 0),
         User_Type__c: 'Bedrijf',
-        Company_ID__c: header.message_id,
       };
 
       if (this.sf.isConnected) {
@@ -935,6 +936,40 @@ class ReceiverV2 {
       }
     } catch (err) {
       console.error(`[receiver] Error in handleCompanyDelete: ${err.message}`);
+      throw err;
+    }
+  }
+
+  async handleCompanyMemberRemoved(header, body) {
+    try {
+      const customer = body?.customer;
+      if (!customer) throw new Error('Body missing customer element');
+
+      const identityUuid = ReceiverV2.getElementText(customer, 'identity_uuid');
+      const vatNumber = ReceiverV2.getElementText(customer, 'vat_number');
+
+      if (!identityUuid) throw new Error('Missing identity_uuid in company_member_removed');
+      if (!vatNumber) throw new Error('Missing vat_number in company_member_removed');
+
+      if (!this.sf.isConnected) throw new Error('Salesforce not connected');
+
+      const memberId = await this._findUserByMasterUuid(identityUuid);
+      if (!memberId) {
+        console.warn(`[receiver] company_member_removed: no Member__c found for ${identityUuid}`);
+        return;
+      }
+
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').update({
+          Id: memberId,
+          Company_Name__c: null,
+          VAT_Number__c: null,
+        })
+      );
+
+      console.log(`[receiver] Member ${identityUuid} unlinked from company ${vatNumber}`);
+    } catch (err) {
+      console.error(`[receiver] Error in handleCompanyMemberRemoved: ${err.message}`);
       throw err;
     }
   }
@@ -1545,7 +1580,6 @@ class ReceiverV2 {
         type: rawType,
         company_name: ReceiverV2.getElementText(customer, 'company_name'),
         vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
-        company_id: ReceiverV2.getElementText(customer, 'company_id'),
       });
 
       console.log(`[receiver] User updated in Salesforce and forwarded to Kassa: ${identityUuid}`);

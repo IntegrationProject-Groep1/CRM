@@ -334,12 +334,12 @@ describe('Consumptie flow — buildProfileUpdateXml', () => {
     expect(root.body.type).toBeUndefined();
   });
 
-  test('optionele velden company_name, vat_number en company_id worden opgenomen', () => {
-    const data = { ...baseData(), company_name: 'Test BV', vat_number: 'BE0987654321', company_id: 'comp-1' };
+  test('optionele velden company_name en vat_number worden opgenomen', () => {
+    const data = { ...baseData(), company_name: 'Test BV', vat_number: 'BE0987654321' };
     const root = parser.parse(sender.buildProfileUpdateXml(data)).message;
     expect(root.body.company_name).toBe('Test BV');
     expect(root.body.vat_number).toBe('BE0987654321');
-    expect(root.body.company_id).toBe('comp-1');
+    expect(root.body.company_id).toBeUndefined();
   });
 
   test('optionele payment_due gebruikt amount met currency eur', () => {
