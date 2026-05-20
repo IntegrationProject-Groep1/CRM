@@ -27,6 +27,22 @@
             </xs:extension></xs:simpleContent></xs:complexType>
           </xs:element>
           <xs:element name="lease_id" type="xs:string"/>
+          <!-- payment_due: total registration fees still owed by this visitor (optional) -->
+          <xs:element name="payment_due" minOccurs="0">
+            <xs:complexType><xs:sequence>
+              <xs:element name="amount">
+                <xs:complexType><xs:simpleContent><xs:extension base="xs:decimal">
+                  <xs:attribute name="currency" type="xs:string" fixed="eur" use="required"/>
+                </xs:extension></xs:simpleContent></xs:complexType>
+              </xs:element>
+              <xs:element name="status" minOccurs="0">
+                <xs:simpleType><xs:restriction base="xs:string">
+                  <xs:enumeration value="unpaid"/>
+                  <xs:enumeration value="paid"/>
+                </xs:restriction></xs:simpleType>
+              </xs:element>
+            </xs:sequence></xs:complexType>
+          </xs:element>
         </xs:sequence></xs:complexType>
       </xs:element>
     </xs:sequence></xs:complexType>
