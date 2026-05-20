@@ -748,13 +748,16 @@ class ReceiverV2 {
   async handleUserCreated(header, body) {
     try {
       const customer = body?.customer || body?.user;
+      const contact = customer?.contact;
       if (!customer) throw new Error('Body missing user element');
 
       const identityUuid = ReceiverV2.getElementText(customer, 'identity_uuid') ||
         ReceiverV2.getElementText(customer, 'master_uuid');
       const email = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
-      const firstName = ReceiverV2.getElementText(customer, 'first_name');
-      const lastName = ReceiverV2.getElementText(customer, 'last_name');
+      const firstName = ReceiverV2.getElementText(customer, 'first_name') ||
+        ReceiverV2.getElementText(contact, 'first_name');
+      const lastName = ReceiverV2.getElementText(customer, 'last_name') ||
+        ReceiverV2.getElementText(contact, 'last_name');
       const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
       const isCompanyFlag = ReceiverV2.getElementText(customer, 'is_company') === 'true';
       const rawType = ReceiverV2.getElementText(customer, 'type') || (isCompanyFlag ? 'company' : 'private');
@@ -802,11 +805,13 @@ class ReceiverV2 {
   async handleUserRegistered(header, body) {
     try {
       const customerData = body?.customer || body?.user;
+      const contact = customerData?.contact;
       const session = body?.session || customerData?.session;
       const sessionId = ReceiverV2.getElementText(session, 'session_id') ||
         ReceiverV2.getElementText(customerData, 'session_id');
       const sessionName = ReceiverV2.getElementText(session, 'session_name') ||
-        ReceiverV2.getElementText(customerData, 'session_name');
+        ReceiverV2.getElementText(customerData, 'session_name') ||
+        ReceiverV2.getElementText(body, 'session_title');
 
       if (!customerData || !sessionId) throw new Error('Body missing user or session');
 
@@ -821,8 +826,10 @@ class ReceiverV2 {
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert({
             Master_UUID__c: masterUuid,
-            First_Name__c: ReceiverV2.getElementText(customerData, 'first_name'),
-            Last_Name__c: ReceiverV2.getElementText(customerData, 'last_name'),
+            First_Name__c: ReceiverV2.getElementText(customerData, 'first_name') ||
+              ReceiverV2.getElementText(contact, 'first_name'),
+            Last_Name__c: ReceiverV2.getElementText(customerData, 'last_name') ||
+              ReceiverV2.getElementText(contact, 'last_name'),
             Email__c: email,
           }, 'Master_UUID__c')
         );
