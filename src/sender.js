@@ -470,9 +470,6 @@ async sendWalletLeaseGrant(data) {
     const body = root.ele('body');
     body.ele('campaign_id').txt(mailing.campaign_id || data.campaign_id || '');
     body.ele('subject').txt(mailing.subject || data.subject || '');
-    if (mailing.template_id || data.template_id) {
-      body.ele('template_id').txt(mailing.template_id || data.template_id);
-    }
     body.ele('mail_type').txt(mailing.mail_type || data.mail_type || 'general_announcement');
 
     const recipients = body.ele('recipients');

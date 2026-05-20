@@ -665,7 +665,6 @@ describe('Mailing flow — buildMailingSendXml', () => {
     const root = parser.parse(sender.buildMailingSendXml(baseData())).message;
     expect(root.body.campaign_id).toBe('sg-campaign-0089');
     expect(root.body.subject).toBe('Nieuwsbrief april');
-    expect(root.body.template_id).toBe('TPL-NL-001');
     expect(root.body.mail_type).toBe('registration_confirmation');
     expect(root.body.mailing).toBeUndefined();
   });

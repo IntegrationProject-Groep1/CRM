@@ -1197,7 +1197,7 @@ class ReceiverV2 {
   async handleMailingStatus(header, body) {
     try {
       const taskData = {
-        Subject: `Mailing status: ${ReceiverV2.getElementText(body, 'mailing_id')}`,
+        Subject: `Mailing status: ${ReceiverV2.getElementText(body, 'campaign_id')}`,
         Description: `Status: ${ReceiverV2.getElementText(body, 'status')}\nDelivered: ${ReceiverV2.getElementText(body, 'delivered')}`,
         Status: 'Completed',
         ActivityDate: new Date().toISOString().split('T')[0],
