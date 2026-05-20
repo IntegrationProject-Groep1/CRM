@@ -227,6 +227,29 @@ CRM/
 - **Repeated retries**
   - Inspect temporary upstream outages (Salesforce/Identity/RabbitMQ).
 
+## 11) Security measures
+
+Current security-related measures in this service:
+
+- **RabbitMQ credentials are mandatory** (`RABBITMQ_USER`, `RABBITMQ_PASS`) before startup.
+- **TLS-ready RabbitMQ transport**: `amqps` is supported and recommended for production traffic.
+- **XML validation on message processing** (structure and XSD where configured) for incoming and outgoing payloads.
+- **Controlled retry + dead-letter flow** to isolate invalid/unrecoverable messages from normal processing.
+- **Salesforce OAuth2 refresh-token flow** as primary authentication method (with automatic token refresh support).
+- **Environment-based secrets/configuration** through `.env` (no hardcoded credentials required).
+
+## 12) Connected departments/services
+
+This CRM integration is connected with these departments/platform domains:
+
+- **Kassa / POS** (`kassa.payments`, `kassa.incoming`)
+- **Facturatie / Invoicing** (`facturatie.to.crm`, `facturatie.incoming`)
+- **Mailing** (`crm.to.mailing`)
+- **Planning / Calendar** (`planning.exchange`, `planning.session.events`, `calendar.exchange`)
+- **Identity / User lifecycle** (`user.events`, `crm.identity.user.events`, `user.created`, `user.registered`)
+- **Frontend** (`frontend.incoming`, `frontend.user.unregistered`)
+- **Salesforce CRM** (sync target for members, tasks, and consumptions)
+
 ---
 
 If you are new to this project, start with:
