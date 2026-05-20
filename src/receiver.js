@@ -24,6 +24,10 @@ const USER_CREATED_QUEUE = 'user.created';
 const IDENTITY_EVENTS_EXCHANGE = 'user.events';
 const IDENTITY_EVENTS_QUEUE = 'crm.identity.user.events';
 const KASSA_EXCHANGE = 'kassa.exchange';
+const KASSA_ROUTING_KEYS = [
+  'kassa.payments.#',
+  'kassa.to.crm.#',
+];
 const PLANNING_EXCHANGE = 'planning.exchange';
 const PLANNING_SESSION_QUEUE = 'planning.session.events';
 const PLANNING_SESSION_ROUTING_KEYS = [
@@ -269,8 +273,7 @@ class ReceiverV2 {
         await this.channel.assertQueue(QUEUE_NAME, { durable: true, arguments: crmQueueArgs });
         await this.channel.assertQueue(KASSA_QUEUE, { durable: true, arguments: crmQueueArgs });
         await this.channel.assertExchange(KASSA_EXCHANGE, 'topic', { durable: true });
-        await this.channel.bindQueue(KASSA_QUEUE, KASSA_EXCHANGE, 'kassa.payments.#');
-        await this.channel.bindQueue(KASSA_QUEUE, KASSA_EXCHANGE, 'kassa.to.crm.#');
+        await Promise.all(KASSA_ROUTING_KEYS.map(rk => this.channel.bindQueue(KASSA_QUEUE, KASSA_EXCHANGE, rk)));
         await this.channel.assertQueue(FACTURATIE_TO_CRM_QUEUE, { durable: true, arguments: crmQueueArgs });
         await this.channel.assertQueue(USER_REGISTERED_QUEUE, { durable: true, arguments: crmQueueArgs });
         await this.channel.assertQueue(USER_CREATED_QUEUE, { durable: true, arguments: crmQueueArgs });
