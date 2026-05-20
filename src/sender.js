@@ -25,7 +25,7 @@ class CRMSender {
       'session_registration_confirmed': 'session_registration_confirmed.xsd',
       'user.unregistered': 'user_unregistered.xsd',
       'event_ended': 'event_ended.xsd',
-      'payment_registered': 'payment_registered_facturatie.xsd',
+      'payment_registered': 'payment_registered_frontend.xsd',
       'consumption_order': 'consumption_order.xsd',
       'wallet_lease_grant': 'wallet_lease_grant.xsd',
       'wallet_remote_topup': 'wallet_remote_topup.xsd',
@@ -577,7 +577,7 @@ async sendWalletLeaseGrant(data) {
   const header = root.ele('header');
   header.ele('message_id').txt(uuidv4());
   header.ele('timestamp').txt(new Date().toISOString());
-  header.ele('source').txt('facturatie');
+  header.ele('source').txt('crm');
   header.ele('type').txt('payment_registered');
   header.ele('version').txt('2.0');
   if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
@@ -588,7 +588,7 @@ async sendWalletLeaseGrant(data) {
   const invoice = body.ele('invoice');
   invoice.ele('id').txt(data.invoice_id || '');
   invoice.ele('amount_paid', { currency: 'eur' }).txt(String(data.amount_paid || '0.00'));
-  invoice.ele('status').txt(data.status || 'paid');
+  invoice.ele('status').txt(data.payment_status || 'paid');
 
   body.ele('payment_context').txt(data.payment_context || 'consumption');
 
