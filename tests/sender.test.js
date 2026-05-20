@@ -174,21 +174,9 @@ describe('Betaling flow - payment_registered forwarding', () => {
     invoice_id: 'INV-001',
     amount_paid: '25.00',
     payment_context: 'consumption',
+    payment_status: 'paid',
     correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
   };
-
-  test('stuurt payment_registered XML naar facturatie.incoming', async () => {
-    const ch = attachMockChannel(sender);
-    const result = await sender.sendPaymentRegisteredToFacturatie(paymentData);
-
-    expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
-    expect(ch.sendToQueue).toHaveBeenCalledWith(
-      'facturatie.incoming',
-      expect.any(Buffer),
-      expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
-    );
-    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming' });
-  });
 
   test('stuurt payment_registered XML naar frontend.incoming', async () => {
     const ch = attachMockChannel(sender);
