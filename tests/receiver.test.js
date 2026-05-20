@@ -334,20 +334,31 @@ describe('handleMessage', () => {
   test('user_created met customer tag wordt naar handleUserCreated gerouteerd', async () => {
     const receiver = makeReceiver();
     receiver.sf.isConnected = true;
-    receiver.sf.apiCall.mockResolvedValue({});
+    const upsert = jest.fn().mockResolvedValue({});
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({ upsert }),
+    }));
 
     const xml = buildXml('user_created', `
       <customer>
         <identity_uuid>test-identity-1234</identity_uuid>
         <email>john.doe@example.com</email>
-        <first_name>John</first_name>
-        <last_name>Doe</last_name>
+        <contact>
+          <first_name>John</first_name>
+          <last_name>Doe</last_name>
+        </contact>
+        <type>company</type>
+        <company_name>Test Company NV</company_name>
+        <vat_number>BE0123456789</vat_number>
       </customer>
     `);
 
     await receiver.handleMessage(buildMsg(xml));
 
-    expect(receiver.sf.apiCall).toHaveBeenCalled();
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      Company_Name__c: 'Test Company NV',
+      VAT_Number__c: 'BE0123456789',
+    }), 'Master_UUID__c');
   });
 
   test('user.created met user tag blijft achterwaarts compatibel', async () => {

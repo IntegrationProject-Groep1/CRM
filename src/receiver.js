@@ -763,6 +763,7 @@ class ReceiverV2 {
       const rawType = ReceiverV2.getElementText(customer, 'type') || (isCompanyFlag ? 'company' : 'private');
       const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
       const companyName = ReceiverV2.getElementText(customer, 'company_name');
+      const vatNumber = ReceiverV2.getElementText(customer, 'vat_number');
       const sourceSystem = header?.source || 'frontend.drupal';
 
       // masterUuid is altijd gevuld — ofwel uit XML, ofwel via identity service
@@ -778,6 +779,7 @@ class ReceiverV2 {
           User_Type__c: userType,
         };
         if (companyName) userData.Company_Name__c = companyName;
+        if (vatNumber) userData.VAT_Number__c = vatNumber;
 
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert(userData, 'Master_UUID__c')
