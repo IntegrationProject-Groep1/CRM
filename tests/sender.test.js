@@ -174,33 +174,21 @@ describe('Betaling flow - payment_registered forwarding', () => {
     invoice_id: 'INV-001',
     amount_paid: '25.00',
     payment_context: 'consumption',
+    payment_status: 'paid',
     correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
   };
 
-  test('stuurt payment_registered XML naar facturatie.incoming', async () => {
-    const ch = attachMockChannel(sender);
-    const result = await sender.sendPaymentRegisteredToFacturatie(paymentData);
-
-    expect(ch.assertQueue).toHaveBeenCalledWith('facturatie.incoming', { durable: true });
-    expect(ch.sendToQueue).toHaveBeenCalledWith(
-      'facturatie.incoming',
-      expect.any(Buffer),
-      expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
-    );
-    expect(result).toMatchObject({ success: true, queue: 'facturatie.incoming' });
-  });
-
-  test('stuurt payment_registered XML naar frontend.incoming', async () => {
+  test('stuurt payment_registered XML naar frontend.crm.payment.registered', async () => {
     const ch = attachMockChannel(sender);
     const result = await sender.sendPaymentRegisteredToFrontend(paymentData);
 
-    expect(ch.assertQueue).toHaveBeenCalledWith('frontend.incoming', { durable: true });
+    expect(ch.assertQueue).toHaveBeenCalledWith('frontend.crm.payment.registered', { durable: true });
     expect(ch.sendToQueue).toHaveBeenCalledWith(
-      'frontend.incoming',
+      'frontend.crm.payment.registered',
       expect.any(Buffer),
       expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
     );
-    expect(result).toMatchObject({ success: true, queue: 'frontend.incoming' });
+    expect(result).toMatchObject({ success: true, queue: 'frontend.crm.payment.registered' });
   });
 });
 
@@ -508,7 +496,7 @@ describe('Betaling flow — buildInvoiceRequestXml', () => {
   beforeEach(() => { sender = new CRMSender(); });
 
   const baseData = () => ({
-    user_id: 'u-invoice-001',
+    identity_uuid: 'u-invoice-001',
     customer: { email: 'klant@example.com', first_name: 'Luc', last_name: 'Vermeersch' },
     address: { street: 'Laarbeeklaan', number: '121', postal_code: '1090', city: 'Jette', country: 'BE' },
     correlation_id: 'corr-inv-1',

@@ -21,7 +21,6 @@ jest.mock('../src/sender', () => {
     sendInvoiceCancelledToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendInvoiceRequest: jest.fn().mockResolvedValue({ success: true }),
     sendConsumptionOrderToFacturatie: jest.fn().mockResolvedValue({ success: true }),
-    sendPaymentRegisteredToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendPaymentRegisteredToFrontend: jest.fn().mockResolvedValue({ success: true }),
     sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
     sendEventEndedToFacturatie: jest.fn().mockResolvedValue({ success: true }),
@@ -694,94 +693,90 @@ describe('handleNewRegistration', () => {
 });
 
 describe('handlePaymentRegistered', () => {
-  test('maakt Task aan in Salesforce en neemt payment_context en transaction_id mee', async () => {
-    const receiver = makeReceiver();
-    receiver.sf.isConnected = true;
-    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue(null);
-    receiver._findUserByEmail = jest.fn().mockResolvedValue('member-1');
-    const createTask = jest.fn().mockResolvedValue({ id: 'task-1' });
-    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
-      sobject: () => ({ create: createTask }),
+  test('upsert Member__c in Salesforce bij payment_registered van kassa', async () => {
+
+  const receiver = makeReceiver();
+
+  receiver.sf.isConnected = true;
+
+  const upsert = jest.fn().mockResolvedValue({ id: 'member-1' });
+
+  receiver.sf.apiCall
+
+    .mockResolvedValueOnce({ records: [] })                          // query: geen klantdata
+
+    .mockImplementationOnce(async (callback) => callback({
+
+      sobject: () => ({ upsert }),                                   // Member__c upsert
+
     }));
 
-    const xml = buildXml('payment_registered', `
-      <master_uuid>test-master-uuid-1234</master_uuid>
-      <email>pay@example.com</email>
-      <payment_context>registration</payment_context>
-      <invoice>
-        <id>INV-001</id>
-        <amount_paid currency="eur">100.00</amount_paid>
-        <due_date>2026-12-31</due_date>
-        <status>paid</status>
-      </invoice>
-      <transaction>
-        <id>TX-12345</id>
-        <payment_method>card</payment_method>
-      </transaction>
-    `);
+  const xml = buildXml('payment_registered', `
 
-    await receiver.handleMessage(buildMsg(xml));
+    <payment_context>registration</payment_context>
 
-    expect(receiver.sf.apiCall).toHaveBeenCalled();
-    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
-      Subject: expect.stringContaining('[registration]'),
-    }));
-    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
-      Description: expect.stringContaining('Context: registration'),
-    }));
-    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
-      Description: expect.stringContaining('Transaction ID: TX-12345'),
-    }));
-  });
+    <invoice>
 
-  test('forwardt Kassa payment_registered naar Frontend en Facturatie', async () => {
-    const receiver = makeReceiver();
-    const xml = buildXml('payment_registered', `
-      <payment_context>registration</payment_context>
-      <user_id>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</user_id>
-      <invoice>
-        <status>paid</status>
-        <amount_paid currency="eur">50.00</amount_paid>
-        <due_date>2026-05-15</due_date>
-      </invoice>
-      <transaction>
-        <id>TRX-2026-04150001</id>
-        <payment_method>on_site</payment_method>
-      </transaction>
-    `).replace('<source>test</source>', '<source>kassa</source>');
+      <id>INV-001</id>
 
-    await receiver.handleMessage(buildMsg(xml));
+      <amount_paid currency="eur">100.00</amount_paid>
 
-    expect(receiver.sender.sendPaymentRegisteredToFrontend).toHaveBeenCalledWith(expect.objectContaining({ payment_context: 'registration', amount_paid: '50.00' }));
-    expect(receiver.sender.sendPaymentRegisteredToFacturatie).toHaveBeenCalledWith(expect.objectContaining({ payment_context: 'registration', amount_paid: '50.00' }));
-    expect(receiver.channel.ack).toHaveBeenCalled();
-  });
+      <status>paid</status>
 
-  test('verwerkt Facturatie payment_registered v2.0 zonder master_uuid header', async () => {
-    const receiver = makeReceiver();
-    receiver.sf.isConnected = true;
-    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('member-1');
-    const createTask = jest.fn().mockResolvedValue({ id: 'task-1' });
-    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
-      sobject: () => ({ create: createTask }),
-    }));
+    </invoice>
 
-    const xml = withoutMasterUuid(buildXml('payment_registered', `
-      <invoice_id>foss-inv-00142</invoice_id>
-      <user_id>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</user_id>
-      <amount_paid currency="eur">150.00</amount_paid>
-      <payment_method>cash</payment_method>
-      <paid_at>2026-05-15T18:29:00Z</paid_at>
-    `));
+  `).replace('<source>test</source>', '<source>kassa</source>');
 
-    await receiver.handleMessage(buildMsg(xml));
+  await receiver.handleMessage(buildMsg(xml));
 
-    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
-      Subject: expect.stringContaining('foss-inv-00142'),
-      Description: expect.stringContaining('Payment Method: cash'),
-    }));
-    expect(receiver.channel.ack).toHaveBeenCalled();
-  });
+  expect(upsert).toHaveBeenCalledWith(
+
+    expect.objectContaining({
+
+      Master_UUID__c: 'test-master-uuid-1234',
+
+      Payment_Status__c: 'paid',
+
+      Amount__c: '100.00',
+
+      Last_Invoice_Number__c: 'INV-001',
+
+    }),
+
+    'Master_UUID__c'
+
+  );
+
+});
+
+ test('forwardt Kassa payment_registered naar Frontend en stuurt invoice_request naar Facturatie', async () => {
+  const receiver = makeReceiver();
+  receiver.sf.isConnected = true;
+  receiver.sf.apiCall.mockResolvedValue({ records: [] });
+
+  const xml = buildXml('payment_registered', `
+    <payment_context>consumption</payment_context>
+    <user_id>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</user_id>
+    <invoice>
+      <status>paid</status>
+      <amount_paid currency="eur">50.00</amount_paid>
+    </invoice>
+    <transaction>
+      <id>TRX-2026-04150001</id>
+      <payment_method>on_site</payment_method>
+    </transaction>
+  `).replace('<source>test</source>', '<source>kassa</source>');
+
+  await receiver.handleMessage(buildMsg(xml));
+
+  expect(receiver.sender.sendPaymentRegisteredToFrontend).toHaveBeenCalledWith(
+    expect.objectContaining({ payment_context: 'consumption', amount_paid: '50.00' })
+  );
+  expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
+    expect.objectContaining({ payment_context: 'consumption', amount_paid: '50.00' })
+  );
+  expect(receiver.channel.ack).toHaveBeenCalled();
+});
 });
 
 describe('handleInvoiceStatus', () => {

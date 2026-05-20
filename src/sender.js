@@ -25,7 +25,7 @@ class CRMSender {
       'session_registration_confirmed': 'session_registration_confirmed.xsd',
       'user.unregistered': 'user_unregistered.xsd',
       'event_ended': 'event_ended.xsd',
-      'payment_registered': 'payment_registered_facturatie.xsd',
+      'payment_registered': 'payment_registered_frontend.xsd',
       'consumption_order': 'consumption_order.xsd',
       'wallet_lease_grant': 'wallet_lease_grant.xsd',
       'wallet_remote_topup': 'wallet_remote_topup.xsd',
@@ -270,40 +270,42 @@ class CRMSender {
     }
   }
 
-  buildInvoiceRequestXml(data) {
-  const messageId = uuidv4();
-  const timestamp = new Date().toISOString();
-
+ buildInvoiceRequestXml(data) {
   const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
   const header = root.ele('header');
-  header.ele('message_id').txt(messageId);
-  header.ele('timestamp').txt(timestamp);
+  header.ele('message_id').txt(uuidv4());
+  header.ele('timestamp').txt(new Date().toISOString());
   header.ele('source').txt('crm');
   header.ele('type').txt('invoice_request');
   header.ele('version').txt('2.0');
   header.ele('correlation_id').txt(data.correlation_id || uuidv4());
 
   const body = root.ele('body');
-  body.ele('identity_uuid').txt(data.master_uuid || data.user_id || data.identity_uuid || '');
+  body.ele('identity_uuid').txt(data.identity_uuid || '');
+  body.ele('payment_status').txt(data.payment_status || 'paid');
+  if (data.payment_method) body.ele('payment_method').txt(data.payment_method);
 
-  const invoiceData = body.ele('invoice_data');
-  const contact = invoiceData.ele('contact');
-  contact.ele('first_name').txt(data.customer?.first_name || '');
-  contact.ele('last_name').txt(data.customer?.last_name || '');
+  if (data.customer) {
+    const invoiceData = body.ele('invoice_data');
 
-  invoiceData.ele('email').txt(data.customer?.email || '');
+    const contact = invoiceData.ele('contact');
+    contact.ele('first_name').txt(data.customer.first_name || '');
+    contact.ele('last_name').txt(data.customer.last_name || '');
 
-  const address = invoiceData.ele('address');
-  address.ele('street').txt(data.address?.street || '');
-  address.ele('number').txt(data.address?.number || '');
-  address.ele('postal_code').txt(data.address?.postal_code || '');
-  address.ele('city').txt(data.address?.city || '');
-  address.ele('country').txt(data.address?.country || '');
+    invoiceData.ele('email').txt(data.customer.email || '');
 
-  if (data.customer?.company_name) invoiceData.ele('company_name').txt(data.customer.company_name);
-  if (data.customer?.vat_number)   invoiceData.ele('vat_number').txt(data.customer.vat_number);
-  
+    const address = invoiceData.ele('address');
+    address.ele('street').txt(data.address?.street || '');
+    address.ele('number').txt(data.address?.number || '');
+    address.ele('postal_code').txt(data.address?.postal_code || '');
+    address.ele('city').txt(data.address?.city || '');
+    address.ele('country').txt(data.address?.country || '');
+
+    if (data.customer.company_name) invoiceData.ele('company_name').txt(data.customer.company_name);
+    if (data.customer.vat_number)   invoiceData.ele('vat_number').txt(data.customer.vat_number);
+  }
+
   return root.doc().end({ prettyPrint: true, indent: '  ' });
 }
 
@@ -575,7 +577,7 @@ async sendWalletLeaseGrant(data) {
   const header = root.ele('header');
   header.ele('message_id').txt(uuidv4());
   header.ele('timestamp').txt(new Date().toISOString());
-  header.ele('source').txt('facturatie');
+  header.ele('source').txt('crm');
   header.ele('type').txt('payment_registered');
   header.ele('version').txt('2.0');
   if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
@@ -586,7 +588,7 @@ async sendWalletLeaseGrant(data) {
   const invoice = body.ele('invoice');
   invoice.ele('id').txt(data.invoice_id || '');
   invoice.ele('amount_paid', { currency: 'eur' }).txt(String(data.amount_paid || '0.00'));
-  invoice.ele('status').txt(data.status || 'paid');
+  invoice.ele('status').txt(data.payment_status || 'paid');
 
   body.ele('payment_context').txt(data.payment_context || 'consumption');
 
@@ -618,26 +620,7 @@ async sendPaymentRegisteredToFrontend(data) {
   }
 }
 
-async sendPaymentRegisteredToFacturatie(data) {
-  if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
-  try {
-    const xmlPayload = this.buildPaymentRegisteredXml(data);
-    this._validate(xmlPayload, 'payment_registered');
-    const queue = 'facturatie.incoming';
-    await this.channel.assertQueue(queue, { durable: true });
-    const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
-      contentType: 'application/xml',
-      deliveryMode: 2,
-    });
-    if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
-    console.log(`Payment registered forwarded to Facturatie queue "${queue}"`);
-    await this._logOutbound('payment_registered', queue, data.correlation_id);
-    return { success: true, queue, payload: xmlPayload };
-  } catch (error) {
-    console.log(`Failed to forward payment to Facturatie: ${error}`);
-    throw error;
-  }
-}
+
 
   async sendEventEndedToFacturatie(data) {
     if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
