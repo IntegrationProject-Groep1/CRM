@@ -1,198 +1,235 @@
 # CRM Integration Service
 
-## What does this project do?
+This service is the **CRM integration layer** between RabbitMQ, Salesforce, and other platform services (POS/Kassa, Invoicing, Mailing, Planning, Identity).
 
-This is a Node.js integration microservice that receives messages via RabbitMQ, processes them, and stores data in Salesforce. Salesforce is the only external data source for this service. The service also integrates with an Identity Service for Master UUID management and sends outgoing messages to the POS (Kassa), Invoicing (Facturatie), Mailing, and Planning systems.
+It consumes XML messages from queues/exchanges, validates them, updates Salesforce, and forwards new XML messages to downstream systems.
 
-## Architecture overview
+## 1) What this service does
 
-```text
-Other systems (Frontend, POS, IoT, etc.)
-         |
-         v
-   RabbitMQ Queues (incoming)
-   +----------------------+
-   |  crm.incoming        |  <- general CRM messages
-   |  kassa.payments      |  <- payment and consumption messages from POS
-   |  user.created        |  <- new users from Frontend/Drupal
-   |  user.registered     |  <- session registrations from Frontend/Drupal
-   +----------------------+
-         |
-         v
-    receiver.js
-         |-- Identity Service RPC (identity.user.create.request) for Master UUID management
-         |-- Salesforce (Member__c, Task, Consumption__c)
-         |
-         v  (via sender.js)
-   +------------------------------------------+
-   |  facturatie.incoming                     |  -> Invoice requests & new registrations
-   |  crm.to.mailing                          |  -> Email campaigns
-   |  kassa.incoming                          |  -> Customer registrations, profile updates, cancellations
-   |  frontend.user.unregistered (fanout)     |  -> crm.salesforce, planning.outlook, mailing.sendgrid
-   |  calendar.exchange (topic)               |  -> registration.cancelled (to Planning)
-   +------------------------------------------+
+- Listens to RabbitMQ messages from multiple sources
+- Validates incoming XML (basic structure + XSD where configured)
+- Resolves/creates a **Master UUID** through the Identity service when needed
+- Creates/updates Salesforce records (`Member__c`, `Task`, `Consumption__c`)
+- Forwards events to other services (Kassa, Facturatie, Mailing, Planning, Frontend)
+- Retries temporary processing failures via retry queues
+- Sends invalid/non-retryable messages to dead-letter
 
-   Invalid messages -> crm.dead-letter
-```
-
-## File structure
+## 2) High-level flow
 
 ```text
-CRM/
-|-- src/
-|   |-- receiver.js       <- Main file: receives and processes messages
-|   |-- sender.js         <- Sends XML messages to other queues
-|   |-- sfConnection.js   <- Salesforce connection and authentication
-|   |-- heartbeat.js      <- Sends a status signal every second
-|   `-- amqpUrl.js        <- Builds the RabbitMQ connection options
-|-- tests/
-|   |-- receiver.test.js  <- Tests for the receiver flow
-|   `-- sender.test.js    <- Tests for XML construction
-|-- .env.example          <- Example of required environment variables
-|-- Dockerfile            <- Containerisation (Node 20)
-|-- docker-compose.yml    <- Starts the service with RabbitMQ
-`-- package.json          <- NPM project configuration and scripts
+Incoming queues/exchanges
+  - crm.incoming
+  - kassa.payments
+  - facturatie.to.crm
+  - user.created
+  - user.registered
+  - planning.exchange -> planning.session.events
+  - user.events -> crm.identity.user.events
+
+        |
+        v
+    src/receiver.js
+      - parse + validate XML
+      - route by message type
+      - sync to Salesforce
+      - publish follow-up events via src/sender.js
+
+        |
+        v
+Outgoing destinations
+  - kassa.incoming
+  - facturatie.incoming
+  - crm.to.mailing
+  - frontend.incoming
+  - frontend.user.unregistered (fanout)
+  - calendar.exchange (topic)
+  - logs
+
+Error handling
+  - retry queues: <queue>.retry
+  - dead-letter exchange: crm.dlx
+  - dead-letter queue: crm.dead-letter
 ```
 
-## Key components
+## 3) Main components
 
 ### `src/receiver.js`
+Main worker process (`npm start`).
 
-The main file that starts automatically via `npm start`. It:
-
-- starts a health check HTTP server on port `3000`
-- connects to RabbitMQ
-- listens on `crm.incoming`, `kassa.payments`, `user.created`, and `user.registered`
-- parses XML messages
-- validates headers and types
-- makes RPC calls to the Identity Service to retrieve/create Master UUIDs
-- routes each message to the appropriate handler
-
-Supported message types:
-
-| Type | Queue | Action |
-|---|---|---|
-| `user.created` | `user.created` | Create or update `Member__c` in Salesforce via Master UUID |
-| `user.registered` | `user.registered` | Update `Member__c` + store session registration as a `Task` in Salesforce |
-| `new_registration` | `crm.incoming` | Upsert customer in Salesforce, forward to POS and Invoicing |
-| `user.unregistered` | `crm.incoming` | Publish fanout to `frontend.user.unregistered` exchange |
-| `user.updated` | `crm.incoming` | Update `Member__c` in Salesforce |
-| `delete_user` | `crm.incoming` | Mark `Member__c` as deleted in Salesforce |
-| `user_deleted` | `crm.incoming` | Same as `delete_user` (for frontend-initiated deletions) |
-| `payment_registered` | `crm.incoming` | Create `Task` in Salesforce |
-| `badge_scanned` | `crm.incoming` | Create `Task` in Salesforce |
-| `session_updated` | `crm.incoming` | Create `Task` in Salesforce |
-| `invoice_status` | `crm.incoming` | Create `Task` in Salesforce |
-| `send_invoice` | `crm.incoming` | Update latest invoice fields on `Member__c` in Salesforce |
-| `mailing_status` | `crm.incoming` | Create `Task` in Salesforce |
-| `consumption_order` | `kassa.payments` | Create `Consumption__c` records in Salesforce |
-| `badge_assigned` | `kassa.payments` | Update badge ID on `Member__c` in Salesforce |
-| `refund_processed` | `kassa.payments` | Create `Task` in Salesforce |
-| `invoice_request` | `kassa.payments` | Create `Task` in Salesforce and forward to `facturatie.incoming` |
-| `invoice_cancelled` | `kassa.payments` | Process cancelled invoice in Salesforce |
-
-Invalid or unparseable messages are sent to `crm.dead-letter`.
+- Starts health endpoint (`GET /` on `HEALTH_PORT`, default `3000`)
+- Connects to RabbitMQ and consumes all configured queues
+- Performs message validation and routing
+- Handles retry/dead-letter behavior
+- Uses Identity RPC (`identity.user.create.request`) with 15s timeout
 
 ### `src/sender.js`
+Builds and publishes XML messages to queues/exchanges.
 
-Builds XML messages and sends them to the appropriate RabbitMQ queue or exchange:
-
-| Method | Target / Queue |
-|---|---|
-| `sendNewRegistrationToKassa` | `kassa.incoming` |
-| `sendNewRegistrationToFacturatie` | `facturatie.incoming` |
-| `sendProfileUpdateToKassa` | `kassa.incoming` |
-| `sendCancelRegistrationToKassa` | `kassa.incoming` |
-| `sendCancelRegistrationToPlanning` | `calendar.exchange` (topic, routing key `registration.cancelled`) |
-| `sendInvoiceRequest` | `facturatie.incoming` |
-| `sendInvoiceCancelledToFacturatie` | `facturatie.incoming` |
-| `sendMailingSend` | `crm.to.mailing` |
-| `sendUserUnregisteredFanout` | `frontend.user.unregistered` (fanout exchange) |
+Examples of outgoing methods:
+- Registration/profile/cancel updates to `kassa.incoming`
+- Invoice and payment messages to `facturatie.incoming`
+- Mailing messages to `crm.to.mailing`
+- Fanout unregister event to `frontend.user.unregistered`
+- Planning event publication to `calendar.exchange`
 
 ### `src/sfConnection.js`
+Salesforce connection and API wrapper.
 
-Manages authentication and API calls to Salesforce. Supports OAuth2 with refresh token and direct access token fallback. If no valid credentials are present, the service runs in DRY RUN mode (all Salesforce operations are simulated and logged, but not executed).
+- OAuth refresh-token authentication (preferred)
+- Direct access-token fallback
+- Automatic token refresh on expired sessions
+- If credentials are missing/invalid: **DRY RUN mode** (no Salesforce writes)
 
 ### `src/heartbeat.js`
+Optional heartbeat process (`npm run heartbeat`).
 
-Sends a heartbeat message (XML) to the `heartbeat` queue every second. A Salesforce health check is also performed every 10 seconds. The reported status is `online`, `degraded`, or `offline`.
+- Sends a heartbeat XML to `heartbeat` queue every second
+- Runs Salesforce health check every 10 seconds
+- Reports `online`, `degraded`, or `offline`
 
-### `src/amqpUrl.js`
+### `src/mcp_server.js`
+Optional MCP server container/process for CRM Salesforce tooling.
 
-Builds the RabbitMQ connection options from environment variables. Logs a warning if TLS (`amqps`) is not enabled.
+- Runs on port `8008` by default
+- Uses same Salesforce credentials from environment
 
-### Identity Service integration
+## 4) Message types handled by the receiver
 
-When processing `new_registration`, `user.created`, and `user.registered` messages, the service makes an RPC call to the Identity Service via the `identity.user.create.request` queue. This ensures that every member in Salesforce receives the same Master UUID as the rest of the infrastructure. The call uses a temporary exclusive reply queue and a 15-second timeout.
+Current routed message types include:
 
-## Environment variables
+- User lifecycle: `user_created`, `user.created`, `user_registered`, `user_unregistered`, `user_updated`, `delete_user`, `user_deleted`, `user_checkin`
+- Registration/session: `new_registration`, `cancel_registration`, `session_created`, `session_updated`, `session_deleted`, `event_ended`
+- Payment/invoice: `payment_registered`, `invoice_status`, `send_invoice`, `invoice_request`, `invoice_cancelled`, `consumption_order`, `refund_processed`
+- Badge/wallet: `badge_scanned`, `badge_assigned`, `wallet_lease_request`, `wallet_lease_return`, `wallet_topup_request`
+- Company: `company_registration`, `company_update`, `company_delete`, `company_member_removed`
+- Mailing: `mailing_status`
 
-Copy `.env.example` to `.env` and fill in the values:
+Unknown message types are logged but not processed.
 
-```env
-RABBITMQ_HOST=integrationproject-2526s2-dag01.westeurope.cloudapp.azure.com
-RABBITMQ_PORT=30000
-RABBITMQ_PROTOCOL=amqps
-RABBITMQ_USER=your_rabbitmq_user
-RABBITMQ_PASS=your_rabbitmq_password
-RABBITMQ_VHOST=/
+## 5) Prerequisites
 
-SF_INSTANCE_URL=https://yourorg.my.salesforce.com
-SF_CLIENT_ID=your_client_id
-SF_CLIENT_SECRET=your_client_secret
-SF_REFRESH_TOKEN=your_refresh_token
-SF_ACCESS_TOKEN=your_access_token
-SF_API_VERSION=v60.0
-SF_CALLBACK_URL=https://oauth.pstmn.io/v1/callback
+- Node.js `>=22` (see `package.json` engines)
+- RabbitMQ access credentials
+- Salesforce credentials (unless running intentionally in DRY RUN mode)
 
-CRM_RETRY_DELAY_MS=300000
-CRM_MAX_RETRY_ATTEMPTS=288
+## 6) Environment setup
 
-HEALTH_PORT=3000
-```
-
-## Getting started
-
-With Docker:
+1. Copy environment template:
 
 ```bash
 cp .env.example .env
-docker compose up
 ```
 
-This starts RabbitMQ and the CRM service.
+2. Fill required values in `.env`.
 
-Locally:
+Minimum RabbitMQ settings:
+
+- `RABBITMQ_HOST`
+- `RABBITMQ_PORT`
+- `RABBITMQ_PROTOCOL` (`amqps` recommended)
+- `RABBITMQ_USER`
+- `RABBITMQ_PASS`
+- `RABBITMQ_VHOST`
+
+Salesforce settings:
+
+- `SF_INSTANCE_URL`
+- `SF_CLIENT_ID`
+- `SF_CLIENT_SECRET`
+- `SF_REFRESH_TOKEN`
+- `SF_ACCESS_TOKEN` (fallback)
+- `SF_API_VERSION`
+
+Retry settings:
+
+- `CRM_RETRY_DELAY_MS` (default `300000` = 5 min)
+- `CRM_MAX_RETRY_ATTEMPTS` (default `288`)
+
+Health endpoint:
+
+- `HEALTH_PORT` (default `3000`)
+
+## 7) Run locally
+
+### Option A: Docker Compose
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+This starts:
+- `crm-receiver`
+- `rabbitmq_broker`
+- `crm_mcp`
+
+### Option B: Node.js directly
 
 ```bash
 npm install
 cp .env.example .env
 npm start
+```
+
+Optional in a second terminal:
+
+```bash
 npm run heartbeat
 ```
 
-## Tests
+## 8) Development checks
 
-Run tests:
-
-```bash
-npm test
-```
-
-Linting:
+Lint:
 
 ```bash
 npm run lint
 ```
 
-## Dependencies
+Tests:
 
-| Library | Purpose |
-|---|---|
-| `amqplib` | Receive and send RabbitMQ messages |
-| `fast-xml-parser` | Parse incoming XML messages |
-| `xml2js` | Parse XML messages for Identity Service RPC responses |
-| `xmlbuilder2` | Build outgoing XML messages |
-| `jsforce` | Salesforce API client |
-| `dotenv` | Load environment variables from `.env` |
-| `uuid` | Generate unique message IDs |
+```bash
+npm test -- --runInBand
+```
+
+## 9) Repository structure
+
+```text
+CRM/
+|-- src/
+|   |-- receiver.js
+|   |-- sender.js
+|   |-- sfConnection.js
+|   |-- heartbeat.js
+|   |-- amqpUrl.js
+|   |-- validator.js
+|   `-- mcp_server.js
+|-- tests/
+|   |-- receiver.test.js
+|   `-- sender.test.js
+|-- xsd/
+|-- .env.example
+|-- docker-compose.yml
+|-- Dockerfile
+`-- package.json
+```
+
+## 10) Troubleshooting
+
+- **`RABBITMQ_USER and RABBITMQ_PASS environment variables are required`**
+  - Set both values in `.env`.
+
+- **Salesforce not connected / DRY RUN mode**
+  - Check Salesforce credentials and network access.
+
+- **Messages end in `crm.dead-letter`**
+  - Check XML format/XSD compliance and required message fields.
+
+- **Repeated retries**
+  - Inspect temporary upstream outages (Salesforce/Identity/RabbitMQ).
+
+---
+
+If you are new to this project, start with:
+1. Section 6 (Environment setup)
+2. Section 7 (Run locally)
+3. `src/receiver.js` and `src/sender.js` for processing flow
