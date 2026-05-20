@@ -1059,7 +1059,7 @@ class ReceiverV2 {
     const transactionId = transaction ? ReceiverV2.getElementText(transaction, 'id') : null;
     const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') ||
       (transaction ? ReceiverV2.getElementText(transaction, 'method') : null) || 'unknown';
-    const paidAt = transaction ? ReceiverV2.getElementText(transaction, 'timestamp') : null;
+    
 
     if (header.source === 'kassa') {
       if (!masterUuid) {
