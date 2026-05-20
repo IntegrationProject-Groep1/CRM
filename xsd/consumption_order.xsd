@@ -63,7 +63,8 @@
           </xs:simpleContent>
         </xs:complexType>
       </xs:element>
-      <xs:element name="item_type" type="xs:string" minOccurs="0"/>
+      <xs:element name="item_type"  type="xs:string"  minOccurs="0"/>
+      <xs:element name="session_id" type="xs:integer" minOccurs="0"/>
     </xs:sequence>
   </xs:complexType>
 

@@ -57,6 +57,13 @@
           <xs:complexType>
             <xs:sequence>
               <xs:element name="identity_uuid" type="UUIDType"/>
+              <xs:element name="payment_status">
+                <xs:simpleType><xs:restriction base="xs:string">
+                  <xs:enumeration value="paid"/>
+                  <xs:enumeration value="pending"/>
+                </xs:restriction></xs:simpleType>
+              </xs:element>
+              <xs:element name="payment_method" type="xs:string" minOccurs="0"/>
               <xs:element name="invoice_data" type="InvoiceDataType"/>
               <!-- GEEN <items> of <total> — Facturatie haalt die uit de consumption_order -->
             </xs:sequence>
