@@ -30,12 +30,7 @@
               <!-- identity_uuid: de master_uuid van de Identity Service -->
               <xs:element name="identity_uuid" type="UUIDType"/>
               <xs:element name="email"         type="xs:string"/>
-              <xs:element name="type">
-                <xs:simpleType><xs:restriction base="xs:string">
-                  <xs:enumeration value="private"/>
-                  <xs:enumeration value="company"/>
-                </xs:restriction></xs:simpleType>
-              </xs:element>
+              <xs:element name="type"          type="xs:string"/>
               <xs:element name="is_company_linked" type="xs:boolean"/>
               <xs:element name="vat_number"    type="xs:string" minOccurs="0"/>
               <xs:element name="date_of_birth" type="xs:date"/>
