@@ -1061,60 +1061,93 @@ class ReceiverV2 {
       (transaction ? ReceiverV2.getElementText(transaction, 'method') : null) || 'unknown';
     const paidAt = transaction ? ReceiverV2.getElementText(transaction, 'timestamp') : null;
 
-    const taskData = {
-      Subject: `Payment registered [${paymentContext}] invoice: ${invoiceId || 'N/A'}`,
-      Description: [
-        `Context: ${paymentContext}`,
-        `Payment Method: ${paymentMethod}`,
-        transactionId ? `Transaction ID: ${transactionId}` : null,
-        `Amount Paid: ${amountPaid}`,
-        paidAt ? `Paid At: ${paidAt}` : null,
-        masterUuid ? `Master UUID: ${masterUuid}` : null,
-      ].filter(Boolean).join('\n'),
-      Status: 'Completed',
-      ActivityDate: new Date().toISOString().split('T')[0],
-    };
-
     if (header.source === 'kassa') {
-  if (!masterUuid) {
-    console.log(`[receiver] Skipping payment forward: masterUuid could not be resolved`);
-  } else {
-    const VALID_PAYMENT_METHODS = ['company_link', 'on_site', 'online'];
-    const validPaymentMethod = VALID_PAYMENT_METHODS.includes(paymentMethod) ? paymentMethod : null;
+      if (!masterUuid) {
+        console.log(`[receiver] Skipping payment forward: masterUuid could not be resolved`);
+      } else {
+        const VALID_PAYMENT_METHODS = ['company_link', 'on_site', 'online'];
+        const validPaymentMethod = VALID_PAYMENT_METHODS.includes(paymentMethod) ? paymentMethod : null;
 
-    const paymentData = {
-      identity_uuid: masterUuid,
-      invoice_id: invoiceId,
-      amount_paid: amountPaid,
-      payment_context: paymentContext,
-      transaction_id: validPaymentMethod ? transactionId : null,
-      payment_method: validPaymentMethod,
-      correlation_id: header.message_id
-    };
+        // Klantdata ophalen uit Salesforce
+        let customer = null;
+        let address = null;
+        if (this.sf.isConnected) {
+          const records = await this.sf.apiCall((conn) =>
+            conn.query(`
+              SELECT First_Name__c, Last_Name__c, Email__c,
+                     Street__c, House_Number__c, Postal_Code__c, City__c, Country_Code__c,
+                     Company_Name__c, VAT_Number__c
+              FROM Member__c
+              WHERE Master_UUID__c = '${masterUuid}'
+              LIMIT 1
+            `)
+          );
 
-    await this.sender.sendPaymentRegisteredToFrontend(paymentData);
-    await this.sender.sendPaymentRegisteredToFacturatie(paymentData);
-  }
-}
+          if (records?.records?.length > 0) {
+            const m = records.records[0];
+            customer = {
+              first_name:   m.First_Name__c  || '',
+              last_name:    m.Last_Name__c   || '',
+              email:        m.Email__c       || '',
+              company_name: m.Company_Name__c || null,
+              vat_number:   m.VAT_Number__c  || null,
+            };
+            address = {
+              street:      m.Street__c       || '',
+              number:      m.House_Number__c  || '',
+              postal_code: m.Postal_Code__c  || '',
+              city:        m.City__c         || '',
+              country:     m.Country_Code__c || '',
+            };
+          } else {
+            console.log(`[receiver] No Member__c record found for masterUuid: ${masterUuid}`);
+          }
+        }
+
+        const paymentData = {
+          identity_uuid:   masterUuid,
+          invoice_id:      invoiceId,
+          amount_paid:     amountPaid,
+          payment_context: paymentContext,
+          transaction_id:  validPaymentMethod ? transactionId : null,
+          payment_method:  validPaymentMethod,
+          payment_status:  'paid',
+          correlation_id:  header.correlation_id || header.message_id,
+          customer,
+          address,
+        };
+
+        await this.sender.sendPaymentRegisteredToFrontend(paymentData);
+        await this.sender.sendInvoiceRequest(paymentData);
+      }
+    }
 
     if (paymentContext === 'registration' || paymentContext === 'session_registration') {
       const sessionId = ReceiverV2.getElementText(body, 'session_id') || (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
       if (sessionId && masterUuid) {
         await this.sender.sendSessionRegistrationConfirmed({
-          session_id: sessionId,
-          identity_uuid: masterUuid,
-          correlation_id: header.message_id
+          session_id:      sessionId,
+          identity_uuid:   masterUuid,
+          correlation_id:  header.message_id,
         });
       }
     }
 
-    if (this.sf.isConnected) {
-  await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
-}
-} catch (err) {
-  console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
-  throw err;
-}
+    if (this.sf.isConnected && masterUuid) {
+      await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').upsert({
+          Master_UUID__c:      masterUuid,
+          Payment_Status__c:   'paid',
+          Amount__c:           amountPaid,
+          Last_Invoice_Number__c: invoiceId,
+        }, 'Master_UUID__c')
+      );
+    }
+
+  } catch (err) {
+    console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
+    throw err;
+  }
 }
 
   async handleBadgeScanned(header, body) {

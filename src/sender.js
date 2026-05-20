@@ -270,40 +270,42 @@ class CRMSender {
     }
   }
 
-  buildInvoiceRequestXml(data) {
-  const messageId = uuidv4();
-  const timestamp = new Date().toISOString();
-
+ buildInvoiceRequestXml(data) {
   const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
   const header = root.ele('header');
-  header.ele('message_id').txt(messageId);
-  header.ele('timestamp').txt(timestamp);
+  header.ele('message_id').txt(uuidv4());
+  header.ele('timestamp').txt(new Date().toISOString());
   header.ele('source').txt('crm');
   header.ele('type').txt('invoice_request');
   header.ele('version').txt('2.0');
   header.ele('correlation_id').txt(data.correlation_id || uuidv4());
 
   const body = root.ele('body');
-  body.ele('identity_uuid').txt(data.master_uuid || data.user_id || data.identity_uuid || '');
+  body.ele('identity_uuid').txt(data.identity_uuid || '');
+  body.ele('payment_status').txt(data.payment_status || 'paid');
+  if (data.payment_method) body.ele('payment_method').txt(data.payment_method);
 
-  const invoiceData = body.ele('invoice_data');
-  const contact = invoiceData.ele('contact');
-  contact.ele('first_name').txt(data.customer?.first_name || '');
-  contact.ele('last_name').txt(data.customer?.last_name || '');
+  if (data.customer) {
+    const invoiceData = body.ele('invoice_data');
 
-  invoiceData.ele('email').txt(data.customer?.email || '');
+    const contact = invoiceData.ele('contact');
+    contact.ele('first_name').txt(data.customer.first_name || '');
+    contact.ele('last_name').txt(data.customer.last_name || '');
 
-  const address = invoiceData.ele('address');
-  address.ele('street').txt(data.address?.street || '');
-  address.ele('number').txt(data.address?.number || '');
-  address.ele('postal_code').txt(data.address?.postal_code || '');
-  address.ele('city').txt(data.address?.city || '');
-  address.ele('country').txt(data.address?.country || '');
+    invoiceData.ele('email').txt(data.customer.email || '');
 
-  if (data.customer?.company_name) invoiceData.ele('company_name').txt(data.customer.company_name);
-  if (data.customer?.vat_number)   invoiceData.ele('vat_number').txt(data.customer.vat_number);
-  
+    const address = invoiceData.ele('address');
+    address.ele('street').txt(data.address?.street || '');
+    address.ele('number').txt(data.address?.number || '');
+    address.ele('postal_code').txt(data.address?.postal_code || '');
+    address.ele('city').txt(data.address?.city || '');
+    address.ele('country').txt(data.address?.country || '');
+
+    if (data.customer.company_name) invoiceData.ele('company_name').txt(data.customer.company_name);
+    if (data.customer.vat_number)   invoiceData.ele('vat_number').txt(data.customer.vat_number);
+  }
+
   return root.doc().end({ prettyPrint: true, indent: '  ' });
 }
 
