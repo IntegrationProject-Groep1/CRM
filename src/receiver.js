@@ -759,21 +759,25 @@ class ReceiverV2 {
       const isCompanyFlag = ReceiverV2.getElementText(customer, 'is_company') === 'true';
       const rawType = ReceiverV2.getElementText(customer, 'type') || (isCompanyFlag ? 'company' : 'private');
       const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
+      const companyName = ReceiverV2.getElementText(customer, 'company_name');
       const sourceSystem = header?.source || 'frontend.drupal';
 
       // masterUuid is altijd gevuld — ofwel uit XML, ofwel via identity service
       const masterUuid = identityUuid || await this.getOrCreateMasterUuid(email, sourceSystem);
 
       if (this.sf.isConnected) {
+        const userData = {
+          Master_UUID__c: masterUuid,
+          First_Name__c: firstName,
+          Last_Name__c: lastName,
+          Email__c: email,
+          Birthdate__c: dateOfBirth || null,
+          User_Type__c: userType,
+        };
+        if (companyName) userData.Company_Name__c = companyName;
+
         await this.sf.apiCall((conn) =>
-          conn.sobject('Member__c').upsert({
-            Master_UUID__c: masterUuid,
-            First_Name__c: firstName,
-            Last_Name__c: lastName,
-            Email__c: email,
-            Birthdate__c: dateOfBirth || null,
-            User_Type__c: userType,
-          }, 'Master_UUID__c')
+          conn.sobject('Member__c').upsert(userData, 'Master_UUID__c')
         );
       }
 
@@ -1554,20 +1558,24 @@ class ReceiverV2 {
       const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
       const rawType = ReceiverV2.getElementText(customer, 'type');
       const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
+      const companyName = ReceiverV2.getElementText(customer, 'company_name');
 
       if (!identityUuid) throw new Error('Missing identity_uuid in user_updated message');
 
       // identityUuid is hier veilig want we hebben de guard hierboven
       if (this.sf.isConnected) {
+        const userData = {
+          Master_UUID__c: identityUuid,
+          Email__c: email,
+          First_Name__c: firstName,
+          Last_Name__c: lastName,
+          Birthdate__c: dateOfBirth || null,
+          User_Type__c: userType,
+        };
+        if (companyName) userData.Company_Name__c = companyName;
+
         await this.sf.apiCall((conn) =>
-          conn.sobject('Member__c').upsert({
-            Master_UUID__c: identityUuid,
-            Email__c: email,
-            First_Name__c: firstName,
-            Last_Name__c: lastName,
-            Birthdate__c: dateOfBirth || null,
-            User_Type__c: userType,
-          }, 'Master_UUID__c')
+          conn.sobject('Member__c').upsert(userData, 'Master_UUID__c')
         );
       }
 
