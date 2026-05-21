@@ -835,6 +835,42 @@ describe('handleConsumptionOrder', () => {
     expect(receiver.sf.apiCall).toHaveBeenCalledWith(expect.any(Function));
     expect(receiver.sender.sendConsumptionOrderToFacturatie).toHaveBeenCalledWith(expect.stringContaining('<type>consumption_order</type>'));
   });
+
+  test('negeert duplicate consumption_order berichten met dezelfde message_id', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('member-1');
+    receiver._findUserByEmail = jest.fn().mockResolvedValue(null);
+
+    const upsert = jest.fn().mockResolvedValue({ id: 'cons-1' });
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({ upsert }),
+    }));
+
+    const header = { message_id: 'duplicate-message-1' };
+    const body = {
+      is_anonymous: 'false',
+      customer: {
+        email: 'k@example.com',
+        master_uuid: 'test-master-uuid-1234',
+      },
+      items: {
+        item: {
+          id: 'line-1',
+          description: 'Koffie',
+          quantity: '2',
+          unit_price: '3.50',
+        },
+      },
+    };
+    const rawXml = '<message><header><type>consumption_order</type></header></message>';
+
+    await receiver.handleConsumptionOrder(header, body, rawXml);
+    await receiver.handleConsumptionOrder(header, body, rawXml);
+
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(receiver.sender.sendConsumptionOrderToFacturatie).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('handleWalletLeaseRequest', () => {

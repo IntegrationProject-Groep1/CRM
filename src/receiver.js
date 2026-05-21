@@ -126,6 +126,28 @@ class ReceiverV2 {
     this.sf = new SFConnection();
     this.sender = new CRMSender();
     this.running = true;
+    this._processedMessageIds = new Map();
+  }
+
+  _expireProcessedMessageIds() {
+    const now = Date.now();
+    for (const [messageId, timestamp] of this._processedMessageIds) {
+      if (now - timestamp > 3_600_000) {
+        this._processedMessageIds.delete(messageId);
+      }
+    }
+  }
+
+  _isProcessedMessage(messageId) {
+    if (!messageId) return false;
+    this._expireProcessedMessageIds();
+    return this._processedMessageIds.has(messageId);
+  }
+
+  _markMessageProcessed(messageId) {
+    if (!messageId) return;
+    this._expireProcessedMessageIds();
+    this._processedMessageIds.set(messageId, Date.now());
   }
 
   startHealthServer() {
@@ -1047,6 +1069,11 @@ class ReceiverV2 {
 
   async handlePaymentRegistered(header, body) {
   try {
+    if (this._isProcessedMessage(header.message_id)) {
+      console.log(`[receiver] Duplicate payment_registered ignored: ${header.message_id}`);
+      return;
+    }
+
     const invoice = body ? body.invoice : null;
     const transaction = body ? body.transaction : null;
     const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
@@ -1144,6 +1171,7 @@ class ReceiverV2 {
       );
     }
 
+    this._markMessageProcessed(header.message_id);
   } catch (err) {
     console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
     throw err;
@@ -1255,6 +1283,11 @@ class ReceiverV2 {
 
   async handleConsumptionOrder(header, body, rawXml = null) {
     try {
+      if (this._isProcessedMessage(header.message_id)) {
+        console.log(`[receiver] Duplicate consumption_order ignored: ${header.message_id}`);
+        return;
+      }
+
       const isAnonymous = ReceiverV2.getElementText(body, 'is_anonymous') === 'true';
       const customer = body ? body.customer : null;
       const items = body ? body.items : null;
@@ -1291,6 +1324,8 @@ class ReceiverV2 {
       if (rawXml) {
         await this.sender.sendConsumptionOrderToFacturatie(rawXml);
       }
+
+      this._markMessageProcessed(header.message_id);
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
       throw err;
@@ -1317,6 +1352,11 @@ class ReceiverV2 {
 
   async handleWalletLeaseRequest(header, body) {
     try {
+      if (this._isProcessedMessage(header.message_id)) {
+        console.log(`[receiver] Duplicate wallet_lease_request ignored: ${header.message_id}`);
+        return;
+      }
+
       const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
       const badgeId = ReceiverV2.getElementText(body, 'badge_id');
 
@@ -1377,6 +1417,7 @@ class ReceiverV2 {
       await this.sender.sendWalletLeaseGrant(leaseData);
 
       console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Lease: ${generatedLeaseId}`);
+      this._markMessageProcessed(header.message_id);
     } catch (err) {
       console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
       throw err;
@@ -1386,6 +1427,11 @@ class ReceiverV2 {
   async handleWalletLeaseReturn(header, body) {
     let leaseId = 'ONBEKEND';
     try {
+      if (this._isProcessedMessage(header.message_id)) {
+        console.log(`[receiver] Duplicate wallet_lease_return ignored: ${header.message_id}`);
+        return;
+      }
+
       const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
       const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
       leaseId = ReceiverV2.getElementText(body, 'lease_id');
@@ -1429,6 +1475,7 @@ class ReceiverV2 {
       });
 
       console.log(`[lease-return] Wallet succesvol vrijgegeven in CRM voor ${masterUuid}.`);
+      this._markMessageProcessed(header.message_id);
     } catch (err) {
       console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
       await this.sender.sendLog({
