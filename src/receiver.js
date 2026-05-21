@@ -214,6 +214,7 @@ class ReceiverV2 {
       'not_found',
       'entity_is_deleted',
       'bad request',
+      'method_not_allowed',
     ];
     const temporaryErrorMarkers = [
       'timeout',
@@ -509,6 +510,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.USER_DELETED]: 'user_deleted.xsd',
         [MESSAGE_TYPES.USER_CHECKIN]: 'user_checkin.xsd',
         [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
+        [MESSAGE_TYPES.COMPANY_REGISTRATION]: 'company_registration.xsd',
         [MESSAGE_TYPES.COMPANY_MEMBER_REMOVED]: 'company_member_removed.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_RETURN]: 'wallet_lease_return.xsd',
