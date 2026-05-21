@@ -192,6 +192,54 @@ describe('Betaling flow - payment_registered forwarding', () => {
   });
 });
 
+describe('Wallet lease flow - buildWalletLeaseGrantXml', () => {
+  let sender;
+
+  beforeEach(() => { sender = new CRMSender(); });
+
+  const baseData = () => ({
+    identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+    current_balance: 12.5,
+    leaseId: 'LEASE-2026-ABCDEF12',
+    correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
+  });
+
+  test('bouwt wallet_lease_grant met lease_id en current_balance', () => {
+    const root = parser.parse(sender.buildWalletLeaseGrantXml(baseData())).message;
+
+    expect(root.header.type).toBe('wallet_lease_grant');
+    expect(root.header.source).toBe('crm');
+    expect(root.body.identity_uuid).toBe('e8b27c1d-4f2a-4b3e-9c5f-123456789abc');
+    expect(root.body.current_balance['#text']).toBe('12.50');
+    expect(root.body.current_balance.currency).toBe('eur');
+    expect(root.body.lease_id).toBe('LEASE-2026-ABCDEF12');
+    expect(root.body.payment_due).toBeUndefined();
+  });
+
+  test('neemt payment_due op en normaliseert statuswaarden', () => {
+    const root = parser.parse(sender.buildWalletLeaseGrantXml({
+      ...baseData(),
+      payment_due_amount: 10,
+      payment_due_status: 'Cancelled',
+    })).message;
+
+    expect(root.body.payment_due.amount['#text']).toBe('10.00');
+    expect(root.body.payment_due.amount.currency).toBe('eur');
+    expect(root.body.payment_due.status).toBe('unpaid');
+  });
+
+  test('houdt payment_due status paid alleen aan bij paid', () => {
+    const root = parser.parse(sender.buildWalletLeaseGrantXml({
+      ...baseData(),
+      payment_due_amount: 0,
+      payment_due_status: 'PAID',
+    })).message;
+
+    expect(root.body.payment_due.amount['#text']).toBe('0.00');
+    expect(root.body.payment_due.status).toBe('paid');
+  });
+});
+
 describe('Monitoring flow - sendLog', () => {
   let sender;
 
