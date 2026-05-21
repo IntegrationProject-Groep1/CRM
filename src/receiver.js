@@ -511,6 +511,8 @@ class ReceiverV2 {
         [MESSAGE_TYPES.USER_CHECKIN]: 'user_checkin.xsd',
         [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
         [MESSAGE_TYPES.COMPANY_REGISTRATION]: 'company_registration.xsd',
+        [MESSAGE_TYPES.COMPANY_UPDATE]: 'company_update.xsd',
+        [MESSAGE_TYPES.COMPANY_DELETE]: 'company_delete.xsd',
         [MESSAGE_TYPES.COMPANY_MEMBER_REMOVED]: 'company_member_removed.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_RETURN]: 'wallet_lease_return.xsd',
@@ -828,6 +830,16 @@ class ReceiverV2 {
         company_name: ReceiverV2.getElementText(customer, 'company_name'),
         vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
       });
+      await this.sender.sendProfileUpdateToFacturatie({
+        identity_uuid: masterUuid,
+        email,
+        first_name: firstName,
+        last_name: lastName,
+        date_of_birth: dateOfBirth,
+        type: rawType,
+        company_name: ReceiverV2.getElementText(customer, 'company_name'),
+        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+      });
 
       console.log(`[receiver] User created in Salesforce and forwarded to Kassa: ${masterUuid}`);
     } catch (err) {
@@ -899,12 +911,23 @@ class ReceiverV2 {
 
       const masterUuid = header.master_uuid || ReceiverV2.getElementText(company, 'master_uuid');
       const email = (ReceiverV2.getElementText(company, 'email') || '').toLowerCase().trim();
+      const vatNumber = ReceiverV2.getElementText(company, 'vat_number');
+
+      if (vatNumber && !/^[A-Z]{2}[0-9]{10}$/.test(vatNumber)) {
+        await this.sender.sendVatValidationErrorToFrontend({
+          identity_uuid: masterUuid,
+          vat_number: vatNumber,
+          error_message: 'BTW-nummer voldoet niet aan het verwacht formaat (2 letters + 10 cijfers).',
+          correlation_id: header.correlation_id,
+        });
+        return;
+      }
 
       const sfCompanyData = {
         Master_UUID__c: masterUuid,
         Company_Name__c: ReceiverV2.getElementText(company, 'name'),
         Email__c: email,
-        VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
+        VAT_Number__c: vatNumber,
         User_Type__c: 'Bedrijf',
       };
 
@@ -1229,7 +1252,7 @@ class ReceiverV2 {
         };
 
         if (speaker.identity_uuid) {
-          taskData.Master_UUID__c = speaker.identity_uuid;
+          taskData.Description += `\nSpeaker UUID: ${speaker.identity_uuid}`;
         }
 
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
@@ -1462,7 +1485,7 @@ class ReceiverV2 {
       await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').update({
           Id: memberId,
-          Wallet_Balance__c: parseFloat(finalBalance),
+          Wallet_Balance__c: parseFloat(finalBalance) || 0,
           Wallet_Status__c: 'Active',
           Last_Lease_ID__c: leaseId,
           Last_Sync_At__c: new Date().toISOString(),
@@ -1697,6 +1720,16 @@ class ReceiverV2 {
       }
 
       await this.sender.sendProfileUpdateToKassa({
+        identity_uuid: identityUuid,
+        email,
+        first_name: firstName,
+        last_name: lastName,
+        date_of_birth: dateOfBirth,
+        type: rawType,
+        company_name: ReceiverV2.getElementText(customer, 'company_name'),
+        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+      });
+      await this.sender.sendProfileUpdateToFacturatie({
         identity_uuid: identityUuid,
         email,
         first_name: firstName,

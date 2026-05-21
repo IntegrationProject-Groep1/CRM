@@ -26,6 +26,7 @@ class CRMSender {
       'user.unregistered': 'user_unregistered.xsd',
       'event_ended': 'event_ended.xsd',
       'payment_registered': 'payment_registered_frontend.xsd',
+      'vat_validation_error': 'vat_validation_error.xsd',
       'consumption_order': 'consumption_order.xsd',
       'wallet_lease_grant': 'wallet_lease_grant.xsd',
       'wallet_remote_topup': 'wallet_remote_topup.xsd',
@@ -41,6 +42,7 @@ class CRMSender {
       'user.unregistered': 'user',
       'event_ended': 'session',
       'payment_registered': 'payment',
+      'vat_validation_error': 'user',
       'consumption_order': 'payment',
       'invoice_status': 'invoice',
       'refund_processed': 'refund',
@@ -785,6 +787,68 @@ async sendPaymentRegisteredToFrontend(data) {
     if (!ok) console.log(`[sender] Warning: write buffer full for exchange "${exchange}"`);
     console.log(`User unregistered broadcast via exchange "${exchange}"`);
     return { success: true, exchange, queues };
+  }
+
+  async sendProfileUpdateToFacturatie(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildProfileUpdateXml(data);
+      this._validate(xmlPayload, 'profile_update');
+      const queue = 'facturatie.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Profile update forwarded to Facturatie queue "${queue}"`);
+      await this._logOutbound('profile_update', queue, 'N/A');
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send profile update to Facturatie: ${error}`);
+      throw error;
+    }
+  }
+
+  buildVatValidationErrorXml(data) {
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(uuidv4());
+    header.ele('timestamp').txt(new Date().toISOString());
+    header.ele('source').txt('crm');
+    header.ele('type').txt('vat_validation_error');
+    header.ele('version').txt('2.0');
+    if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+
+    const body = root.ele('body');
+    if (data.identity_uuid) body.ele('identity_uuid').txt(data.identity_uuid);
+    body.ele('vat_number').txt(data.vat_number || '');
+    if (data.error_message) body.ele('error_message').txt(data.error_message);
+    body.ele('timestamp').txt(new Date().toISOString());
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendVatValidationErrorToFrontend(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildVatValidationErrorXml(data);
+      this._validate(xmlPayload, 'vat_validation_error');
+      const queue = 'frontend.crm.vat.validation.error';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`VAT validation error forwarded to Frontend queue "${queue}"`);
+      await this._logOutbound('vat_validation_error', queue, data.correlation_id);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send vat_validation_error to Frontend: ${error}`);
+      throw error;
+    }
   }
 
   async close() {
