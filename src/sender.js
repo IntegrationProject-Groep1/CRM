@@ -641,7 +641,7 @@ async sendPaymentRegisteredToFrontend(data) {
       const header = root.ele('header');
       header.ele('message_id').txt(messageId);
       header.ele('timestamp').txt(timestamp);
-      header.ele('source').txt('frontend');
+      header.ele('source').txt('crm');
       header.ele('type').txt('event_ended');
       header.ele('version').txt('2.0');
 
@@ -662,6 +662,7 @@ async sendPaymentRegisteredToFrontend(data) {
       await this._logOutbound('event_ended', queue, messageId);
     } catch (error) {
       console.log(`Failed to send event ended to Facturatie: ${error}`);
+      throw error;
     }
   }
 
@@ -710,6 +711,7 @@ async sendPaymentRegisteredToFrontend(data) {
       await this._logOutbound('new_registration', queue, correlationId);
     } catch (error) {
       console.log(`Failed to forward registration to Facturatie: ${error}`);
+      throw error;
     }
   }
 
@@ -748,6 +750,7 @@ async sendPaymentRegisteredToFrontend(data) {
       await this._logOutbound('session_registration_confirmed', exchange, correlationId);
     } catch (error) {
       console.log(`Failed to send session registration confirmation: ${error}`);
+      throw error;
     }
   }
 
@@ -755,6 +758,7 @@ async sendPaymentRegisteredToFrontend(data) {
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
     const header = root.ele('header');
+    header.ele('message_id').txt(uuidv4());
     header.ele('type').txt('user.unregistered');
     header.ele('source').txt('crm');
     header.ele('version').txt('1.0');
@@ -775,6 +779,7 @@ async sendPaymentRegisteredToFrontend(data) {
 
     await this.channel.assertExchange(exchange, 'fanout', { durable: true });
     for (const q of queues) {
+      await this.channel.assertQueue(q, { durable: true });
       await this.channel.bindQueue(q, exchange, '');
     }
 

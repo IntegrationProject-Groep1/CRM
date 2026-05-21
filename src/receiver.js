@@ -1125,18 +1125,16 @@ class ReceiverV2 {
         let address = null;
         if (this.sf.isConnected) {
           const records = await this.sf.apiCall((conn) =>
-            conn.query(`
-              SELECT First_Name__c, Last_Name__c, Email__c,
-                     Street__c, House_Number__c, Postal_Code__c, City__c, Country_Code__c,
-                     Company_Name__c, VAT_Number__c
-              FROM Member__c
-              WHERE Master_UUID__c = '${masterUuid}'
-              LIMIT 1
-            `)
+            conn.sobject('Member__c').find(
+              { Master_UUID__c: masterUuid },
+              ['First_Name__c', 'Last_Name__c', 'Email__c',
+               'Street__c', 'House_Number__c', 'Postal_Code__c', 'City__c', 'Country_Code__c',
+               'Company_Name__c', 'VAT_Number__c']
+            ).limit(1)
           );
 
-          if (records?.records?.length > 0) {
-            const m = records.records[0];
+          if (records?.length > 0) {
+            const m = records[0];
             customer = {
               first_name:   m.First_Name__c  || '',
               last_name:    m.Last_Name__c   || '',
