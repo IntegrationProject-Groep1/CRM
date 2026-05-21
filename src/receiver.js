@@ -1357,7 +1357,7 @@ class ReceiverV2 {
       const leaseData = {
         identity_uuid: masterUuid,
         current_balance: member.Wallet_Balance__c || 0.00,
-        lease_id: generatedLeaseId,
+        leaseId: generatedLeaseId,
         correlation_id: header.message_id,
       };
 

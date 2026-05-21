@@ -22,6 +22,7 @@ jest.mock('../src/sender', () => {
     sendInvoiceRequest: jest.fn().mockResolvedValue({ success: true }),
     sendConsumptionOrderToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendPaymentRegisteredToFrontend: jest.fn().mockResolvedValue({ success: true }),
+    sendWalletLeaseGrant: jest.fn().mockResolvedValue({ success: true }),
     sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
     sendEventEndedToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendSessionRegistrationConfirmed: jest.fn().mockResolvedValue({ success: true }),
@@ -832,6 +833,47 @@ describe('handleConsumptionOrder', () => {
 
     expect(receiver.sf.apiCall).toHaveBeenCalledWith(expect.any(Function));
     expect(receiver.sender.sendConsumptionOrderToFacturatie).toHaveBeenCalledWith(expect.stringContaining('<type>consumption_order</type>'));
+  });
+});
+
+describe('handleWalletLeaseRequest', () => {
+  test('stuurt de gegenereerde LEASE-id als leaseId naar de sender', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+
+    const updateMember = jest.fn().mockResolvedValue({ id: 'member-1' });
+    const findMember = jest.fn().mockReturnValue({
+      limit: jest.fn().mockResolvedValue([{
+        Id: 'member-1',
+        Wallet_Balance__c: 42.5,
+        Wallet_Status__c: 'Active',
+      }]),
+    });
+
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({
+        find: findMember,
+        update: updateMember,
+      }),
+    }));
+
+    await receiver.handleWalletLeaseRequest(
+      { message_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902' },
+      {
+        identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+        badge_id: 'BADGE-99',
+      },
+    );
+
+    const leaseId = updateMember.mock.calls[0][0].Last_Lease_ID__c;
+    expect(leaseId).toMatch(/^LEASE-\d{4}-[0-9A-F]{8}$/);
+    expect(receiver.sender.sendWalletLeaseGrant).toHaveBeenCalledWith(expect.objectContaining({
+      identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+      current_balance: 42.5,
+      leaseId,
+      correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
+    }));
+    expect(receiver.sender.sendWalletLeaseGrant.mock.calls[0][0].lease_id).toBeUndefined();
   });
 });
 
