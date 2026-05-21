@@ -126,6 +126,28 @@ class ReceiverV2 {
     this.sf = new SFConnection();
     this.sender = new CRMSender();
     this.running = true;
+    this._processedMessageIds = new Map();
+  }
+
+  _expireProcessedMessageIds() {
+    const now = Date.now();
+    for (const [messageId, timestamp] of this._processedMessageIds) {
+      if (now - timestamp > 3_600_000) {
+        this._processedMessageIds.delete(messageId);
+      }
+    }
+  }
+
+  _isProcessedMessage(messageId) {
+    if (!messageId) return false;
+    this._expireProcessedMessageIds();
+    return this._processedMessageIds.has(messageId);
+  }
+
+  _markMessageProcessed(messageId) {
+    if (!messageId) return;
+    this._expireProcessedMessageIds();
+    this._processedMessageIds.set(messageId, Date.now());
   }
 
   startHealthServer() {
@@ -192,6 +214,7 @@ class ReceiverV2 {
       'not_found',
       'entity_is_deleted',
       'bad request',
+      'method_not_allowed',
     ];
     const temporaryErrorMarkers = [
       'timeout',
@@ -313,7 +336,8 @@ class ReceiverV2 {
         this.channel.consume(USER_REGISTERED_QUEUE, createConsumer(USER_REGISTERED_QUEUE), { noAck: false });
         this.channel.consume(PLANNING_SESSION_QUEUE, createConsumer(PLANNING_SESSION_QUEUE), { noAck: false });
         this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => {
-          if (msg) msg.crmQueueName = IDENTITY_EVENTS_QUEUE;
+          if (!msg) return;
+          msg.crmQueueName = IDENTITY_EVENTS_QUEUE;
           return this.handleIdentityUserEvent(msg);
         }, { noAck: false });
 
@@ -486,6 +510,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.USER_DELETED]: 'user_deleted.xsd',
         [MESSAGE_TYPES.USER_CHECKIN]: 'user_checkin.xsd',
         [MESSAGE_TYPES.CANCEL_REGISTRATION]: 'cancel_registration.xsd',
+        [MESSAGE_TYPES.COMPANY_REGISTRATION]: 'company_registration.xsd',
         [MESSAGE_TYPES.COMPANY_MEMBER_REMOVED]: 'company_member_removed.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_RETURN]: 'wallet_lease_return.xsd',
@@ -586,7 +611,7 @@ class ReceiverV2 {
   }
  _getExistingMasterUuid(header, body) {
  return (header && header.master_uuid) ||
-    ReceiverV2.getElementText(body, 'identity_uuid') || // ✅ voeg dit toe
+    ReceiverV2.getElementText(body, 'identity_uuid') ||
     ReceiverV2.getElementText(body, 'master_uuid') ||
     ReceiverV2.getElementText(body, 'user_id') ||
     ReceiverV2.getElementText(body?.user, 'master_uuid') ||
@@ -880,7 +905,6 @@ class ReceiverV2 {
         Company_Name__c: ReceiverV2.getElementText(company, 'name'),
         Email__c: email,
         VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
-        VAT_Rate__c: parseFloat(ReceiverV2.getElementText(company, 'vat_rate') || 0),
         User_Type__c: 'Bedrijf',
       };
 
@@ -1047,6 +1071,11 @@ class ReceiverV2 {
 
   async handlePaymentRegistered(header, body) {
   try {
+    if (this._isProcessedMessage(header.message_id)) {
+      console.log(`[receiver] Duplicate payment_registered ignored: ${header.message_id}`);
+      return;
+    }
+
     const invoice = body ? body.invoice : null;
     const transaction = body ? body.transaction : null;
     const paymentContext = ReceiverV2.getElementText(body, 'payment_context') || 'unknown';
@@ -1118,7 +1147,6 @@ class ReceiverV2 {
         };
 
         await this.sender.sendPaymentRegisteredToFrontend(paymentData);
-        await this.sender.sendInvoiceRequest(paymentData);
       }
     }
 
@@ -1144,6 +1172,7 @@ class ReceiverV2 {
       );
     }
 
+    this._markMessageProcessed(header.message_id);
   } catch (err) {
     console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
     throw err;
@@ -1255,6 +1284,11 @@ class ReceiverV2 {
 
   async handleConsumptionOrder(header, body, rawXml = null) {
     try {
+      if (this._isProcessedMessage(header.message_id)) {
+        console.log(`[receiver] Duplicate consumption_order ignored: ${header.message_id}`);
+        return;
+      }
+
       const isAnonymous = ReceiverV2.getElementText(body, 'is_anonymous') === 'true';
       const customer = body ? body.customer : null;
       const items = body ? body.items : null;
@@ -1291,6 +1325,8 @@ class ReceiverV2 {
       if (rawXml) {
         await this.sender.sendConsumptionOrderToFacturatie(rawXml);
       }
+
+      this._markMessageProcessed(header.message_id);
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
       throw err;
@@ -1317,6 +1353,11 @@ class ReceiverV2 {
 
   async handleWalletLeaseRequest(header, body) {
     try {
+      if (this._isProcessedMessage(header.message_id)) {
+        console.log(`[receiver] Duplicate wallet_lease_request ignored: ${header.message_id}`);
+        return;
+      }
+
       const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
       const badgeId = ReceiverV2.getElementText(body, 'badge_id');
 
@@ -1327,7 +1368,10 @@ class ReceiverV2 {
       }
 
       const records = await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
+        conn.sobject('Member__c').find(
+          { Master_UUID__c: masterUuid },
+          ['Id', 'Wallet_Balance__c', 'Wallet_Status__c', 'Amount__c', 'Payment_Status__c'],
+        ).limit(1)
       );
 
       if (!records || records.length === 0) {
@@ -1357,13 +1401,24 @@ class ReceiverV2 {
       const leaseData = {
         identity_uuid: masterUuid,
         current_balance: member.Wallet_Balance__c || 0.00,
-        lease_id: generatedLeaseId,
+        leaseId: generatedLeaseId,
         correlation_id: header.message_id,
       };
+
+      const paymentDueAmount = Number(member.Amount__c);
+      const paymentStatus = String(member.Payment_Status__c || '').toLowerCase();
+      const hasOutstandingAmount = Number.isFinite(paymentDueAmount) && paymentDueAmount > 0;
+      const isPaid = paymentStatus === 'paid';
+
+      if (hasOutstandingAmount || isPaid) {
+        leaseData.payment_due_amount = Number.isFinite(paymentDueAmount) ? paymentDueAmount : 0;
+        leaseData.payment_due_status = isPaid ? 'paid' : 'unpaid';
+      }
 
       await this.sender.sendWalletLeaseGrant(leaseData);
 
       console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Lease: ${generatedLeaseId}`);
+      this._markMessageProcessed(header.message_id);
     } catch (err) {
       console.error(`[receiver] Error in handleWalletLeaseRequest: ${err.message}`);
       throw err;
@@ -1373,6 +1428,11 @@ class ReceiverV2 {
   async handleWalletLeaseReturn(header, body) {
     let leaseId = 'ONBEKEND';
     try {
+      if (this._isProcessedMessage(header.message_id)) {
+        console.log(`[receiver] Duplicate wallet_lease_return ignored: ${header.message_id}`);
+        return;
+      }
+
       const masterUuid = ReceiverV2.getElementText(body, 'identity_uuid');
       const finalBalance = ReceiverV2.getElementText(body, 'final_balance');
       leaseId = ReceiverV2.getElementText(body, 'lease_id');
@@ -1385,14 +1445,19 @@ class ReceiverV2 {
       }
 
       const records = await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
+        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Last_Lease_ID__c']).limit(1)
       );
 
       if (!records || records.length === 0) {
         throw new Error(`User met UUID ${masterUuid} niet gevonden bij afsluiten lease.`);
       }
 
-      const memberId = records[0].Id;
+      const member = records[0];
+      const memberId = member.Id;
+
+      if (member.Last_Lease_ID__c && member.Last_Lease_ID__c !== leaseId) {
+        console.warn(`[lease-return] lease_id mismatch for ${masterUuid}. Expected: ${member.Last_Lease_ID__c}, Got: ${leaseId}. Processing balance update anyway.`);
+      }
 
       await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').update({
@@ -1411,6 +1476,7 @@ class ReceiverV2 {
       });
 
       console.log(`[lease-return] Wallet succesvol vrijgegeven in CRM voor ${masterUuid}.`);
+      this._markMessageProcessed(header.message_id);
     } catch (err) {
       console.error(`[receiver] Fout bij verwerken wallet_lease_return: ${err.message}`);
       await this.sender.sendLog({
@@ -1544,18 +1610,22 @@ class ReceiverV2 {
     const contact = invoiceData ? invoiceData.contact : null;
     const email = ReceiverV2.getElementText(body, 'email') || (invoiceData ? ReceiverV2.getElementText(invoiceData, 'email') : null);
     const masterUuid = await this.resolveMasterUuid(header, body, { email });
-
-    const amountPaidRaw = invoiceData ? ReceiverV2.getElementText(invoiceData, 'amount_paid') : null;
-    const invoiceAmount = amountPaidRaw ? parseFloat(amountPaidRaw) : 0;
+    const paymentStatus = ReceiverV2.getElementText(body, 'payment_status') || 'pending';
+    const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') || '';
+    const invoiceRequestId = header.correlation_id || header.message_id;
 
     if (this.sf.isConnected) {
-      await this.sf.apiCall((conn) =>
-        conn.sobject('Consumption__c')
-          .upsert({
-            Consumption_ID__c: ReceiverV2.getElementText(invoiceData, 'id'),
-            Invoice_Req__c: header.correlation_id || header.message_id,
-          }, 'Consumption_ID__c')
-      );
+      try {
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Consumption__c')
+            .create({
+              Consumption_ID__c: invoiceRequestId,
+              Invoice_Req__c: invoiceRequestId,
+            })
+        );
+      } catch (dupErr) {
+        if (!/duplicate/i.test(dupErr.message)) throw dupErr;
+      }
 
       const taskData = {
         Subject: `Invoice request [Kassa]`,
@@ -1567,18 +1637,16 @@ class ReceiverV2 {
     }
 
     await this.sender.sendInvoiceRequest({
-      master_uuid: masterUuid,
-      correlation_id: header.correlation_id || header.message_id,
+      identity_uuid: masterUuid,
+      correlation_id: invoiceRequestId,
+      payment_status: paymentStatus,
+      payment_method: paymentMethod,
       customer: {
         email: email || '',
         first_name: contact ? ReceiverV2.getElementText(contact, 'first_name') : '',
         last_name: contact ? ReceiverV2.getElementText(contact, 'last_name') : '',
         company_name: invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null,
         vat_number: invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null,
-      },
-      invoice: {
-        amount: invoiceAmount,
-        id: invoiceData ? ReceiverV2.getElementText(invoiceData, 'id') : null,
       },
       address: invoiceData ? {
         street: ReceiverV2.getElementText(invoiceData.address, 'street') || '',

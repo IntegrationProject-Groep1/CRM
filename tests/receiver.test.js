@@ -22,9 +22,11 @@ jest.mock('../src/sender', () => {
     sendInvoiceRequest: jest.fn().mockResolvedValue({ success: true }),
     sendConsumptionOrderToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendPaymentRegisteredToFrontend: jest.fn().mockResolvedValue({ success: true }),
+    sendWalletLeaseGrant: jest.fn().mockResolvedValue({ success: true }),
     sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
     sendEventEndedToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendSessionRegistrationConfirmed: jest.fn().mockResolvedValue({ success: true }),
+    sendLog: jest.fn().mockResolvedValue({ success: true }),
   }));
 });
 
@@ -749,7 +751,7 @@ describe('handlePaymentRegistered', () => {
 
 });
 
- test('forwardt Kassa payment_registered naar Frontend en stuurt invoice_request naar Facturatie', async () => {
+ test('forwardt Kassa payment_registered alleen naar Frontend', async () => {
   const receiver = makeReceiver();
   receiver.sf.isConnected = true;
   receiver.sf.apiCall.mockResolvedValue({ records: [] });
@@ -772,9 +774,7 @@ describe('handlePaymentRegistered', () => {
   expect(receiver.sender.sendPaymentRegisteredToFrontend).toHaveBeenCalledWith(
     expect.objectContaining({ payment_context: 'consumption', amount_paid: '50.00' })
   );
-  expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
-    expect.objectContaining({ payment_context: 'consumption', amount_paid: '50.00' })
-  );
+  expect(receiver.sender.sendInvoiceRequest).not.toHaveBeenCalled();
   expect(receiver.channel.ack).toHaveBeenCalled();
 });
 });
@@ -832,6 +832,168 @@ describe('handleConsumptionOrder', () => {
 
     expect(receiver.sf.apiCall).toHaveBeenCalledWith(expect.any(Function));
     expect(receiver.sender.sendConsumptionOrderToFacturatie).toHaveBeenCalledWith(expect.stringContaining('<type>consumption_order</type>'));
+  });
+
+  test('negeert duplicate consumption_order berichten met dezelfde message_id', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('member-1');
+    receiver._findUserByEmail = jest.fn().mockResolvedValue(null);
+
+    const upsert = jest.fn().mockResolvedValue({ id: 'cons-1' });
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({ upsert }),
+    }));
+
+    const header = { message_id: 'duplicate-message-1' };
+    const body = {
+      is_anonymous: 'false',
+      customer: {
+        email: 'k@example.com',
+        master_uuid: 'test-master-uuid-1234',
+      },
+      items: {
+        item: {
+          id: 'line-1',
+          description: 'Koffie',
+          quantity: '2',
+          unit_price: '3.50',
+        },
+      },
+    };
+    const rawXml = '<message><header><type>consumption_order</type></header></message>';
+
+    await receiver.handleConsumptionOrder(header, body, rawXml);
+    await receiver.handleConsumptionOrder(header, body, rawXml);
+
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(receiver.sender.sendConsumptionOrderToFacturatie).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('handleWalletLeaseRequest', () => {
+  test('stuurt de gegenereerde LEASE-id als leaseId naar de sender', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+
+    const updateMember = jest.fn().mockResolvedValue({ id: 'member-1' });
+    const findMember = jest.fn().mockReturnValue({
+      limit: jest.fn().mockResolvedValue([{
+        Id: 'member-1',
+        Wallet_Balance__c: 42.5,
+        Wallet_Status__c: 'Active',
+        Amount__c: 10,
+        Payment_Status__c: 'pending',
+      }]),
+    });
+
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({
+        find: findMember,
+        update: updateMember,
+      }),
+    }));
+
+    await receiver.handleWalletLeaseRequest(
+      { message_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902' },
+      {
+        identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+        badge_id: 'BADGE-99',
+      },
+    );
+
+    const leaseId = updateMember.mock.calls[0][0].Last_Lease_ID__c;
+    expect(leaseId).toMatch(/^LEASE-\d{4}-[0-9A-F]{8}$/);
+    expect(findMember).toHaveBeenCalledWith(
+      { Master_UUID__c: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc' },
+      ['Id', 'Wallet_Balance__c', 'Wallet_Status__c', 'Amount__c', 'Payment_Status__c'],
+    );
+    expect(receiver.sender.sendWalletLeaseGrant).toHaveBeenCalledWith(expect.objectContaining({
+      identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+      current_balance: 42.5,
+      leaseId,
+      correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
+      payment_due_amount: 10,
+      payment_due_status: 'unpaid',
+    }));
+    expect(receiver.sender.sendWalletLeaseGrant.mock.calls[0][0].lease_id).toBeUndefined();
+  });
+
+  test('stuurt payment_due paid mee wanneer Salesforce status paid is', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({
+        find: jest.fn().mockReturnValue({
+          limit: jest.fn().mockResolvedValue([{
+            Id: 'member-1',
+            Wallet_Balance__c: 0,
+            Wallet_Status__c: 'Active',
+            Amount__c: 0,
+            Payment_Status__c: 'Paid',
+          }]),
+        }),
+        update: jest.fn().mockResolvedValue({ id: 'member-1' }),
+      }),
+    }));
+
+    await receiver.handleWalletLeaseRequest(
+      { message_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902' },
+      { identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc' },
+    );
+
+    expect(receiver.sender.sendWalletLeaseGrant).toHaveBeenCalledWith(expect.objectContaining({
+      payment_due_amount: 0,
+      payment_due_status: 'paid',
+    }));
+  });
+});
+
+describe('handleWalletLeaseReturn', () => {
+  test('waarschuwt bij lease_id mismatch maar verwerkt de balance update', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const updateMember = jest.fn().mockResolvedValue({ id: 'member-1' });
+    const findMember = jest.fn().mockReturnValue({
+      limit: jest.fn().mockResolvedValue([{
+        Id: 'member-1',
+        Last_Lease_ID__c: 'LEASE-2026-EXPECTED',
+      }]),
+    });
+
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({
+        find: findMember,
+        update: updateMember,
+      }),
+    }));
+
+    await receiver.handleWalletLeaseReturn(
+      { message_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902' },
+      {
+        identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+        final_balance: '17.25',
+        lease_id: 'LEASE-2026-ACTUAL',
+        transaction_count: '3',
+      },
+    );
+
+    expect(findMember).toHaveBeenCalledWith(
+      { Master_UUID__c: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc' },
+      ['Id', 'Last_Lease_ID__c'],
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lease_id mismatch'));
+    expect(updateMember).toHaveBeenCalledWith(expect.objectContaining({
+      Id: 'member-1',
+      Wallet_Balance__c: 17.25,
+      Wallet_Status__c: 'Active',
+      Last_Lease_ID__c: 'LEASE-2026-ACTUAL',
+    }));
+
+    warnSpy.mockRestore();
   });
 });
 
@@ -1010,15 +1172,24 @@ describe('handleDeleteUser', () => {
 });
 
 describe('handleInvoiceRequestFromKassa', () => {
-  test('stuurt lazy master_uuid door naar facturatie als header master_uuid ontbreekt', async () => {
+  test('stuurt lazy identity_uuid en betaalstatus door naar facturatie als header master_uuid ontbreekt', async () => {
     const receiver = makeReceiver();
     const xml = withoutMasterUuid(buildXml('invoice_request', `
-      <email>kassa@example.com</email>
+      <payment_status>pending</payment_status>
+      <payment_method>company_link</payment_method>
       <invoice_data>
-        <id>KINV-001</id>
-        <amount_paid currency="eur">150.00</amount_paid>
-        <status>pending</status>
-        <due_date>2026-06-01</due_date>
+        <contact>
+          <first_name>Kassa</first_name>
+          <last_name>Klant</last_name>
+        </contact>
+        <email>kassa@example.com</email>
+        <address>
+          <street>Markt</street>
+          <number>1</number>
+          <postal_code>1000</postal_code>
+          <city>Brussel</city>
+          <country>BE</country>
+        </address>
       </invoice_data>
     `));
 
@@ -1026,20 +1197,33 @@ describe('handleInvoiceRequestFromKassa', () => {
 
     expect(receiver.getOrCreateMasterUuid).toHaveBeenCalledWith('kassa@example.com', 'test');
     expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ master_uuid: 'test-master-uuid-1234' }),
+      expect.objectContaining({
+        identity_uuid: 'test-master-uuid-1234',
+        payment_status: 'pending',
+        payment_method: 'company_link',
+      }),
     );
   });
 
-  test('stuurt factuurverzoek door via sender', async () => {
+  test('stuurt factuurverzoek door via sender zonder niet-bestaande invoice_data velden', async () => {
     const receiver = makeReceiver();
     const xml = buildXml('invoice_request', `
-      <master_uuid>test-master-uuid-1234</master_uuid>
-      <email>kassa@example.com</email>
+      <identity_uuid>test-master-uuid-1234</identity_uuid>
+      <payment_status>paid</payment_status>
+      <payment_method>on_site</payment_method>
       <invoice_data>
-        <id>KINV-001</id>
-        <amount_paid currency="eur">150.00</amount_paid>
-        <status>pending</status>
-        <due_date>2026-06-01</due_date>
+        <contact>
+          <first_name>Kassa</first_name>
+          <last_name>Klant</last_name>
+        </contact>
+        <email>kassa@example.com</email>
+        <address>
+          <street>Markt</street>
+          <number>1</number>
+          <postal_code>1000</postal_code>
+          <city>Brussel</city>
+          <country>BE</country>
+        </address>
       </invoice_data>
     `);
 
@@ -1047,8 +1231,10 @@ describe('handleInvoiceRequestFromKassa', () => {
 
     expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
       expect.objectContaining({
+        identity_uuid: 'test-master-uuid-1234',
+        payment_status: 'paid',
+        payment_method: 'on_site',
         customer: expect.objectContaining({ email: 'kassa@example.com' }),
-        invoice: expect.objectContaining({ amount: 150 }),
       }),
     );
   });

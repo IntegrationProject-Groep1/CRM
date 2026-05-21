@@ -283,7 +283,7 @@ class CRMSender {
 
   const body = root.ele('body');
   body.ele('identity_uuid').txt(data.identity_uuid || '');
-  body.ele('payment_status').txt(data.payment_status || 'paid');
+  body.ele('payment_status').txt(data.payment_status || 'pending');
   if (data.payment_method) body.ele('payment_method').txt(data.payment_method);
 
   if (data.customer) {
@@ -352,6 +352,13 @@ class CRMSender {
       .txt(Number(data.current_balance).toFixed(2));
       
     body.ele('lease_id').txt(data.leaseId || `LSE-${Date.now()}`);
+
+    if (data.payment_due_amount !== null && data.payment_due_amount !== undefined) {
+      const rawStatus = String(data.payment_due_status || '').toLowerCase();
+      const paymentDue = body.ele('payment_due');
+      paymentDue.ele('amount', { currency: 'eur' }).txt(Number(data.payment_due_amount).toFixed(2));
+      paymentDue.ele('status').txt(rawStatus === 'paid' ? 'paid' : 'unpaid');
+    }
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
 }
