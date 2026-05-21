@@ -613,7 +613,7 @@ async sendPaymentRegisteredToFrontend(data) {
   try {
     const xmlPayload = this.buildPaymentRegisteredXml(data);
     this._validate(xmlPayload, 'payment_registered');
-    const queue = 'frontend.crm.payment.registered';
+    const queue = 'frontend.incoming';
     await this.channel.assertQueue(queue, { durable: true });
     const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
       contentType: 'application/xml',

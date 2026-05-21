@@ -178,17 +178,17 @@ describe('Betaling flow - payment_registered forwarding', () => {
     correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
   };
 
-  test('stuurt payment_registered XML naar frontend.crm.payment.registered', async () => {
+  test('stuurt payment_registered XML naar frontend.incoming', async () => {
     const ch = attachMockChannel(sender);
     const result = await sender.sendPaymentRegisteredToFrontend(paymentData);
 
-    expect(ch.assertQueue).toHaveBeenCalledWith('frontend.crm.payment.registered', { durable: true });
+    expect(ch.assertQueue).toHaveBeenCalledWith('frontend.incoming', { durable: true });
     expect(ch.sendToQueue).toHaveBeenCalledWith(
-      'frontend.crm.payment.registered',
+      'frontend.incoming',
       expect.any(Buffer),
       expect.objectContaining({ contentType: 'application/xml', deliveryMode: 2 }),
     );
-    expect(result).toMatchObject({ success: true, queue: 'frontend.crm.payment.registered' });
+    expect(result).toMatchObject({ success: true, queue: 'frontend.incoming' });
   });
 });
 
