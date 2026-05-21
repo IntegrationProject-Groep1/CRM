@@ -751,7 +751,7 @@ describe('handlePaymentRegistered', () => {
 
 });
 
- test('forwardt Kassa payment_registered naar Frontend en stuurt invoice_request naar Facturatie', async () => {
+ test('forwardt Kassa payment_registered alleen naar Frontend', async () => {
   const receiver = makeReceiver();
   receiver.sf.isConnected = true;
   receiver.sf.apiCall.mockResolvedValue({ records: [] });
@@ -774,9 +774,7 @@ describe('handlePaymentRegistered', () => {
   expect(receiver.sender.sendPaymentRegisteredToFrontend).toHaveBeenCalledWith(
     expect.objectContaining({ payment_context: 'consumption', amount_paid: '50.00' })
   );
-  expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
-    expect.objectContaining({ payment_context: 'consumption', amount_paid: '50.00' })
-  );
+  expect(receiver.sender.sendInvoiceRequest).not.toHaveBeenCalled();
   expect(receiver.channel.ack).toHaveBeenCalled();
 });
 });
@@ -1174,15 +1172,24 @@ describe('handleDeleteUser', () => {
 });
 
 describe('handleInvoiceRequestFromKassa', () => {
-  test('stuurt lazy master_uuid door naar facturatie als header master_uuid ontbreekt', async () => {
+  test('stuurt lazy identity_uuid en betaalstatus door naar facturatie als header master_uuid ontbreekt', async () => {
     const receiver = makeReceiver();
     const xml = withoutMasterUuid(buildXml('invoice_request', `
-      <email>kassa@example.com</email>
+      <payment_status>pending</payment_status>
+      <payment_method>company_link</payment_method>
       <invoice_data>
-        <id>KINV-001</id>
-        <amount_paid currency="eur">150.00</amount_paid>
-        <status>pending</status>
-        <due_date>2026-06-01</due_date>
+        <contact>
+          <first_name>Kassa</first_name>
+          <last_name>Klant</last_name>
+        </contact>
+        <email>kassa@example.com</email>
+        <address>
+          <street>Markt</street>
+          <number>1</number>
+          <postal_code>1000</postal_code>
+          <city>Brussel</city>
+          <country>BE</country>
+        </address>
       </invoice_data>
     `));
 
@@ -1190,20 +1197,33 @@ describe('handleInvoiceRequestFromKassa', () => {
 
     expect(receiver.getOrCreateMasterUuid).toHaveBeenCalledWith('kassa@example.com', 'test');
     expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ master_uuid: 'test-master-uuid-1234' }),
+      expect.objectContaining({
+        identity_uuid: 'test-master-uuid-1234',
+        payment_status: 'pending',
+        payment_method: 'company_link',
+      }),
     );
   });
 
-  test('stuurt factuurverzoek door via sender', async () => {
+  test('stuurt factuurverzoek door via sender zonder niet-bestaande invoice_data velden', async () => {
     const receiver = makeReceiver();
     const xml = buildXml('invoice_request', `
-      <master_uuid>test-master-uuid-1234</master_uuid>
-      <email>kassa@example.com</email>
+      <identity_uuid>test-master-uuid-1234</identity_uuid>
+      <payment_status>paid</payment_status>
+      <payment_method>on_site</payment_method>
       <invoice_data>
-        <id>KINV-001</id>
-        <amount_paid currency="eur">150.00</amount_paid>
-        <status>pending</status>
-        <due_date>2026-06-01</due_date>
+        <contact>
+          <first_name>Kassa</first_name>
+          <last_name>Klant</last_name>
+        </contact>
+        <email>kassa@example.com</email>
+        <address>
+          <street>Markt</street>
+          <number>1</number>
+          <postal_code>1000</postal_code>
+          <city>Brussel</city>
+          <country>BE</country>
+        </address>
       </invoice_data>
     `);
 
@@ -1211,8 +1231,10 @@ describe('handleInvoiceRequestFromKassa', () => {
 
     expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
       expect.objectContaining({
+        identity_uuid: 'test-master-uuid-1234',
+        payment_status: 'paid',
+        payment_method: 'on_site',
         customer: expect.objectContaining({ email: 'kassa@example.com' }),
-        invoice: expect.objectContaining({ amount: 150 }),
       }),
     );
   });

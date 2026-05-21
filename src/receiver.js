@@ -1145,7 +1145,6 @@ class ReceiverV2 {
         };
 
         await this.sender.sendPaymentRegisteredToFrontend(paymentData);
-        await this.sender.sendInvoiceRequest(paymentData);
       }
     }
 
@@ -1609,16 +1608,16 @@ class ReceiverV2 {
     const contact = invoiceData ? invoiceData.contact : null;
     const email = ReceiverV2.getElementText(body, 'email') || (invoiceData ? ReceiverV2.getElementText(invoiceData, 'email') : null);
     const masterUuid = await this.resolveMasterUuid(header, body, { email });
-
-    const amountPaidRaw = invoiceData ? ReceiverV2.getElementText(invoiceData, 'amount_paid') : null;
-    const invoiceAmount = amountPaidRaw ? parseFloat(amountPaidRaw) : 0;
+    const paymentStatus = ReceiverV2.getElementText(body, 'payment_status') || 'pending';
+    const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') || '';
+    const invoiceRequestId = header.correlation_id || header.message_id;
 
     if (this.sf.isConnected) {
       await this.sf.apiCall((conn) =>
         conn.sobject('Consumption__c')
           .upsert({
-            Consumption_ID__c: ReceiverV2.getElementText(invoiceData, 'id'),
-            Invoice_Req__c: header.correlation_id || header.message_id,
+            Consumption_ID__c: invoiceRequestId,
+            Invoice_Req__c: invoiceRequestId,
           }, 'Consumption_ID__c')
       );
 
@@ -1632,18 +1631,16 @@ class ReceiverV2 {
     }
 
     await this.sender.sendInvoiceRequest({
-      master_uuid: masterUuid,
-      correlation_id: header.correlation_id || header.message_id,
+      identity_uuid: masterUuid,
+      correlation_id: invoiceRequestId,
+      payment_status: paymentStatus,
+      payment_method: paymentMethod,
       customer: {
         email: email || '',
         first_name: contact ? ReceiverV2.getElementText(contact, 'first_name') : '',
         last_name: contact ? ReceiverV2.getElementText(contact, 'last_name') : '',
         company_name: invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null,
         vat_number: invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null,
-      },
-      invoice: {
-        amount: invoiceAmount,
-        id: invoiceData ? ReceiverV2.getElementText(invoiceData, 'id') : null,
       },
       address: invoiceData ? {
         street: ReceiverV2.getElementText(invoiceData.address, 'street') || '',
