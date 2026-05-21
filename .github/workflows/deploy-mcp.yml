@@ -1,0 +1,73 @@
+name: Deploy MCP Pipeline
+
+on:
+  workflow_run:
+    workflows: ["Deploy Pipeline"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    name: Build and Push MCP Docker Image
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       (github.event.workflow_run.head_branch == 'dev' ||
+        startsWith(github.event.workflow_run.head_branch, 'v')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: vars
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            BRANCH="${{ github.ref_name }}"
+          else
+            BRANCH="${{ github.event.workflow_run.head_branch }}"
+          fi
+          if [[ "$BRANCH" == "dev" ]]; then
+            echo "tag=latest-dev" >> $GITHUB_OUTPUT
+            echo "extra_tag=" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+            echo "extra_tag=$BRANCH" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Lowercase repo name
+        id: repo_name
+        run: echo "value=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push MCP image (dev)
+        if: steps.vars.outputs.tag == 'latest-dev'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./integratie
+          push: true
+          tags: |
+            ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:latest-dev
+            ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Build and push MCP image (prod release)
+        if: steps.vars.outputs.tag == 'latest'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./integratie
+          push: true
+          tags: |
+            ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:latest
+            ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:${{ steps.vars.outputs.extra_tag }}
+            ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:${{ github.event.workflow_run.head_sha || github.sha }}
