@@ -26,6 +26,7 @@ jest.mock('../src/sender', () => {
     sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
     sendEventEndedToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendSessionRegistrationConfirmed: jest.fn().mockResolvedValue({ success: true }),
+    sendLog: jest.fn().mockResolvedValue({ success: true }),
   }));
 });
 
@@ -912,6 +913,53 @@ describe('handleWalletLeaseRequest', () => {
       payment_due_amount: 0,
       payment_due_status: 'paid',
     }));
+  });
+});
+
+describe('handleWalletLeaseReturn', () => {
+  test('waarschuwt bij lease_id mismatch maar verwerkt de balance update', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const updateMember = jest.fn().mockResolvedValue({ id: 'member-1' });
+    const findMember = jest.fn().mockReturnValue({
+      limit: jest.fn().mockResolvedValue([{
+        Id: 'member-1',
+        Last_Lease_ID__c: 'LEASE-2026-EXPECTED',
+      }]),
+    });
+
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({
+        find: findMember,
+        update: updateMember,
+      }),
+    }));
+
+    await receiver.handleWalletLeaseReturn(
+      { message_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902' },
+      {
+        identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
+        final_balance: '17.25',
+        lease_id: 'LEASE-2026-ACTUAL',
+        transaction_count: '3',
+      },
+    );
+
+    expect(findMember).toHaveBeenCalledWith(
+      { Master_UUID__c: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc' },
+      ['Id', 'Last_Lease_ID__c'],
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lease_id mismatch'));
+    expect(updateMember).toHaveBeenCalledWith(expect.objectContaining({
+      Id: 'member-1',
+      Wallet_Balance__c: 17.25,
+      Wallet_Status__c: 'Active',
+      Last_Lease_ID__c: 'LEASE-2026-ACTUAL',
+    }));
+
+    warnSpy.mockRestore();
   });
 });
 

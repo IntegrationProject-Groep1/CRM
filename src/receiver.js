@@ -1398,14 +1398,19 @@ class ReceiverV2 {
       }
 
       const records = await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id']).limit(1)
+        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Last_Lease_ID__c']).limit(1)
       );
 
       if (!records || records.length === 0) {
         throw new Error(`User met UUID ${masterUuid} niet gevonden bij afsluiten lease.`);
       }
 
-      const memberId = records[0].Id;
+      const member = records[0];
+      const memberId = member.Id;
+
+      if (member.Last_Lease_ID__c && member.Last_Lease_ID__c !== leaseId) {
+        console.warn(`[lease-return] lease_id mismatch for ${masterUuid}. Expected: ${member.Last_Lease_ID__c}, Got: ${leaseId}. Processing balance update anyway.`);
+      }
 
       await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').update({
