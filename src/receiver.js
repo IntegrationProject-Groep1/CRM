@@ -335,7 +335,8 @@ class ReceiverV2 {
         this.channel.consume(USER_REGISTERED_QUEUE, createConsumer(USER_REGISTERED_QUEUE), { noAck: false });
         this.channel.consume(PLANNING_SESSION_QUEUE, createConsumer(PLANNING_SESSION_QUEUE), { noAck: false });
         this.channel.consume(IDENTITY_EVENTS_QUEUE, (msg) => {
-          if (msg) msg.crmQueueName = IDENTITY_EVENTS_QUEUE;
+          if (!msg) return;
+          msg.crmQueueName = IDENTITY_EVENTS_QUEUE;
           return this.handleIdentityUserEvent(msg);
         }, { noAck: false });
 
@@ -608,7 +609,7 @@ class ReceiverV2 {
   }
  _getExistingMasterUuid(header, body) {
  return (header && header.master_uuid) ||
-    ReceiverV2.getElementText(body, 'identity_uuid') || // ✅ voeg dit toe
+    ReceiverV2.getElementText(body, 'identity_uuid') ||
     ReceiverV2.getElementText(body, 'master_uuid') ||
     ReceiverV2.getElementText(body, 'user_id') ||
     ReceiverV2.getElementText(body?.user, 'master_uuid') ||
@@ -902,7 +903,6 @@ class ReceiverV2 {
         Company_Name__c: ReceiverV2.getElementText(company, 'name'),
         Email__c: email,
         VAT_Number__c: ReceiverV2.getElementText(company, 'vat_number'),
-        VAT_Rate__c: parseFloat(ReceiverV2.getElementText(company, 'vat_rate') || 0),
         User_Type__c: 'Bedrijf',
       };
 
@@ -1613,13 +1613,17 @@ class ReceiverV2 {
     const invoiceRequestId = header.correlation_id || header.message_id;
 
     if (this.sf.isConnected) {
-      await this.sf.apiCall((conn) =>
-        conn.sobject('Consumption__c')
-          .upsert({
-            Consumption_ID__c: invoiceRequestId,
-            Invoice_Req__c: invoiceRequestId,
-          }, 'Consumption_ID__c')
-      );
+      try {
+        await this.sf.apiCall((conn) =>
+          conn.sobject('Consumption__c')
+            .create({
+              Consumption_ID__c: invoiceRequestId,
+              Invoice_Req__c: invoiceRequestId,
+            })
+        );
+      } catch (dupErr) {
+        if (!/duplicate/i.test(dupErr.message)) throw dupErr;
+      }
 
       const taskData = {
         Subject: `Invoice request [Kassa]`,
