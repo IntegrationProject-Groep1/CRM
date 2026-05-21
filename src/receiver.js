@@ -1250,7 +1250,7 @@ class ReceiverV2 {
         };
 
         if (speaker.identity_uuid) {
-          taskData.Description += `\nSpeaker UUID: ${speaker.identity_uuid}`;
+          taskData.Master_UUID__c = speaker.identity_uuid;
         }
 
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
