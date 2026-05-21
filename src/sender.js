@@ -283,7 +283,7 @@ class CRMSender {
 
   const body = root.ele('body');
   body.ele('identity_uuid').txt(data.identity_uuid || '');
-  body.ele('payment_status').txt(data.payment_status || 'paid');
+  body.ele('payment_status').txt(data.payment_status || 'pending');
   if (data.payment_method) body.ele('payment_method').txt(data.payment_method);
 
   if (data.customer) {

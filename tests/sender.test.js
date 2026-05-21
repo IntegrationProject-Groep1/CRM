@@ -567,6 +567,18 @@ describe('Betaling flow — buildInvoiceRequestXml', () => {
     expect(root.body.identity_uuid).toBe('u-invoice-001');
   });
 
+  test('body valt terug op payment_status pending als status ontbreekt', () => {
+    const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
+    expect(root.body.payment_status).toBe('pending');
+  });
+
+  test('body neemt payment_status en payment_method over wanneer aanwezig', () => {
+    const data = { ...baseData(), payment_status: 'paid', payment_method: 'on_site' };
+    const root = parser.parse(sender.buildInvoiceRequestXml(data)).message;
+    expect(root.body.payment_status).toBe('paid');
+    expect(root.body.payment_method).toBe('on_site');
+  });
+
   test('invoice_data contains first_name, last_name and email', () => {
     const root = parser.parse(sender.buildInvoiceRequestXml(baseData())).message;
     expect(root.body.invoice_data.contact.first_name).toBe('Luc');
