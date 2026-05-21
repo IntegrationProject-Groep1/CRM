@@ -847,6 +847,8 @@ describe('handleWalletLeaseRequest', () => {
         Id: 'member-1',
         Wallet_Balance__c: 42.5,
         Wallet_Status__c: 'Active',
+        Amount__c: 10,
+        Payment_Status__c: 'pending',
       }]),
     });
 
@@ -867,13 +869,49 @@ describe('handleWalletLeaseRequest', () => {
 
     const leaseId = updateMember.mock.calls[0][0].Last_Lease_ID__c;
     expect(leaseId).toMatch(/^LEASE-\d{4}-[0-9A-F]{8}$/);
+    expect(findMember).toHaveBeenCalledWith(
+      { Master_UUID__c: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc' },
+      ['Id', 'Wallet_Balance__c', 'Wallet_Status__c', 'Amount__c', 'Payment_Status__c'],
+    );
     expect(receiver.sender.sendWalletLeaseGrant).toHaveBeenCalledWith(expect.objectContaining({
       identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc',
       current_balance: 42.5,
       leaseId,
       correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
+      payment_due_amount: 10,
+      payment_due_status: 'unpaid',
     }));
     expect(receiver.sender.sendWalletLeaseGrant.mock.calls[0][0].lease_id).toBeUndefined();
+  });
+
+  test('stuurt payment_due paid mee wanneer Salesforce status paid is', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+
+    receiver.sf.apiCall.mockImplementation(async (callback) => callback({
+      sobject: () => ({
+        find: jest.fn().mockReturnValue({
+          limit: jest.fn().mockResolvedValue([{
+            Id: 'member-1',
+            Wallet_Balance__c: 0,
+            Wallet_Status__c: 'Active',
+            Amount__c: 0,
+            Payment_Status__c: 'Paid',
+          }]),
+        }),
+        update: jest.fn().mockResolvedValue({ id: 'member-1' }),
+      }),
+    }));
+
+    await receiver.handleWalletLeaseRequest(
+      { message_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902' },
+      { identity_uuid: 'e8b27c1d-4f2a-4b3e-9c5f-123456789abc' },
+    );
+
+    expect(receiver.sender.sendWalletLeaseGrant).toHaveBeenCalledWith(expect.objectContaining({
+      payment_due_amount: 0,
+      payment_due_status: 'paid',
+    }));
   });
 });
 

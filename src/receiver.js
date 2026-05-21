@@ -1327,7 +1327,10 @@ class ReceiverV2 {
       }
 
       const records = await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
+        conn.sobject('Member__c').find(
+          { Master_UUID__c: masterUuid },
+          ['Id', 'Wallet_Balance__c', 'Wallet_Status__c', 'Amount__c', 'Payment_Status__c'],
+        ).limit(1)
       );
 
       if (!records || records.length === 0) {
@@ -1360,6 +1363,16 @@ class ReceiverV2 {
         leaseId: generatedLeaseId,
         correlation_id: header.message_id,
       };
+
+      const paymentDueAmount = Number(member.Amount__c);
+      const paymentStatus = String(member.Payment_Status__c || '').toLowerCase();
+      const hasOutstandingAmount = Number.isFinite(paymentDueAmount) && paymentDueAmount > 0;
+      const isPaid = paymentStatus === 'paid';
+
+      if (hasOutstandingAmount || isPaid) {
+        leaseData.payment_due_amount = Number.isFinite(paymentDueAmount) ? paymentDueAmount : 0;
+        leaseData.payment_due_status = isPaid ? 'paid' : 'unpaid';
+      }
 
       await this.sender.sendWalletLeaseGrant(leaseData);
 
