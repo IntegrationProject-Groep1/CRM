@@ -40,6 +40,10 @@ jobs:
             echo "should_deploy=true" >> $GITHUB_OUTPUT
             echo "tag=latest-dev"     >> $GITHUB_OUTPUT
             echo "extra_tag="         >> $GITHUB_OUTPUT
+          elif [[ "$BRANCH" == "main" ]]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            echo "tag=latest"         >> $GITHUB_OUTPUT
+            echo "extra_tag="         >> $GITHUB_OUTPUT
           elif [[ -n "$V_TAG" ]]; then
             echo "should_deploy=true" >> $GITHUB_OUTPUT
             echo "tag=latest"         >> $GITHUB_OUTPUT
@@ -83,3 +87,4 @@ jobs:
             ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:latest
             ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:${{ steps.vars.outputs.extra_tag }}
             ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:${{ github.event.workflow_run.head_sha || github.sha }}
+
