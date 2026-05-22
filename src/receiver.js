@@ -1089,6 +1089,7 @@ class ReceiverV2 {
       }
     } catch (err) {
       console.error(`[receiver] Error in handleReceivedInvoiceCancelled: ${err}`);
+      throw err;
     }
   }
 
@@ -1572,6 +1573,11 @@ class ReceiverV2 {
 
   async handleRefundProcessed(header, body) {
   try {
+    if (this._isProcessedMessage(header.message_id)) {
+      console.log(`[receiver] Duplicate refund_processed ignored: ${header.message_id}`);
+      return;
+    }
+
     const refund = body ? body.refund : null;
     const email = ReceiverV2.getElementText(body, 'email');
     const masterUuid = await this.resolveMasterUuid(header, body, { email });
@@ -1619,6 +1625,7 @@ class ReceiverV2 {
       }
     }
 
+    this._markMessageProcessed(header.message_id);
   } catch (err) {
     console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
     throw err;
@@ -1809,7 +1816,7 @@ class ReceiverV2 {
 
       await this.sender.sendLog({
         level: 'info',
-        action: 'delete_user',
+        action: 'user',
         message: `User ${masterUuid} definitief verwijderd uit CRM.`,
       });
     } catch (err) {
