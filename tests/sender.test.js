@@ -827,7 +827,7 @@ describe('Frontend flow — buildUserUnregisteredXml', () => {
     const root = parser.parse(xml).message;
     expect(root.header.type).toBe('user.unregistered');
     expect(root.header.source).toBe('crm');
-    expect(root.header.version).toBe('1.0');
+    expect(root.header.version).toBe('2.0');
     expect(root.body.identity_uuid).toBe('user-001');
     expect(root.body.email).toBe('test@example.com');
     expect(root.body.reason).toBe('User requested deletion');

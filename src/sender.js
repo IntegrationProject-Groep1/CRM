@@ -761,7 +761,7 @@ async sendPaymentRegisteredToFrontend(data) {
     header.ele('message_id').txt(uuidv4());
     header.ele('type').txt('user.unregistered');
     header.ele('source').txt('crm');
-    header.ele('version').txt('1.0');
+    header.ele('version').txt('2.0');
     header.ele('timestamp').txt(new Date().toISOString());
 
     const body = root.ele('body');

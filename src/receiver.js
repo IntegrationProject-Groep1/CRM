@@ -581,9 +581,6 @@ class ReceiverV2 {
       [MESSAGE_TYPES.COMPANY_DELETE]: () => this.handleCompanyDelete(header, body),
       [MESSAGE_TYPES.COMPANY_MEMBER_REMOVED]: () => this.handleCompanyMemberRemoved(header, body),
       [MESSAGE_TYPES.CANCEL_REGISTRATION]: () => this.handleCancelRegistration(header, body),
-      [MESSAGE_TYPES.SESSION_CREATED]: () => this.handlePlanningSessionEvent(header, body),
-      [MESSAGE_TYPES.SESSION_UPDATED]: () => this.handlePlanningSessionEvent(header, body),
-      [MESSAGE_TYPES.SESSION_DELETED]: () => this.handlePlanningSessionEvent(header, body),
       [MESSAGE_TYPES.USER_CHECKIN]: () => this.handleUserCheckin(header, body),
       [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: () => this.handleWalletLeaseRequest(header, body),
       [MESSAGE_TYPES.WALLET_LEASE_RETURN]: () => this.handleWalletLeaseReturn(header, body),
@@ -1235,7 +1232,7 @@ class ReceiverV2 {
       if (header.type === MESSAGE_TYPES.SESSION_DELETED) {
         await this.sender.sendEventEndedToFacturatie({
           session_id: sessionId,
-          ended_at: ReceiverV2.getElementText(body, 'end_time') || header.timestamp,
+          ended_at: header.timestamp,
         });
         return;
       }
@@ -1827,23 +1824,23 @@ class ReceiverV2 {
 
   async handleCancelRegistration(header, body) {
     try {
-      const userId = ReceiverV2.getElementText(body, 'user_id');
+      const identityUuid = ReceiverV2.getElementText(body, 'identity_uuid');
       const sessionId = ReceiverV2.getElementText(body, 'session_id');
       const reason = ReceiverV2.getElementText(body, 'reason');
 
-      if (!userId || !sessionId) {
-        console.log('[receiver] handleCancelRegistration: missing user_id or session_id');
+      if (!identityUuid || !sessionId) {
+        console.log('[receiver] handleCancelRegistration: missing identity_uuid or session_id');
         return;
       }
 
-      const payload = { user_id: userId, session_id: sessionId };
+      const payload = { identity_uuid: identityUuid, session_id: sessionId };
       if (reason) payload.reason = reason;
 
       await this.sender.sendCancelRegistrationToKassa(payload);
       await this.sender.sendCancelRegistrationToPlanning(payload);
 
       if (this.sf.isConnected) {
-        const memberId = await this._findUserByMasterUuid(userId);
+        const memberId = await this._findUserByMasterUuid(identityUuid);
         if (memberId) {
           await this.sf.apiCall((conn) =>
             conn.sobject('Member__c').update({ Id: memberId, Status__c: 'Cancelled' })
@@ -1907,7 +1904,7 @@ class ReceiverV2 {
     } catch (err) {
       console.error(`[receiver] Identity Fanout error: ${err.message}`);
       await this.log('error', 'system_error', `Internal Error in handleIdentityUserEvent: ${err.message}`);
-      await this.retryOrDeadLetter(msg, err, 'identity_user_event');
+      await this.retryOrDeadLetter(msg, err, 'identity');
     }
   }
 

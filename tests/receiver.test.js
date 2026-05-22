@@ -1267,7 +1267,7 @@ describe('handleCancelRegistration', () => {
 
   test('stuurt door naar Kassa en Planning bij geldig bericht', async () => {
     const xml = buildXml('cancel_registration', `
-      <user_id>test-master-uuid-1234</user_id>
+      <identity_uuid>test-master-uuid-1234</identity_uuid>
       <session_id>sess-keynote-001</session_id>
       <reason>Gebruiker gevraagd</reason>
     `);
@@ -1275,14 +1275,14 @@ describe('handleCancelRegistration', () => {
     await receiver.handleMessage(buildMsg(xml));
 
     expect(receiver.sender.sendCancelRegistrationToKassa).toHaveBeenCalledWith(
-      expect.objectContaining({ user_id: 'test-master-uuid-1234', session_id: 'sess-keynote-001' })
+      expect.objectContaining({ identity_uuid: 'test-master-uuid-1234', session_id: 'sess-keynote-001' })
     );
     expect(receiver.sender.sendCancelRegistrationToPlanning).toHaveBeenCalledWith(
-      expect.objectContaining({ user_id: 'test-master-uuid-1234', session_id: 'sess-keynote-001' })
+      expect.objectContaining({ identity_uuid: 'test-master-uuid-1234', session_id: 'sess-keynote-001' })
     );
   });
 
-  test('negeert bericht als user_id ontbreekt', async () => {
+  test('negeert bericht als identity_uuid ontbreekt', async () => {
     const xml = buildXml('cancel_registration', `<session_id>sess-001</session_id>`);
 
     await receiver.handleMessage(buildMsg(xml));
@@ -1292,7 +1292,7 @@ describe('handleCancelRegistration', () => {
   });
 
   test('negeert bericht als session_id ontbreekt', async () => {
-    const xml = buildXml('cancel_registration', `<user_id>test-master-uuid-1234</user_id>`);
+    const xml = buildXml('cancel_registration', `<identity_uuid>test-master-uuid-1234</identity_uuid>`);
 
     await receiver.handleMessage(buildMsg(xml));
 
@@ -1305,7 +1305,7 @@ describe('handleCancelRegistration', () => {
     receiver._findUserByMasterUuid = jest.fn().mockResolvedValue('sf-member-id-001');
 
     const xml = buildXml('cancel_registration', `
-      <user_id>test-master-uuid-1234</user_id>
+      <identity_uuid>test-master-uuid-1234</identity_uuid>
       <session_id>sess-keynote-001</session_id>
     `);
 
