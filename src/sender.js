@@ -536,7 +536,7 @@ async sendWalletLeaseGrant(data) {
   buildLogXml({ level, action, message }) {
     const validLevels = new Set(['info', 'warning', 'error']);
     const validActions = new Set([
-      'registration', 'user', 'payment', 'invoice', 'session', 'calendar',
+      'registration', 'user', 'delete_user', 'payment', 'invoice', 'session', 'calendar',
       'email', 'wallet', 'refund', 'identity', 'xml_validation', 'system_error', 'badge',
     ]);
 

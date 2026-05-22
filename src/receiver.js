@@ -1816,7 +1816,7 @@ class ReceiverV2 {
 
       await this.sender.sendLog({
         level: 'info',
-        action: 'user',
+        action: 'delete_user',
         message: `User ${masterUuid} definitief verwijderd uit CRM.`,
       });
     } catch (err) {
