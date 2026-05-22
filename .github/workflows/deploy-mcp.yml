@@ -85,6 +85,5 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:latest
-            ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:${{ steps.vars.outputs.extra_tag }}
             ghcr.io/${{ steps.repo_name.outputs.value }}-mcp:${{ github.event.workflow_run.head_sha || github.sha }}
 
