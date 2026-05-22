@@ -1946,6 +1946,9 @@ class ReceiverV2 {
       `Type: ${ReceiverV2.getElementText(body, 'session_type')}`,
       `Status: ${ReceiverV2.getElementText(body, 'status')}`,
       `Attendees: ${ReceiverV2.getElementText(body, 'current_attendees')}/${ReceiverV2.getElementText(body, 'max_attendees')}`,
+      ReceiverV2.getElementText(body, 'price')
+        ? `Price: ${ReceiverV2.getElementText(body, 'price')} ${body?.price?.currency ?? 'eur'}`
+        : null,
       ReceiverV2.getElementText(body, 'change_reason')
         ? `Change reason: ${ReceiverV2.getElementText(body, 'change_reason')}`
         : null,

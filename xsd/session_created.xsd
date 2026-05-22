@@ -45,6 +45,14 @@
           </xs:element>
           <xs:element name="max_attendees"     type="xs:positiveInteger"/>
           <xs:element name="current_attendees" type="xs:nonNegativeInteger"/>
+          <!-- price: deelnameprijs voor deze sessie (optioneel; afwezig = gratis) -->
+          <xs:element name="price" minOccurs="0">
+            <xs:complexType><xs:simpleContent>
+              <xs:extension base="xs:decimal">
+                <xs:attribute name="currency" type="xs:string" fixed="eur" use="required"/>
+              </xs:extension>
+            </xs:simpleContent></xs:complexType>
+          </xs:element>
           <!-- speaker: optioneel — niet elke sessie heeft een externe spreker -->
           <xs:element name="speaker" minOccurs="0">
             <xs:complexType><xs:sequence>
