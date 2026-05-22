@@ -42,6 +42,11 @@ jobs:
           else
             BRANCH="${{ github.event.workflow_run.head_branch }}"
             V_TAG=$(git tag --points-at HEAD | grep -E '^v' | head -1 || true)
+            # Fallback: bij een GitHub Release tag push is head_branch de tag-naam zelf.
+            # fetch-depth=1 op een specifieke SHA haalt tags niet altijd op.
+            if [[ -z "$V_TAG" && "$BRANCH" =~ ^v[0-9] ]]; then
+              V_TAG="$BRANCH"
+            fi
             MANUAL=false
           fi
 
