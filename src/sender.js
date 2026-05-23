@@ -646,7 +646,6 @@ async sendPaymentRegisteredToFrontend(data) {
       header.ele('version').txt('2.0');
 
       const body = root.ele('body');
-      body.ele('session_id').txt(data.session_id);
       body.ele('ended_at').txt(data.ended_at || timestamp);
 
       const xmlPayload = root.doc().end({ prettyPrint: true, indent: '  ' });

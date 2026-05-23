@@ -1226,12 +1226,17 @@ class ReceiverV2 {
 
   async handlePlanningSessionEvent(header, body) {
     try {
+      if (header.type === MESSAGE_TYPES.EVENT_ENDED) {
+        const endedAt = ReceiverV2.getElementText(body, 'ended_at') || header.timestamp;
+        await this.sender.sendEventEndedToFacturatie({ ended_at: endedAt });
+        return;
+      }
+
       const sessionId = ReceiverV2.getElementText(body, 'session_id');
       if (!sessionId) return;
 
       if (header.type === MESSAGE_TYPES.SESSION_DELETED) {
         await this.sender.sendEventEndedToFacturatie({
-          session_id: sessionId,
           ended_at: header.timestamp,
         });
         return;

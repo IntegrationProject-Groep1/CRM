@@ -20,8 +20,7 @@
       </xs:element>
       <xs:element name="body">
         <xs:complexType><xs:sequence>
-          <xs:element name="session_id" type="xs:string"/>
-          <xs:element name="ended_at"   type="xs:dateTime"/>
+          <xs:element name="ended_at" type="xs:dateTime"/>
         </xs:sequence></xs:complexType>
       </xs:element>
     </xs:sequence></xs:complexType>
