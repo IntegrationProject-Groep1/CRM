@@ -248,6 +248,43 @@ function createMcpServer() {
   );
 
   server.tool(
+    'update_member_profile',
+    "Update a CRM member's profile fields in Salesforce. WRITE OPERATION — confirm with admin before calling. Only fields you provide will be updated.",
+    {
+      master_uuid:  z.string().describe("Member's Master_UUID__c. Use search_members to find it — never guess."),
+      first_name:   z.string().optional().describe("Updated first name."),
+      last_name:    z.string().optional().describe("Updated last name."),
+      email:        z.string().email().optional().describe("Updated email address."),
+      user_type:    z.enum(['Bedrijf', 'Particulier']).optional().describe("Updated member type."),
+      company_name: z.string().optional().describe("Updated company name (only for Bedrijf members)."),
+    },
+    async ({ master_uuid, first_name, last_name, email, user_type, company_name }) => {
+      try {
+        const records = await soql(
+          `SELECT Id, First_Name__c, Last_Name__c, Email__c FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
+        );
+        if (!records.length) return ok({ error: `No member found for UUID: ${master_uuid}` });
+        const { Id } = records[0];
+        const updates = { Id };
+        if (first_name   !== undefined) updates.First_Name__c   = first_name;
+        if (last_name    !== undefined) updates.Last_Name__c    = last_name;
+        if (email        !== undefined) updates.Email__c        = email;
+        if (user_type    !== undefined) updates.User_Type__c    = user_type;
+        if (company_name !== undefined) updates.Company_Name__c = company_name;
+        if (Object.keys(updates).length === 1)
+          return ok({ error: 'No fields to update — provide at least one field.' });
+        await sf.apiCall((conn) => conn.sobject('Member__c').update(updates));
+        return ok({
+          success: true,
+          master_uuid,
+          updated_fields: Object.keys(updates).filter(k => k !== 'Id'),
+          message: 'Member profile updated.',
+        });
+      } catch (e) { return sfErr(e); }
+    }
+  );
+
+  server.tool(
     'get_members_with_cancelled_payment',
     "List members whose payment has been cancelled (Payment_Status__c = 'Cancelled'). Returns: name, email, last invoice number, due date.",
     { limit: z.number().int().min(1).max(200).optional().default(100).describe("Max results (default 100).") },
