@@ -11,6 +11,7 @@ const { getAmqpOptions } = require('./amqpUrl');
 const SFConnection = require('./sfConnection');
 const CRMSender = require('./sender');
 const { create } = require('xmlbuilder2');
+const { logger } = require('./logger');
 
 const QUEUE_NAME = 'crm.incoming';
 const KASSA_QUEUE = 'kassa.payments';
@@ -168,12 +169,9 @@ class ReceiverV2 {
     await this.connectRabbitMQ();
   }
 
-  async log(level, action, message) {
-    try {
-      await this.sender.sendLog({ level, action, message });
-    } catch (err) {
-      console.error(`[receiver] Failed to send log: ${err.message}`);
-    }
+  log(level, action, message) {
+    const winstonLevel = level === 'warning' ? 'warn' : level;
+    logger.log(winstonLevel, message, { action });
   }
 
   getRetryQueueName(queueName) {

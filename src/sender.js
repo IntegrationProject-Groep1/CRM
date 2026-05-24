@@ -8,6 +8,7 @@ const { v4: uuidv4 } = require('uuid');
 const { validateXml } = require('./validator');
 
 const USER_UNREGISTERED_EXCHANGE = 'frontend.user.unregistered';
+const { logger, setLoggingChannel } = require('./logger');
 
 class CRMSender {
   constructor() {
@@ -72,20 +73,17 @@ class CRMSender {
   async _logOutbound(type, destination, correlationId) {
     const action = this.messageTypeToLogAction[type] || 'system_error';
     const message = `Published ${type} to ${destination}. CorrelationID: ${correlationId || 'N/A'}.`;
-    try {
-      await this.sendLog({ level: 'info', action, message });
-    } catch (err) {
-      console.error(`[sender] Failed to send outbound log: ${err.message}`);
-    }
+    logger.info(message, { action });
   }
 
   async init() {
     try {
       this.connection = await amqp.connect(this.rabbitmqOptions);
       this.channel = await this.connection.createChannel();
-      console.log('CRM Sender initialized');
+      setLoggingChannel(this.channel);
+      logger.info('CRM Sender initialized');
     } catch (error) {
-      console.log(`Failed to initialize CRM Sender: ${error}`);
+      logger.error(`Failed to initialize CRM Sender: ${error}`);
       throw error;
     }
   }
@@ -536,7 +534,7 @@ async sendWalletLeaseGrant(data) {
   buildLogXml({ level, action, message }) {
     const validLevels = new Set(['info', 'warning', 'error']);
     const validActions = new Set([
-      'registration', 'user', 'delete_user', 'payment', 'invoice', 'session', 'calendar',
+      'registration', 'user', 'payment', 'invoice', 'session', 'calendar',
       'email', 'wallet', 'refund', 'identity', 'xml_validation', 'system_error', 'badge',
     ]);
 
@@ -562,8 +560,10 @@ async sendWalletLeaseGrant(data) {
 
   async sendLog(data) {
     if (!this.channel) {
-      console.error('[sender] sendLog failed: Channel not initialized');
-      return;
+      const { level, action, message } = data;
+      const winstonLevel = level === 'warning' ? 'warn' : level;
+      logger.log(winstonLevel, message, { action });
+      return { success: true };
     }
     try {
       const xmlPayload = this.buildLogXml(data);
@@ -580,6 +580,8 @@ async sendWalletLeaseGrant(data) {
       return { success: false, error: error.message };
     }
   }
+
+
  buildPaymentRegisteredXml(data) {
   const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
