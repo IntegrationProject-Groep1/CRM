@@ -1772,6 +1772,7 @@ class ReceiverV2 {
       const identityUuid = ReceiverV2.getElementText(customer, 'identity_uuid');
       const email = (ReceiverV2.getElementText(customer, 'email') || '').toLowerCase().trim();
       const contact = customer.contact;
+      const address = customer.address;
       const firstName = ReceiverV2.getElementText(contact, 'first_name');
       const lastName = ReceiverV2.getElementText(contact, 'last_name');
       const dateOfBirth = ReceiverV2.getElementText(customer, 'date_of_birth');
@@ -1781,7 +1782,6 @@ class ReceiverV2 {
 
       if (!identityUuid) throw new Error('Missing identity_uuid in user_updated message');
 
-      // identityUuid is hier veilig want we hebben de guard hierboven
       if (this.sf.isConnected) {
         const userData = {
           Master_UUID__c: identityUuid,
@@ -1790,6 +1790,11 @@ class ReceiverV2 {
           Last_Name__c: lastName,
           Birthdate__c: dateOfBirth || null,
           User_Type__c: userType,
+          Street__c: address ? ReceiverV2.getElementText(address, 'street') : null,
+          House_Number__c: address ? ReceiverV2.getElementText(address, 'number') : null,
+          Postal_Code__c: address ? ReceiverV2.getElementText(address, 'postal_code') : null,
+          City__c: address ? ReceiverV2.getElementText(address, 'city') : null,
+          Country_Code__c: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
         };
         if (companyName) userData.Company_Name__c = companyName;
 
@@ -1797,6 +1802,14 @@ class ReceiverV2 {
           conn.sobject('Member__c').upsert(userData, 'Master_UUID__c')
         );
       }
+
+      const addressPayload = address ? {
+        street:      ReceiverV2.getElementText(address, 'street'),
+        number:      ReceiverV2.getElementText(address, 'number'),
+        postal_code: ReceiverV2.getElementText(address, 'postal_code'),
+        city:        ReceiverV2.getElementText(address, 'city'),
+        country:     ReceiverV2.getElementText(address, 'country'),
+      } : undefined;
 
       await this.sender.sendProfileUpdateToKassa({
         identity_uuid: identityUuid,
@@ -1807,6 +1820,7 @@ class ReceiverV2 {
         type: rawType,
         company_name: ReceiverV2.getElementText(customer, 'company_name'),
         vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        address: addressPayload,
       });
       await this.sender.sendProfileUpdateToFacturatie({
         identity_uuid: identityUuid,
@@ -1817,6 +1831,7 @@ class ReceiverV2 {
         type: rawType,
         company_name: ReceiverV2.getElementText(customer, 'company_name'),
         vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        address: addressPayload,
       });
 
       await this.log('info', 'user', `user_updated processed: uuid=${identityUuid} | email=${email}`);
