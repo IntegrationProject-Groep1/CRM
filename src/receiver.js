@@ -1604,7 +1604,7 @@ class ReceiverV2 {
       }
 
       const records = await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').find({ Master_UUID__c: identityUuid }, ['Id', 'Wallet_Balance__c']).limit(1)
+        conn.sobject('Member__c').find({ Master_UUID__c: identityUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
       );
 
       if (!records || records.length === 0) {
@@ -1614,6 +1614,7 @@ class ReceiverV2 {
       const member = records[0];
       const currentBalance = parseFloat(member.Wallet_Balance__c || 0);
       const newBalance = Math.round((currentBalance + topupAmount) * 100) / 100;
+      const walletStatus = member.Wallet_Status__c;
 
       await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').update({
@@ -1628,16 +1629,21 @@ class ReceiverV2 {
         message: `Wallet topup processed for ${identityUuid}: +€${topupAmount}. New balance: €${newBalance}. Transaction: ${transactionId}.`,
       });
 
-      await this.sender.sendWalletRemoteTopup({
-        identity_uuid: identityUuid,
-        add_amount: topupAmount,
-        reason: `online_topup:${transactionId}`,
-        correlation_id: header.message_id,
-      });
+      if (walletStatus === 'Leased') {
+        await this.sender.sendWalletRemoteTopup({
+          identity_uuid: identityUuid,
+          add_amount: topupAmount,
+          reason: `online_topup:${transactionId}`,
+          correlation_id: header.message_id,
+        });
+        this.log('info', 'wallet', `[wallet-topup] Wallet remote topup sent to Kassa for leased user ${identityUuid}`);
+      } else {
+        this.log('info', 'wallet', `[wallet-topup] User ${identityUuid} is not leased (status: ${walletStatus}). Skipping Kassa message.`);
+      }
 
-      console.log(`[wallet-topup] Wallet updated for ${identityUuid}. New balance: €${newBalance}`);
+      this.log('info', 'wallet', `[wallet-topup] Wallet updated in CRM for ${identityUuid}. New balance: €${newBalance}`);
     } catch (err) {
-      console.error(`[receiver] Error in handleWalletTopupRequest: ${err.message}`);
+      this.log('error', 'wallet', `[receiver] Error in handleWalletTopupRequest: ${err.message}`);
       await this.sender.sendLog({
         level: 'error',
         action: 'wallet',
