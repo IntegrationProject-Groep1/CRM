@@ -65,7 +65,7 @@ class CRMSender {
     const { valid, errors } = validateXml(xml, xsdFile);
     if (!valid) {
       const errorMsg = `Outgoing XML validation failed for "${type}" (${xsdFile}): ${errors.join('; ')}`;
-      console.error(`[sender] ${errorMsg}`);
+      logger.warn(errorMsg, { action: 'xml_validation' });
       throw new Error(errorMsg);
     }
     console.log(`[sender] XSD validation passed for outgoing "${type}"`);
@@ -146,7 +146,7 @@ class CRMSender {
       await this._logOutbound('new_registration', queue, data.correlation_id);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send new registration to Kassa: ${error}`);
+      logger.error(`Failed to send new registration to Kassa: ${error}`, { action: 'registration' });
       throw error;
     }
   }
@@ -202,7 +202,7 @@ class CRMSender {
       await this._logOutbound('profile_update', queue, 'N/A');
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send profile update to Kassa: ${error}`);
+      logger.error(`Failed to send profile update to Kassa: ${error}`, { action: 'user' });
       throw error;
     }
   }
@@ -245,7 +245,7 @@ class CRMSender {
       await this._logOutbound('cancel_registration', queue, 'N/A');
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send cancel registration to Kassa: ${error}`);
+      logger.error(`Failed to send cancel registration to Kassa: ${error}`, { action: 'registration' });
       throw error;
     }
   }
@@ -267,7 +267,7 @@ class CRMSender {
       await this._logOutbound('cancel_registration', exchange, 'N/A');
       return { success: true, exchange, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send cancel registration to Planning: ${error}`);
+      logger.error(`Failed to send cancel registration to Planning: ${error}`, { action: 'registration' });
       throw error;
     }
   }
@@ -329,7 +329,7 @@ class CRMSender {
       await this._logOutbound('invoice_request', queue, data.correlation_id);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send invoice request: ${error}`);
+      logger.error(`Failed to send invoice request: ${error}`, { action: 'invoice' });
       throw error;
     }
   }
@@ -383,7 +383,7 @@ class CRMSender {
       await this._logOutbound('invoice_cancelled', queue, data.correlation_id);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send invoice_cancelled to Facturatie: ${error}`);
+      logger.error(`Failed to send invoice_cancelled to Facturatie: ${error}`, { action: 'invoice' });
       throw error;
     }
   }
@@ -442,7 +442,7 @@ async sendWalletLeaseGrant(data) {
     await this._logOutbound('wallet_lease_grant', queue, data.correlation_id);
     return { success: true, payload: xmlPayload };
   } catch (error) {
-    console.error(`[sender] Failed to send wallet lease grant: ${error.message}`);
+    logger.error(`Failed to send wallet lease grant: ${error.message}`, { action: 'wallet' });
     throw error;
   }
 }
@@ -491,7 +491,7 @@ async sendWalletLeaseGrant(data) {
       await this._logOutbound('wallet_remote_topup', queue, data.correlation_id);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.error(`[sender] Failed to send wallet remote topup: ${error.message}`);
+      logger.error(`Failed to send wallet remote topup: ${error.message}`, { action: 'wallet' });
       throw error;
     }
   }
@@ -511,7 +511,7 @@ async sendWalletLeaseGrant(data) {
       await this._logOutbound('refund_processed', queue, 'PASSTHROUGH');
       return { success: true, queue, payload: xml };
     } catch (error) {
-      console.log(`Failed to forward refund_processed to Facturatie: ${error}`);
+      logger.error(`Failed to forward refund_processed to Facturatie: ${error}`, { action: 'refund' });
       throw error;
     }
   }
@@ -531,7 +531,7 @@ async sendWalletLeaseGrant(data) {
       await this._logOutbound('consumption_order', queue, 'PASSTHROUGH');
       return { success: true, queue, payload: xml };
     } catch (error) {
-      console.log(`Failed to forward consumption order to Facturatie: ${error}`);
+      logger.error(`Failed to forward consumption order to Facturatie: ${error}`, { action: 'payment' });
       throw error;
     }
   }
@@ -602,7 +602,7 @@ async sendWalletLeaseGrant(data) {
       await this._logOutbound('send_mailing', queue, data.correlation_id);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send mailing send request: ${error}`);
+      logger.error(`Failed to send mailing send request: ${error}`, { action: 'email' });
       throw error;
     }
   }
@@ -702,7 +702,7 @@ async sendPaymentRegisteredToFrontend(data) {
     await this._logOutbound('payment_registered', queue, data.correlation_id);
     return { success: true, queue, payload: xmlPayload };
   } catch (error) {
-    console.log(`Failed to forward payment to Frontend: ${error}`);
+    logger.error(`Failed to forward payment to Frontend: ${error}`, { action: 'payment' });
     throw error;
   }
 }
@@ -738,7 +738,7 @@ async sendPaymentRegisteredToFrontend(data) {
       console.log(`Event ended notification sent to Facturatie queue "${queue}"`);
       await this._logOutbound('event_ended', queue, messageId);
     } catch (error) {
-      console.log(`Failed to send event ended to Facturatie: ${error}`);
+      logger.error(`Failed to send event ended to Facturatie: ${error}`, { action: 'invoice' });
       throw error;
     }
   }
@@ -788,7 +788,7 @@ async sendPaymentRegisteredToFrontend(data) {
       console.log(`New registration forwarded to Facturatie queue "${queue}"`);
       await this._logOutbound('new_registration', queue, correlationId);
     } catch (error) {
-      console.log(`Failed to forward registration to Facturatie: ${error}`);
+      logger.error(`Failed to forward registration to Facturatie: ${error}`, { action: 'registration' });
       throw error;
     }
   }
@@ -827,7 +827,7 @@ async sendPaymentRegisteredToFrontend(data) {
       console.log(`Session registration confirmation sent to Planning via "${exchange}" [${routingKey}]`);
       await this._logOutbound('session_registration_confirmed', exchange, correlationId);
     } catch (error) {
-      console.log(`Failed to send session registration confirmation: ${error}`);
+      logger.error(`Failed to send session registration confirmation: ${error}`, { action: 'session' });
       throw error;
     }
   }
@@ -889,7 +889,7 @@ async sendPaymentRegisteredToFrontend(data) {
       await this._logOutbound('profile_update', queue, 'N/A');
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send profile update to Facturatie: ${error}`);
+      logger.error(`Failed to send profile update to Facturatie: ${error}`, { action: 'user' });
       throw error;
     }
   }
@@ -930,7 +930,7 @@ async sendPaymentRegisteredToFrontend(data) {
       await this._logOutbound('vat_validation_error', queue, data.correlation_id);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.log(`Failed to send vat_validation_error to Frontend: ${error}`);
+      logger.error(`Failed to send vat_validation_error to Frontend: ${error}`, { action: 'system_error' });
       throw error;
     }
   }
