@@ -1949,7 +1949,7 @@ class ReceiverV2 {
         this.channel.nack(msg, false, false);
         return;
       }
-      await this.log('info', 'xml_validation', `Received ${eventType || 'user_event'} from identity-service. Validation: Success.`);
+      await this.log('info', 'xml_validation', 'Received user_event from identity-service. Validation: Success.');
 
       let parsed;
       try {
