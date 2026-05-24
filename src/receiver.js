@@ -1388,7 +1388,7 @@ class ReceiverV2 {
       if (!isAnonymous && customer) {
         const email = ReceiverV2.getElementText(customer, 'email');
         const masterUuid = await this.resolveMasterUuid(header, body, { email });
-        memberId = await this._findUserByMasterUuid(masterUuid);
+        if (masterUuid) memberId = await this._findUserByMasterUuid(masterUuid);
         if (!memberId && email) memberId = await this._findUserByEmail(email);
       }
 
@@ -1397,12 +1397,13 @@ class ReceiverV2 {
           const item = itemList[i];
           const unitPrice = parseFloat(ReceiverV2.getElementText(item, 'unit_price')) || 0;
           const qty = parseInt(ReceiverV2.getElementText(item, 'quantity'), 10) || 1;
+          const totalAmount = parseFloat(ReceiverV2.getElementText(item, 'total_amount')) || unitPrice * qty;
 
           const consumptionData = {
             Consumption_ID__c: ReceiverV2.getElementText(item, 'id') || `${header.message_id}-${i}`,
             Product_Name__c: String(ReceiverV2.getElementText(item, 'description')),
             Quantity__c: qty,
-            Total_Amount__c: unitPrice * qty,
+            Total_Amount__c: totalAmount,
             Price_Per_Unit__c: unitPrice,
             Product_SKU__c: ReceiverV2.getElementText(item, 'sku'),
             VAT_Rate__c: parseFloat(ReceiverV2.getElementText(item, 'vat_rate')) || null,
