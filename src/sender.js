@@ -695,6 +695,7 @@ async sendPaymentRegisteredToFrontend(data) {
       if (data.customer.company_name) customer.ele('company_name').txt(data.customer.company_name);
       if (data.customer.vat_number)   customer.ele('vat_number').txt(data.customer.vat_number);
       if (data.customer.badge_id)     customer.ele('badge_id').txt(data.customer.badge_id);
+      if (data.session_id)            customer.ele('session_id').txt(String(data.session_id));
       const paymentDue = customer.ele('payment_due');
       paymentDue.ele('amount').att('currency', 'eur').txt(String(data.payment_due.amount || '0.00'));
       paymentDue.ele('status').txt(data.payment_due.status || 'unpaid');
