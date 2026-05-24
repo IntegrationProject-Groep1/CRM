@@ -97,8 +97,10 @@ class RabbitMQTransport extends Transport {
       const xml = root.doc().end({ prettyPrint: true, indent: '  ' });
 
       if (this.channel) {
+        console.log(`[Monitoring] Sent log [action=${action}, level=${level}]: ${info.message}`);
         this._publish(xml, callback);
       } else {
+        console.log(`[Monitoring] Buffered offline log [action=${action}, level=${level}]: ${info.message}`);
         this.queue.push({ xml, callback });
       }
     } catch (err) {
