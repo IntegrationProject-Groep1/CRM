@@ -53,7 +53,7 @@
               </xs:element>
               <xs:element name="company_name" type="xs:string" minOccurs="0"/>
               <xs:element name="vat_number"   type="xs:string" minOccurs="0"/>
-              <xs:element name="address"      type="AddressType"/>
+              <xs:element name="address"      type="AddressType" minOccurs="0"/>
             </xs:sequence></xs:complexType>
           </xs:element>
         </xs:sequence></xs:complexType>

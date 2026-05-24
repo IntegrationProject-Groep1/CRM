@@ -50,7 +50,7 @@
                   <xs:element name="last_name"  type="xs:string"/>
                 </xs:sequence></xs:complexType>
               </xs:element>
-              <xs:element name="address" type="AddressType"/>
+              <xs:element name="address" type="AddressType" minOccurs="0"/>
               <xs:element name="payment_due">
                 <xs:complexType><xs:sequence>
                   <xs:element name="amount">

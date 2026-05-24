@@ -495,6 +495,7 @@ class ReceiverV2 {
         'user.created': 'user_created.xsd',
         [MESSAGE_TYPES.NEW_REGISTRATION]: source === 'kassa' ? 'new_registration_kassa.xsd' : 'new_registration_frontend.xsd',
         [MESSAGE_TYPES.USER_UNREGISTERED]: 'user_unregistered.xsd',
+        'user_unregistered': 'user_unregistered.xsd',
         [MESSAGE_TYPES.PAYMENT_REGISTERED]: source === 'kassa' ? 'payment_registered_kassa.xsd' : 'payment_registered_facturatie.xsd',
         [MESSAGE_TYPES.BADGE_SCANNED]: 'badge_scanned.xsd',
         [MESSAGE_TYPES.SESSION_CREATED]: 'session_created.xsd',
@@ -566,6 +567,7 @@ class ReceiverV2 {
       'user_registered': () => this.handleUserRegistered(header, body),
       [MESSAGE_TYPES.NEW_REGISTRATION]: () => this.handleNewRegistration(header, body),
       [MESSAGE_TYPES.USER_UNREGISTERED]: () => this.handleUserUnregistered(header, body),
+      'user_unregistered': () => this.handleUserUnregistered(header, body),
       [MESSAGE_TYPES.PAYMENT_REGISTERED]: () => this.handlePaymentRegistered(header, body, rawXml),
       [MESSAGE_TYPES.BADGE_SCANNED]: () => this.handleBadgeScanned(header, body),
       [MESSAGE_TYPES.INVOICE_STATUS]: () => this.handleInvoiceStatus(header, body),
@@ -1241,13 +1243,15 @@ class ReceiverV2 {
     }
 
     if (this.sf.isConnected && masterUuid) {
+      const upsertData = {
+        Master_UUID__c:         masterUuid,
+        Payment_Status__c:      'paid',
+        Amount__c:              amountPaid,
+        Last_Invoice_Number__c: invoiceId,
+      };
+      if (email) upsertData.Email__c = email;
       await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').upsert({
-          Master_UUID__c:      masterUuid,
-          Payment_Status__c:   'paid',
-          Amount__c:           amountPaid,
-          Last_Invoice_Number__c: invoiceId,
-        }, 'Master_UUID__c')
+        conn.sobject('Member__c').upsert(upsertData, 'Master_UUID__c')
       );
     }
 
@@ -1880,7 +1884,7 @@ class ReceiverV2 {
 
       await this.sender.sendLog({
         level: 'info',
-        action: 'delete_user',
+        action: 'user',
         message: `User ${masterUuid} definitief verwijderd uit CRM.`,
       });
     } catch (err) {

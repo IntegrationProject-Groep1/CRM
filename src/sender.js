@@ -219,6 +219,7 @@ class CRMSender {
     header.ele('source').txt('crm');
     header.ele('type').txt('cancel_registration');
     header.ele('version').txt('2.0');
+    header.ele('correlation_id').txt(data.correlation_id || uuidv4());
 
     const body = root.ele('body');
     body.ele('identity_uuid').txt(data.user_id || data.identity_uuid || '');
