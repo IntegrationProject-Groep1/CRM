@@ -445,9 +445,16 @@ describe('Consumptie flow — buildCancelRegistrationXml', () => {
     expect(root.body.session_id).toBe('sess-cancel-1');
   });
 
-  test('correlation_id staat niet in header (niet in contract §10.3)', () => {
+  test('correlation_id staat in header als meegegeven', () => {
     const root = parser.parse(sender.buildCancelRegistrationXml(baseData())).message;
-    expect(root.header.correlation_id).toBeUndefined();
+    expect(root.header.correlation_id).toBe('corr-cancel-1');
+  });
+
+  test('correlation_id wordt gegenereerd als niet meegegeven', () => {
+    const data = baseData();
+    delete data.correlation_id;
+    const root = parser.parse(sender.buildCancelRegistrationXml(data)).message;
+    expect(root.header.correlation_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   test('message_id start met "cancel-crm-"', () => {

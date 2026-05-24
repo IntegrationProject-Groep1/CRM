@@ -1145,7 +1145,7 @@ describe('handleDeleteUser', () => {
     expect(receiver.sf.apiCall).toHaveBeenCalledWith(expect.any(Function));
     expect(receiver.sender.sendLog).toHaveBeenCalledWith({
       level: 'info',
-      action: 'delete_user',
+      action: 'user',
       message: 'User test-master-uuid-1234 definitief verwijderd uit CRM.'
     });
   });
