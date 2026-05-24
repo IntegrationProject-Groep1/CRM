@@ -652,7 +652,7 @@ async sendWalletLeaseGrant(data) {
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.error(`[sender] sendLog error: ${error.message}`);
+      logger.error(`sendLog publish failed: ${error.message}`, { action: 'system_error' });
       return { success: false, error: error.message };
     }
   }
