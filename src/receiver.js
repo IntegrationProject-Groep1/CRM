@@ -1189,7 +1189,7 @@ class ReceiverV2 {
               { Master_UUID__c: masterUuid },
               ['First_Name__c', 'Last_Name__c', 'Email__c',
                'Street__c', 'House_Number__c', 'Postal_Code__c', 'City__c', 'Country_Code__c',
-               'Company_Name__c', 'VAT_Number__c']
+               'Company_Name__c', 'VAT_Number__c', 'Birthdate__c', 'User_Type__c']
             ).limit(1)
           );
 
@@ -1201,6 +1201,8 @@ class ReceiverV2 {
               email:        m.Email__c       || '',
               company_name: m.Company_Name__c || null,
               vat_number:   m.VAT_Number__c  || null,
+              date_of_birth: m.Birthdate__c  || '',
+              type:         m.User_Type__c === 'Bedrijf' ? 'company' : 'private',
             };
             address = {
               street:      m.Street__c       || '',
@@ -1228,6 +1230,29 @@ class ReceiverV2 {
         };
 
         await this.sender.sendPaymentRegisteredToFrontend(paymentData);
+
+        if ((paymentContext === 'registration' || paymentContext === 'session_registration') && customer) {
+          const sessionId = ReceiverV2.getElementText(body, 'session_id') ||
+            (invoice ? ReceiverV2.getElementText(invoice, 'session_id') : null);
+          const fossPayload = {
+            master_uuid: masterUuid,
+            customer: {
+              first_name:   customer.first_name,
+              last_name:    customer.last_name,
+              email:        customer.email,
+              date_of_birth: customer.date_of_birth,
+              type:         customer.type,
+              company_name: customer.company_name,
+              vat_number:   customer.vat_number,
+            },
+            session_id: sessionId || '',
+            payment_due: {
+              amount: parseFloat(amountPaid) || 0,
+              status: 'paid',
+            },
+          };
+          await this.sender.sendNewRegistrationToFacturatie(fossPayload);
+        }
       }
     }
 
@@ -1669,9 +1694,28 @@ class ReceiverV2 {
       await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
     }
 
-    if (rawXml) {
-      await this.sender.sendRefundProcessedToFacturatie(rawXml);
+    const cancelData = {
+      identity_uuid:  masterUuid,
+      correlation_id: header.message_id,
+      reason: ReceiverV2.getElementText(refund, 'reason') || '',
+    };
+
+    const itemsElem = body ? body.items : null;
+    if (itemsElem) {
+      const itemList = (Array.isArray(itemsElem.item) ? itemsElem.item : [itemsElem.item]).filter(Boolean);
+      cancelData.items = itemList.map(item => ({
+        sku:          ReceiverV2.getElementText(item, 'sku')          || '',
+        description:  ReceiverV2.getElementText(item, 'description')  || '',
+        quantity:     parseInt(ReceiverV2.getElementText(item, 'quantity'), 10) || 1,
+        unit_price:   ReceiverV2.getElementText(item, 'unit_price')   || '0.00',
+        total_amount: ReceiverV2.getElementText(item, 'total_amount') || '0.00',
+        vat_rate:     ReceiverV2.getElementText(item, 'vat_rate') !== null
+                        ? parseInt(ReceiverV2.getElementText(item, 'vat_rate'), 10) : undefined,
+        session_id:   ReceiverV2.getElementText(item, 'session_id')   || undefined,
+      }));
     }
+
+    await this.sender.sendInvoiceCancelledToFacturatie(cancelData);
 
     await this.log('info', 'refund', `refund_processed processed: uuid=${masterUuid} | amount=${ReceiverV2.getElementText(refund, 'amount')}`);
     this._markMessageProcessed(header.message_id);
