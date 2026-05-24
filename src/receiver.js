@@ -1949,7 +1949,7 @@ class ReceiverV2 {
         this.channel.nack(msg, false, false);
         return;
       }
-      await this.log('info', 'xml_validation', `Received UserCreated from identity-service. Validation: Success.`);
+      await this.log('info', 'xml_validation', `Received ${eventType || 'user_event'} from identity-service. Validation: Success.`);
 
       let parsed;
       try {
@@ -1982,6 +1982,10 @@ class ReceiverV2 {
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert({ Master_UUID__c: masterUuid, Email__c: email }, 'Master_UUID__c')
         );
+      } else if (eventType === 'UserDeleted') {
+        // Re-use the existing delete handler which removes the Salesforce Member__c record
+        const fakeBody = { identity_uuid: masterUuid };
+        await this.handleDeleteUser({}, fakeBody);
       }
 
       this.channel.ack(msg);

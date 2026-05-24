@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <!--
-    TYPE   : user_event (UserCreated)
+    TYPE   : user_event (UserCreated | UserDeleted)
     FLOW   : Identity Service → Alle teams (exchange: user.events, fanout)
     LET OP : Geen <message><header> wrapper — eigen Identity formaat
   -->
@@ -11,6 +11,7 @@
         <xs:element name="event">
           <xs:simpleType><xs:restriction base="xs:string">
             <xs:enumeration value="UserCreated"/>
+            <xs:enumeration value="UserDeleted"/>
           </xs:restriction></xs:simpleType>
         </xs:element>
         <xs:element name="master_uuid"   type="xs:string"/>
