@@ -573,7 +573,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.MAILING_STATUS]: () => this.handleMailingStatus(header, body),
       [MESSAGE_TYPES.CONSUMPTION_ORDER]: () => this.handleConsumptionOrder(header, body, rawXml),
       [MESSAGE_TYPES.BADGE_ASSIGNED]: () => this.handleBadgeAssigned(header, body),
-      [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body),
+      [MESSAGE_TYPES.REFUND_PROCESSED]: () => this.handleRefundProcessed(header, body, rawXml),
       [MESSAGE_TYPES.INVOICE_REQUEST]: () => this.handleInvoiceRequestFromKassa(header, body),
       [MESSAGE_TYPES.INVOICE_CANCELLED]: () => this.handleReceivedInvoiceCancelled(header, body),
       [MESSAGE_TYPES.USER_UPDATED]: () => this.handleUserUpdated(header, body),
@@ -1642,7 +1642,7 @@ class ReceiverV2 {
     }
   }
 
-  async handleRefundProcessed(header, body) {
+  async handleRefundProcessed(header, body, rawXml = null) {
   try {
     if (this._isProcessedMessage(header.message_id)) {
       await this.log('warning', 'refund', `Duplicate refund_processed (ID: ${header.message_id}) — skipped`);
@@ -1651,8 +1651,7 @@ class ReceiverV2 {
     }
 
     const refund = body ? body.refund : null;
-    const email = ReceiverV2.getElementText(body, 'email');
-    const masterUuid = await this.resolveMasterUuid(header, body, { email });
+    const masterUuid = await this.resolveMasterUuid(header, body);
 
     const taskData = {
       Subject: `Refund processed: ${ReceiverV2.getElementText(refund, 'amount')}`,
@@ -1665,36 +1664,8 @@ class ReceiverV2 {
       await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
     }
 
-    // Check of er een invoice_request was voor deze order
-    const originalTransactionId = ReceiverV2.getElementText(refund, 'original_transaction_id');
-    if (originalTransactionId && this.sf.isConnected) {
-      const consumption = await this.sf.apiCall((conn) =>
-        conn.sobject('Consumption__c')
-          .findOne({ Consumption_ID__c: originalTransactionId }, ['Invoice_Req__c'])
-      );
-
-      if (consumption?.Invoice_Req__c) {
-        const refundItems = body?.items?.item
-          ? Array.isArray(body.items.item) ? body.items.item : [body.items.item]
-          : [];
-
-        const items = refundItems.map((item) => ({
-          sku: ReceiverV2.getElementText(item, 'sku'),
-          description: ReceiverV2.getElementText(item, 'description'),
-          quantity: parseInt(ReceiverV2.getElementText(item, 'quantity')),
-          unit_price: ReceiverV2.getElementText(item, 'unit_price'),
-          total_amount: ReceiverV2.getElementText(item, 'total_amount'),
-          vat_rate: ReceiverV2.getElementText(item, 'vat_rate'),
-          session_id: ReceiverV2.getElementText(item, 'session_id'),
-        }));
-
-        await this.sender.sendInvoiceRequest({
-          correlation_id: consumption.Invoice_Req__c,
-          identity_uuid: masterUuid,
-          reason: ReceiverV2.getElementText(refund, 'reason'),
-          items: items.length > 0 ? items : undefined,
-        });
-      }
+    if (rawXml) {
+      await this.sender.sendRefundProcessedToFacturatie(rawXml);
     }
 
     await this.log('info', 'refund', `refund_processed processed: uuid=${masterUuid} | amount=${ReceiverV2.getElementText(refund, 'amount')}`);

@@ -31,6 +31,7 @@ class CRMSender {
       'consumption_order': 'consumption_order.xsd',
       'wallet_lease_grant': 'wallet_lease_grant.xsd',
       'wallet_remote_topup': 'wallet_remote_topup.xsd',
+      'refund_processed': 'refund_processed.xsd',
     };
     this.messageTypeToLogAction = {
       'new_registration': 'registration',
@@ -436,6 +437,26 @@ async sendWalletLeaseGrant(data) {
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
       console.error(`[sender] Failed to send wallet remote topup: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async sendRefundProcessedToFacturatie(xml) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      this._validate(xml, 'refund_processed');
+      const queue = 'facturatie.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xml), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Refund processed forwarded to queue "${queue}"`);
+      await this._logOutbound('refund_processed', queue, 'PASSTHROUGH');
+      return { success: true, queue, payload: xml };
+    } catch (error) {
+      console.log(`Failed to forward refund_processed to Facturatie: ${error}`);
       throw error;
     }
   }
