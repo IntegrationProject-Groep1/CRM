@@ -334,6 +334,60 @@ class CRMSender {
     }
   }
 
+  buildInvoiceCancelledXml(data) {
+    const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
+
+    const header = root.ele('header');
+    header.ele('message_id').txt(uuidv4());
+    header.ele('timestamp').txt(new Date().toISOString());
+    header.ele('source').txt('crm');
+    header.ele('type').txt('invoice_cancelled');
+    header.ele('version').txt('2.0');
+    if (data.correlation_id) header.ele('correlation_id').txt(data.correlation_id);
+
+    const body = root.ele('body');
+    body.ele('identity_uuid').txt(data.identity_uuid || '');
+    if (data.invoice_id) body.ele('invoice_id').txt(data.invoice_id);
+    if (data.reason)     body.ele('reason').txt(data.reason);
+
+    if (data.items && data.items.length > 0) {
+      const itemsElem = body.ele('items');
+      for (const item of data.items) {
+        const itemElem = itemsElem.ele('item');
+        itemElem.ele('sku').txt(item.sku || '');
+        itemElem.ele('description').txt(item.description || '');
+        itemElem.ele('quantity').txt(String(item.quantity || 1));
+        itemElem.ele('unit_price').att('currency', 'eur').txt(String(item.unit_price || '0.00'));
+        itemElem.ele('total_amount').att('currency', 'eur').txt(String(item.total_amount || '0.00'));
+        if (item.vat_rate !== undefined) itemElem.ele('vat_rate').txt(String(item.vat_rate));
+        if (item.session_id) itemElem.ele('session_id').txt(item.session_id);
+      }
+    }
+
+    return root.doc().end({ prettyPrint: true, indent: '  ' });
+  }
+
+  async sendInvoiceCancelledToFacturatie(data) {
+    if (!this.channel) throw new Error('CRM Sender not initialized. Call init() first.');
+    try {
+      const xmlPayload = this.buildInvoiceCancelledXml(data);
+      this._validate(xmlPayload, 'invoice_cancelled');
+      const queue = 'facturatie.incoming';
+      await this.channel.assertQueue(queue, { durable: true });
+      const ok = this.channel.sendToQueue(queue, Buffer.from(xmlPayload), {
+        contentType: 'application/xml',
+        deliveryMode: 2,
+      });
+      if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
+      console.log(`Invoice cancelled sent to Facturatie queue "${queue}"`);
+      await this._logOutbound('invoice_cancelled', queue, data.correlation_id);
+      return { success: true, queue, payload: xmlPayload };
+    } catch (error) {
+      console.log(`Failed to send invoice_cancelled to Facturatie: ${error}`);
+      throw error;
+    }
+  }
+
   buildWalletLeaseGrantXml(data) {
     const messageId = uuidv4();
     const timestamp = new Date().toISOString();

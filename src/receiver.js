@@ -1910,6 +1910,11 @@ class ReceiverV2 {
 
       await this.sender.sendCancelRegistrationToKassa(payload);
       await this.sender.sendCancelRegistrationToPlanning(payload);
+      await this.sender.sendInvoiceCancelledToFacturatie({
+        identity_uuid: identityUuid,
+        reason: reason || undefined,
+        correlation_id: header.correlation_id || header.message_id,
+      });
 
       if (this.sf.isConnected) {
         const memberId = await this._findUserByMasterUuid(identityUuid);
