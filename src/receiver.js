@@ -743,7 +743,7 @@ class ReceiverV2 {
         customer: {
           master_uuid: masterUuid,
           email: email,
-          date_of_birth: getCustomerText('date_of_birth') || '',
+          date_of_birth: getCustomerText('date_of_birth') || null,
           first_name: firstName || '',
           last_name: lastName || '',
           type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
@@ -765,7 +765,7 @@ class ReceiverV2 {
           first_name: firstName,
           last_name: lastName,
           email: email,
-          date_of_birth: getCustomerText('date_of_birth') || '',
+          date_of_birth: getCustomerText('date_of_birth') || null,
           type: (isCompanyLinked || rawType === 'company') ? 'company' : 'private',
           company_name: getCustomerText('company_name') || ReceiverV2.getElementText(companyData, 'name'),
           vat_number: getCustomerText('vat_number') || ReceiverV2.getElementText(companyData, 'vat_number'),
@@ -1201,7 +1201,7 @@ class ReceiverV2 {
               email:        m.Email__c       || '',
               company_name: m.Company_Name__c || null,
               vat_number:   m.VAT_Number__c  || null,
-              date_of_birth: m.Birthdate__c  || '',
+              date_of_birth: m.Birthdate__c  || null,
               type:         m.User_Type__c === 'Bedrijf' ? 'company' : 'private',
             };
             address = {
@@ -1696,7 +1696,7 @@ class ReceiverV2 {
 
     const cancelData = {
       identity_uuid:  masterUuid,
-      correlation_id: header.message_id,
+      correlation_id: header.correlation_id || header.message_id,
       reason: ReceiverV2.getElementText(refund, 'reason') || '',
     };
 

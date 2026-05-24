@@ -763,7 +763,7 @@ async sendPaymentRegisteredToFrontend(data) {
       const customer = body.ele('customer');
       customer.ele('identity_uuid').txt(data.master_uuid || '');
       customer.ele('email').txt(data.customer.email);
-      customer.ele('date_of_birth').txt(data.customer.date_of_birth || '');
+      if (data.customer.date_of_birth) customer.ele('date_of_birth').txt(data.customer.date_of_birth);
       const contact = customer.ele('contact');
       contact.ele('first_name').txt(data.customer.first_name || '');
       contact.ele('last_name').txt(data.customer.last_name || '');
