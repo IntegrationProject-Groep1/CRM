@@ -790,6 +790,7 @@ async sendPaymentRegisteredToFrontend(data) {
     });
     if (!ok) console.log(`[sender] Warning: write buffer full for exchange "${exchange}"`);
     console.log(`User unregistered broadcast via exchange "${exchange}"`);
+    await this._logOutbound('user.unregistered', exchange, null);
     return { success: true, exchange, queues };
   }
 

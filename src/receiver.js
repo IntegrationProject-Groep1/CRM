@@ -63,6 +63,7 @@ const MESSAGE_TYPES = {
   COMPANY_UPDATE: 'company_update',
   COMPANY_DELETE: 'company_delete',
   COMPANY_MEMBER_REMOVED: 'company_member_removed',
+  COMPANY_INVITE: 'company_invite',
   CANCEL_REGISTRATION: 'cancel_registration',
   WALLET_LEASE_REQUEST: 'wallet_lease_request',
   WALLET_LEASE_RETURN: 'wallet_lease_return',
@@ -342,6 +343,7 @@ class ReceiverV2 {
         }, { noAck: false });
 
         console.log(`[receiver] Connected to RabbitMQ with Auto-DLX, listening on: ${QUEUE_NAME}, ${KASSA_QUEUE}, ${FACTURATIE_TO_CRM_QUEUE}, ${PLANNING_SESSION_QUEUE}, ${IDENTITY_EVENTS_QUEUE}`);
+        await this.log('info', 'system_error', 'CRM receiver started and listening on all queues');
 
         await new Promise((resolve, reject) => {
           this.connection.on('error', reject);
@@ -350,6 +352,7 @@ class ReceiverV2 {
       } catch (err) {
         retryCount++;
         console.log(`[receiver] RabbitMQ connection error: ${err}`);
+        await this.log('error', 'system_error', `RabbitMQ connection error (attempt ${retryCount}/${maxRetries}): ${err.message}`);
         if (retryCount < maxRetries) {
           await new Promise((r) => setTimeout(r, 5000));
         }
@@ -358,6 +361,7 @@ class ReceiverV2 {
 
     if (!this.running) return;
     console.log('[receiver] Max retries reached, exiting process.');
+    await this.log('error', 'system_error', 'RabbitMQ connection failed after max retries — exiting');
     process.exit(1);
   }
 
@@ -514,6 +518,7 @@ class ReceiverV2 {
         [MESSAGE_TYPES.COMPANY_UPDATE]: 'company_update.xsd',
         [MESSAGE_TYPES.COMPANY_DELETE]: 'company_delete.xsd',
         [MESSAGE_TYPES.COMPANY_MEMBER_REMOVED]: 'company_member_removed.xsd',
+        [MESSAGE_TYPES.COMPANY_INVITE]: 'company_invite.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: 'wallet_lease_request.xsd',
         [MESSAGE_TYPES.WALLET_LEASE_RETURN]: 'wallet_lease_return.xsd',
         [MESSAGE_TYPES.WALLET_TOPUP_REQUEST]: 'wallet_topup_request.xsd',
@@ -580,6 +585,7 @@ class ReceiverV2 {
       [MESSAGE_TYPES.COMPANY_UPDATE]: () => this.handleCompanyUpdate(header, body),
       [MESSAGE_TYPES.COMPANY_DELETE]: () => this.handleCompanyDelete(header, body),
       [MESSAGE_TYPES.COMPANY_MEMBER_REMOVED]: () => this.handleCompanyMemberRemoved(header, body),
+      [MESSAGE_TYPES.COMPANY_INVITE]: () => this.handleCompanyInvite(header, body),
       [MESSAGE_TYPES.CANCEL_REGISTRATION]: () => this.handleCancelRegistration(header, body),
       [MESSAGE_TYPES.USER_CHECKIN]: () => this.handleUserCheckin(header, body),
       [MESSAGE_TYPES.WALLET_LEASE_REQUEST]: () => this.handleWalletLeaseRequest(header, body),
@@ -653,6 +659,7 @@ class ReceiverV2 {
       const reason = ReceiverV2.getElementText(body, 'reason');
 
       if (!masterUuid) {
+        await this.log('warning', 'user', 'user.unregistered: missing master_uuid in payload — cannot process');
         console.log('[receiver] Missing master_uuid in user.unregistered body');
         return;
       }
@@ -663,6 +670,7 @@ class ReceiverV2 {
         reason: reason || '',
       });
 
+      await this.log('info', 'user', `user.unregistered forwarded for identity_uuid=${masterUuid}`);
       console.log(`[receiver] Forwarded user.unregistered for identity_uuid=${masterUuid}`);
     } catch (err) {
       console.log(`[receiver] Error in handleUserUnregistered: ${err}`);
@@ -769,6 +777,7 @@ class ReceiverV2 {
         },
       };
       await this.sender.sendNewRegistrationToFacturatie(fossPayload);
+      await this.log('info', 'registration', `new_registration processed for ${email} | uuid=${masterUuid}`);
 
     } catch (err) {
       console.log(`[receiver] Error in handleNewRegistration: ${err.message}`);
@@ -838,6 +847,7 @@ class ReceiverV2 {
         vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
       });
 
+      await this.log('info', 'user', `user_created processed: uuid=${masterUuid} | email=${email}`);
       console.log(`[receiver] User created in Salesforce and forwarded to Kassa: ${masterUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleUserCreated: ${err.message}`);
@@ -894,6 +904,7 @@ class ReceiverV2 {
         correlation_id: header.message_id,
       });
 
+      await this.log('info', 'registration', `user_registered processed: uuid=${masterUuid} | session=${sessionId}`);
       console.log(`[receiver] User registered for session ${sessionId}, confirmed to Planning: ${masterUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleUserRegistered: ${err.message}`);
@@ -931,6 +942,7 @@ class ReceiverV2 {
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) => conn.sobject('Member__c').upsert(sfCompanyData, 'Master_UUID__c'));
       }
+      await this.log('info', 'user', `company_registration processed: uuid=${masterUuid} | email=${email}`);
     } catch (err) {
       console.error(`[receiver] Error in handleCompanyRegistration: ${err.message}`);
       throw err;
@@ -941,7 +953,10 @@ class ReceiverV2 {
     try {
       const company = body?.company;
       const companyUuid = header.master_uuid;
-      if (!company || !companyUuid) return;
+      if (!company || !companyUuid) {
+        await this.log('warning', 'user', 'company_update: missing company or companyUuid in payload — skipped');
+        return;
+      }
 
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) =>
@@ -976,6 +991,7 @@ class ReceiverV2 {
           }
         }
       }
+      await this.log('info', 'user', `company_update processed: uuid=${companyUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleCompanyUpdate: ${err.message}`);
       throw err;
@@ -985,7 +1001,10 @@ class ReceiverV2 {
   async handleCompanyDelete(header, body) {
     try {
       const companyUuid = header.master_uuid || ReceiverV2.getElementText(body?.company, 'master_uuid');
-      if (!companyUuid) return;
+      if (!companyUuid) {
+        await this.log('warning', 'user', 'company_delete: missing companyUuid in payload — skipped');
+        return;
+      }
 
       if (this.sf.isConnected) {
         const memberId = await this._findUserByMasterUuid(companyUuid);
@@ -998,6 +1017,7 @@ class ReceiverV2 {
           );
         }
       }
+      await this.log('info', 'user', `company_delete processed: uuid=${companyUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleCompanyDelete: ${err.message}`);
       throw err;
@@ -1019,6 +1039,7 @@ class ReceiverV2 {
 
       const memberId = await this._findUserByMasterUuid(identityUuid);
       if (!memberId) {
+        await this.log('warning', 'user', `company_member_removed: no Member__c found for uuid=${identityUuid}`);
         console.warn(`[receiver] company_member_removed: no Member__c found for ${identityUuid}`);
         return;
       }
@@ -1031,9 +1052,47 @@ class ReceiverV2 {
         })
       );
 
+      await this.log('info', 'user', `company_member_removed processed: uuid=${identityUuid} | vat=${vatNumber}`);
       console.log(`[receiver] Member ${identityUuid} unlinked from company ${vatNumber}`);
     } catch (err) {
       console.error(`[receiver] Error in handleCompanyMemberRemoved: ${err.message}`);
+      throw err;
+    }
+  }
+
+  async handleCompanyInvite(header, body) {
+    try {
+      const invitee = body?.invitee;
+      const inviter = body?.inviter;
+      if (!invitee) throw new Error('Body missing invitee element');
+      if (!inviter) throw new Error('Body missing inviter element');
+
+      const inviteeEmail = ReceiverV2.getElementText(invitee, 'email');
+      const inviterUuid  = ReceiverV2.getElementText(inviter, 'identity_uuid');
+      const companyName  = ReceiverV2.getElementText(inviter, 'company_name') || '';
+      const inviteLink   = ReceiverV2.getElementText(body, 'invite_link');
+      const expiresAt    = ReceiverV2.getElementText(body, 'expires_at');
+
+      if (!inviteeEmail) throw new Error('Missing invitee.email in company_invite');
+      if (!inviterUuid)  throw new Error('Missing inviter.identity_uuid in company_invite');
+
+      await this.log('info', 'user', `company_invite received: invitee=${inviteeEmail} | inviter=${inviterUuid} | company=${companyName}`);
+
+      await this.sender.sendMailingSend({
+        correlation_id: header.correlation_id || header.message_id,
+        template_id:    'company_invite',
+        recipient:      inviteeEmail,
+        template_data:  JSON.stringify({
+          invite_link:  inviteLink,
+          expires_at:   expiresAt,
+          company_name: companyName,
+          inviter_uuid: inviterUuid,
+        }),
+      });
+
+      console.log(`[receiver] company_invite processed: invitee=${inviteeEmail}`);
+    } catch (err) {
+      console.error(`[receiver] Error in handleCompanyInvite: ${err.message}`);
       throw err;
     }
   }
@@ -1063,6 +1122,7 @@ class ReceiverV2 {
           Last_Invoice_Number__c: invoiceNumber,
         })
       );
+      await this.log('info', 'invoice', `send_invoice processed: invoice=${invoiceNumber} | uuid=${masterUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleSendInvoice: ${err}`);
       throw err;
@@ -1084,6 +1144,7 @@ class ReceiverV2 {
           );
         }
       }
+      await this.log('info', 'invoice', `invoice_cancelled processed: uuid=${masterUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleReceivedInvoiceCancelled: ${err}`);
       throw err;
@@ -1093,6 +1154,7 @@ class ReceiverV2 {
   async handlePaymentRegistered(header, body) {
   try {
     if (this._isProcessedMessage(header.message_id)) {
+      await this.log('warning', 'payment', `Duplicate payment_registered (ID: ${header.message_id}) — skipped`);
       console.log(`[receiver] Duplicate payment_registered ignored: ${header.message_id}`);
       return;
     }
@@ -1191,6 +1253,7 @@ class ReceiverV2 {
       );
     }
 
+    await this.log('info', 'payment', `payment_registered processed: uuid=${masterUuid} | invoice=${invoiceId} | amount=${amountPaid}`);
     this._markMessageProcessed(header.message_id);
   } catch (err) {
     console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
@@ -1218,6 +1281,7 @@ class ReceiverV2 {
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
+      await this.log('info', 'badge', `badge_scanned processed: badge=${ReceiverV2.getElementText(body, 'badge_id')} | uuid=${masterUuid}`);
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeScanned: ${err}`);
       throw err;
@@ -1234,6 +1298,7 @@ class ReceiverV2 {
           session_id: sessionId,
           ended_at: header.timestamp,
         });
+        await this.log('info', 'session', `session_deleted processed: session_id=${sessionId} | event_ended forwarded to Facturatie`);
         return;
       }
 
@@ -1253,6 +1318,7 @@ class ReceiverV2 {
 
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
+      await this.log('info', 'session', `${header.type} processed: session_id=${sessionId}`);
     } catch (err) {
       console.log(`[receiver] Error in handlePlanningSessionEvent: ${err}`);
       throw err;
@@ -1278,6 +1344,7 @@ class ReceiverV2 {
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
+      await this.log('info', 'invoice', `invoice_status processed: invoice=${invoiceId} | status=${status} | uuid=${masterUuid}`);
     } catch (err) {
       console.log(`[receiver] Error in handleInvoiceStatus: ${err}`);
       throw err;
@@ -1295,6 +1362,7 @@ class ReceiverV2 {
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) => conn.sobject('Task').create(taskData));
       }
+      await this.log('info', 'email', `mailing_status processed: campaign=${ReceiverV2.getElementText(body, 'campaign_id')} | status=${ReceiverV2.getElementText(body, 'status')}`);
     } catch (err) {
       console.log(`[receiver] Error in handleMailingStatus: ${err}`);
       throw err;
@@ -1304,6 +1372,7 @@ class ReceiverV2 {
   async handleConsumptionOrder(header, body, rawXml = null) {
     try {
       if (this._isProcessedMessage(header.message_id)) {
+        await this.log('warning', 'payment', `Duplicate consumption_order (ID: ${header.message_id}) — skipped`);
         console.log(`[receiver] Duplicate consumption_order ignored: ${header.message_id}`);
         return;
       }
@@ -1345,6 +1414,7 @@ class ReceiverV2 {
         await this.sender.sendConsumptionOrderToFacturatie(rawXml);
       }
 
+      await this.log('info', 'payment', `consumption_order processed: ${itemList.length} item(s) | anonymous=${isAnonymous}`);
       this._markMessageProcessed(header.message_id);
     } catch (err) {
       console.log(`[receiver] Error in handleConsumptionOrder: ${err}`);
@@ -1364,6 +1434,7 @@ class ReceiverV2 {
           await this.sf.apiCall((conn) => conn.sobject('Member__c').update({ Id: memberId, Badge_ID__c: badgeId }));
         }
       }
+      await this.log('info', 'badge', `badge_assigned processed: badge=${badgeId} | uuid=${masterUuid}`);
     } catch (err) {
       console.log(`[receiver] Error in handleBadgeAssigned: ${err}`);
       throw err;
@@ -1373,6 +1444,7 @@ class ReceiverV2 {
   async handleWalletLeaseRequest(header, body) {
     try {
       if (this._isProcessedMessage(header.message_id)) {
+        await this.log('warning', 'wallet', `Duplicate wallet_lease_request (ID: ${header.message_id}) — skipped`);
         console.log(`[receiver] Duplicate wallet_lease_request ignored: ${header.message_id}`);
         return;
       }
@@ -1436,6 +1508,7 @@ class ReceiverV2 {
 
       await this.sender.sendWalletLeaseGrant(leaseData);
 
+      await this.log('info', 'wallet', `wallet_lease_request processed: lease ${generatedLeaseId} granted for ${masterUuid}`);
       console.log(`[lease] Macht overgedragen aan Kassa voor ${masterUuid}. Lease: ${generatedLeaseId}`);
       this._markMessageProcessed(header.message_id);
     } catch (err) {
@@ -1448,6 +1521,7 @@ class ReceiverV2 {
     let leaseId = 'ONBEKEND';
     try {
       if (this._isProcessedMessage(header.message_id)) {
+        await this.log('warning', 'wallet', `Duplicate wallet_lease_return (ID: ${header.message_id}) — skipped`);
         console.log(`[receiver] Duplicate wallet_lease_return ignored: ${header.message_id}`);
         return;
       }
@@ -1475,6 +1549,7 @@ class ReceiverV2 {
       const memberId = member.Id;
 
       if (member.Last_Lease_ID__c && member.Last_Lease_ID__c !== leaseId) {
+        await this.log('warning', 'wallet', `wallet_lease_return: lease_id mismatch for uuid=${masterUuid} | expected=${member.Last_Lease_ID__c} | got=${leaseId} — processing anyway`);
         console.warn(`[lease-return] lease_id mismatch for ${masterUuid}. Expected: ${member.Last_Lease_ID__c}, Got: ${leaseId}. Processing balance update anyway.`);
       }
 
@@ -1514,6 +1589,7 @@ class ReceiverV2 {
       const transactionId = ReceiverV2.getElementText(body, 'transaction_id') || header.message_id;
 
       if (!identityUuid || isNaN(topupAmount) || topupAmount <= 0) {
+        await this.log('warning', 'wallet', `wallet_topup_request: invalid request — missing identity_uuid or invalid amount (uuid=${identityUuid || 'none'}, amount=${topupAmount})`);
         console.log('[receiver] Invalid wallet_topup_request: missing identity_uuid or invalid amount');
         return;
       }
@@ -1571,6 +1647,7 @@ class ReceiverV2 {
   async handleRefundProcessed(header, body) {
   try {
     if (this._isProcessedMessage(header.message_id)) {
+      await this.log('warning', 'refund', `Duplicate refund_processed (ID: ${header.message_id}) — skipped`);
       console.log(`[receiver] Duplicate refund_processed ignored: ${header.message_id}`);
       return;
     }
@@ -1622,6 +1699,7 @@ class ReceiverV2 {
       }
     }
 
+    await this.log('info', 'refund', `refund_processed processed: uuid=${masterUuid} | amount=${ReceiverV2.getElementText(refund, 'amount')}`);
     this._markMessageProcessed(header.message_id);
   } catch (err) {
     console.log(`[receiver] Error in handleRefundProcessed: ${err}`);
@@ -1681,6 +1759,7 @@ class ReceiverV2 {
         country: ReceiverV2.getElementText(invoiceData.address, 'country') || '',
       } : { street: '', number: '', postal_code: '', city: '', country: '' },
     });
+    await this.log('info', 'invoice', `invoice_request forwarded to Facturatie: correlation=${invoiceRequestId} | uuid=${masterUuid}`);
   } catch (err) {
     console.log(`[receiver] Error in handleInvoiceRequestFromKassa: ${err}`);
     throw err;
@@ -1742,6 +1821,7 @@ class ReceiverV2 {
         vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
       });
 
+      await this.log('info', 'user', `user_updated processed: uuid=${identityUuid} | email=${email}`);
       console.log(`[receiver] User updated in Salesforce and forwarded to Kassa: ${identityUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleUserUpdated: ${err.message}`);
@@ -1774,6 +1854,7 @@ class ReceiverV2 {
       if (result && !result.success) {
         throw new Error(`SF Check-in mislukt: ${JSON.stringify(result.errors)}`);
       }
+      await this.log('info', 'user', `user_checkin processed: uuid=${masterUuid} | session=${sessionId}`);
       console.log(`[salesforce] Check-in geregistreerd voor ${masterUuid}`);
     } catch (err) {
       console.error(`[receiver] Error in handleUserCheckin: ${err.message}`);
@@ -1790,6 +1871,7 @@ class ReceiverV2 {
                    header?.master_uuid;
 
       if (!masterUuid) {
+        await this.log('warning', 'user', 'delete_user: missing uuid in payload — cannot process');
         console.warn('[receiver] handleDeleteUser: Geen UUID gevonden.');
         return;
       }
@@ -1801,6 +1883,7 @@ class ReceiverV2 {
       const memberId = await this._findUserByMasterUuid(masterUuid);
 
       if (!memberId) {
+        await this.log('warning', 'user', `delete_user: uuid=${masterUuid} not found in Salesforce — skipped`);
         console.log(`[receiver] Delete overgeslagen: User ${masterUuid} bestaat niet in Salesforce.`);
         return;
       }
@@ -1829,6 +1912,7 @@ class ReceiverV2 {
       const reason = ReceiverV2.getElementText(body, 'reason');
 
       if (!identityUuid || !sessionId) {
+        await this.log('warning', 'registration', 'cancel_registration: missing identity_uuid or session_id in payload — skipped');
         console.log('[receiver] handleCancelRegistration: missing identity_uuid or session_id');
         return;
       }
@@ -1847,6 +1931,7 @@ class ReceiverV2 {
           );
         }
       }
+      await this.log('info', 'registration', `cancel_registration processed: uuid=${identityUuid} | session=${sessionId}`);
     } catch (err) {
       console.log(`[receiver] Error in handleCancelRegistration: ${err}`);
       throw err;
@@ -1900,6 +1985,7 @@ class ReceiverV2 {
       }
 
       this.channel.ack(msg);
+      await this.log('info', 'identity', `identity user_event processed: ${eventType} | uuid=${masterUuid}`);
       console.log(`[receiver] Identity event processed: ${eventType} ${masterUuid}`);
     } catch (err) {
       console.error(`[receiver] Identity Fanout error: ${err.message}`);
@@ -1958,6 +2044,7 @@ class ReceiverV2 {
 
   async shutdown() {
     this.running = false;
+    await this.log('warning', 'system_error', 'CRM receiver shutting down');
     try { if (this.channel) await this.channel.close(); } catch (_err) { /* already closed */ }
     try { if (this.connection) await this.connection.close(); } catch (_err) { /* already closed */ }
     try { await this.sender.close(); } catch (_err) { /* already closed */ }

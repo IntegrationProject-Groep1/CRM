@@ -6,6 +6,16 @@
     </xs:restriction>
   </xs:simpleType>
 
+  <xs:complexType name="AddressType">
+    <xs:sequence>
+      <xs:element name="street"      type="xs:string"/>
+      <xs:element name="number"      type="xs:string"/>
+      <xs:element name="postal_code" type="xs:string"/>
+      <xs:element name="city"        type="xs:string"/>
+      <xs:element name="country"     type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
   <xs:element name="message">
     <xs:complexType><xs:sequence>
 
@@ -40,7 +50,7 @@
                   <xs:element name="last_name"  type="xs:string"/>
                 </xs:sequence></xs:complexType>
               </xs:element>
-              <xs:element name="address" type="xs:string"/>
+              <xs:element name="address" type="AddressType"/>
               <xs:element name="payment_due">
                 <xs:complexType><xs:sequence>
                   <xs:element name="amount">
