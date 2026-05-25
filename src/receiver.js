@@ -1081,7 +1081,7 @@ class ReceiverV2 {
       await this.sender.sendMailingSend({
         correlation_id: header.correlation_id || header.message_id,
         template_id:    'company_invite',
-        recipient:      inviteeEmail,
+        recipients:     [{ email: inviteeEmail }],
         template_data:  JSON.stringify({
           invite_link:  inviteLink,
           expires_at:   expiresAt,
