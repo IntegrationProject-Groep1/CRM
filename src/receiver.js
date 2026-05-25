@@ -1485,7 +1485,7 @@ class ReceiverV2 {
         }
       }
 
-      const inviteeUuid = await this.getOrCreateMasterUuid(inviteeEmail, 'crm');
+      resolvedInviteeUuid = await this.getOrCreateMasterUuid(inviteeEmail, 'crm');
 
       await this.sender.sendMailingSend({
         correlation_id: header.correlation_id || header.message_id,
@@ -1494,7 +1494,7 @@ class ReceiverV2 {
         mail_type:      'general_announcement',
         recipients: [{
           email:         inviteeEmail,
-          identity_uuid: inviteeUuid,
+          identity_uuid: resolvedInviteeUuid,
           first_name:    '',
           last_name:     '',
         }],
