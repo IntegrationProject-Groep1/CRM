@@ -1422,7 +1422,6 @@ class ReceiverV2 {
       if (!inviter) throw new Error("Body missing inviter element");
 
       const inviteeEmail = ReceiverV2.getElementText(invitee, "email");
-      const inviteeUuid = ReceiverV2.getElementText(invitee, "identity_uuid");
       const inviterUuid = ReceiverV2.getElementText(inviter, "identity_uuid");
       const companyName =
         ReceiverV2.getElementText(inviter, "company_name") || "";
@@ -1441,28 +1440,19 @@ class ReceiverV2 {
         `company_invite received: invitee=${inviteeEmail} | inviter=${inviterUuid} | company=${companyName}`,
       );
 
-      let resolvedInviteeUuid = inviteeUuid;
+      const masterUuid = await this.getOrCreateMasterUuid(inviteeEmail, 'crm');
 
       if (this.sf.isConnected) {
-        let sfRecord = inviteeUuid
-          ? await this.sf.apiCall((conn) =>
-              conn
-                .sobject("Member__c")
-                .find({ Master_UUID__c: inviteeUuid }, ["Id", "Master_UUID__c"])
-                .limit(1),
-            )
-          : await this.sf.apiCall((conn) =>
-              conn
-                .sobject("Member__c")
-                .find({ Email__c: inviteeEmail }, ["Id", "Master_UUID__c"])
-                .limit(1),
-            );
+        const sfRecord = await this.sf.apiCall((conn) =>
+          conn
+            .sobject("Member__c")
+            .find({ Master_UUID__c: masterUuid }, ["Id"])
+            .limit(1),
+        );
 
         const sfMember = sfRecord && sfRecord.length > 0 ? sfRecord[0] : null;
 
         if (sfMember) {
-          resolvedInviteeUuid =
-            resolvedInviteeUuid || sfMember.Master_UUID__c || null;
           await this.sf.apiCall((conn) =>
             conn.sobject("Member__c").update({
               Id: sfMember.Id,
@@ -1474,9 +1464,7 @@ class ReceiverV2 {
           await this.sf.apiCall((conn) =>
             conn.sobject("Member__c").create({
               Email__c: inviteeEmail,
-              ...(resolvedInviteeUuid && {
-                Master_UUID__c: resolvedInviteeUuid,
-              }),
+              Master_UUID__c: masterUuid,
               Company_Name__c: companyName,
               VAT_Number__c: vatNumber,
               Status__c: "Invited",
@@ -1485,8 +1473,6 @@ class ReceiverV2 {
         }
       }
 
-      resolvedInviteeUuid = await this.getOrCreateMasterUuid(inviteeEmail, 'crm');
-
       await this.sender.sendMailingSend({
         correlation_id: header.correlation_id || header.message_id,
         campaign_id:    'company_invite',
@@ -1494,7 +1480,7 @@ class ReceiverV2 {
         mail_type:      'general_announcement',
         recipients: [{
           email:         inviteeEmail,
-          identity_uuid: resolvedInviteeUuid,
+          identity_uuid: masterUuid,
           first_name:    '',
           last_name:     '',
         }],
