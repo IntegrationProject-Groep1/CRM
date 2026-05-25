@@ -26,6 +26,7 @@ jest.mock('../src/sender', () => {
     sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
     sendEventEndedToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendSessionRegistrationConfirmed: jest.fn().mockResolvedValue({ success: true }),
+    sendProfileUpdateToKassa: jest.fn().mockResolvedValue({ success: true }),
     sendLog: jest.fn().mockResolvedValue({ success: true }),
   }));
 });
@@ -1247,7 +1248,7 @@ describe('handleInvoiceRequestFromKassa', () => {
           <country>BE</country>
         </address>
       </invoice_data>
-    `));
+    `, { correlation_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }));
 
     await receiver.handleMessage(buildMsg(xml));
 
@@ -1281,7 +1282,7 @@ describe('handleInvoiceRequestFromKassa', () => {
           <country>BE</country>
         </address>
       </invoice_data>
-    `);
+    `, { correlation_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' });
 
     await receiver.handleMessage(buildMsg(xml));
 

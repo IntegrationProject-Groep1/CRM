@@ -1067,21 +1067,48 @@ class ReceiverV2 {
       if (!invitee) throw new Error('Body missing invitee element');
       if (!inviter) throw new Error('Body missing inviter element');
 
-      const inviteeEmail = ReceiverV2.getElementText(invitee, 'email');
-      const inviterUuid  = ReceiverV2.getElementText(inviter, 'identity_uuid');
-      const companyName  = ReceiverV2.getElementText(inviter, 'company_name') || '';
-      const inviteLink   = ReceiverV2.getElementText(body, 'invite_link');
-      const expiresAt    = ReceiverV2.getElementText(body, 'expires_at');
+      const inviteeEmail    = ReceiverV2.getElementText(invitee, 'email');
+      const inviteeUuid     = ReceiverV2.getElementText(invitee, 'identity_uuid');
+      const inviterUuid     = ReceiverV2.getElementText(inviter, 'identity_uuid');
+      const companyName     = ReceiverV2.getElementText(inviter, 'company_name') || '';
+      const vatNumber       = ReceiverV2.getElementText(inviter, 'vat_number') || '';
+      const inviteLink      = ReceiverV2.getElementText(body, 'invite_link');
+      const expiresAt       = ReceiverV2.getElementText(body, 'expires_at');
 
       if (!inviteeEmail) throw new Error('Missing invitee.email in company_invite');
       if (!inviterUuid)  throw new Error('Missing inviter.identity_uuid in company_invite');
 
       await this.log('info', 'user', `company_invite received: invitee=${inviteeEmail} | inviter=${inviterUuid} | company=${companyName}`);
 
+      if (this.sf.isConnected) {
+        let memberId = inviteeUuid ? await this._findUserByMasterUuid(inviteeUuid) : null;
+        if (!memberId) memberId = await this._findUserByEmail(inviteeEmail);
+
+        if (memberId) {
+          await this.sf.apiCall((conn) =>
+            conn.sobject('Member__c').update({
+              Id:               memberId,
+              Company_Name__c:  companyName,
+              VAT_Number__c:    vatNumber,
+            })
+          );
+        } else {
+          await this.sf.apiCall((conn) =>
+            conn.sobject('Member__c').create({
+              Email__c:         inviteeEmail,
+              ...(inviteeUuid && { Master_UUID__c: inviteeUuid }),
+              Company_Name__c:  companyName,
+              VAT_Number__c:    vatNumber,
+              Status__c:        'Invited',
+            })
+          );
+        }
+      }
+
       await this.sender.sendMailingSend({
         correlation_id: header.correlation_id || header.message_id,
         template_id:    'company_invite',
-        recipient:      inviteeEmail,
+        recipients:     [{ email: inviteeEmail }],
         template_data:  JSON.stringify({
           invite_link:  inviteLink,
           expires_at:   expiresAt,
@@ -1168,6 +1195,25 @@ class ReceiverV2 {
     const amountVal = body?.amount_paid || (invoice ? invoice.amount_paid : null);
     const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || '0.00');
     const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(invoice, 'id');
+
+    // Detect wallet top-up items to route balance updates correctly.
+    const rawItems = body?.items?.item;
+    const items = rawItems ? (Array.isArray(rawItems) ? rawItems : [rawItems]) : [];
+    let topupAmount = 0;
+    let hasNonTopupItems = false;
+    for (const item of items) {
+      const itemType = ReceiverV2.getElementText(item, 'item_type');
+      const amountRaw = item.amount;
+      const itemAmount = typeof amountRaw === 'object'
+        ? parseFloat(amountRaw['#text'] || 0)
+        : parseFloat(amountRaw || 0);
+      if (itemType === 'wallet_topup') {
+        topupAmount += itemAmount;
+      } else {
+        hasNonTopupItems = true;
+      }
+    }
+    const isPureTopup = topupAmount > 0 && !hasNonTopupItems;
     const transactionId = transaction ? ReceiverV2.getElementText(transaction, 'id') : null;
     const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') ||
       (transaction ? ReceiverV2.getElementText(transaction, 'method') : null) || 'unknown';
@@ -1268,19 +1314,38 @@ class ReceiverV2 {
     }
 
     if (this.sf.isConnected && masterUuid) {
-      const upsertData = {
-        Master_UUID__c:         masterUuid,
-        Payment_Status__c:      'paid',
-        Amount__c:              amountPaid,
-        Last_Invoice_Number__c: invoiceId,
-      };
+      const upsertData = { Master_UUID__c: masterUuid };
       if (email) upsertData.Email__c = email;
+
+      if (isPureTopup) {
+        // Top-up purchase at POS: credit wallet balance only when CRM owns it.
+        // If the wallet is currently 'Leased', Kassa owns the balance and will
+        // reconcile via x_pending_topup_balance in wallet_lease_grant. Do not
+        // touch Amount__c (registration fee field) for top-up payments.
+        const memberRecords = await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').find(
+            { Master_UUID__c: masterUuid },
+            ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']
+          ).limit(1)
+        );
+        const walletStatus = memberRecords?.[0]?.Wallet_Status__c || '';
+        if (walletStatus !== 'Leased') {
+          const currentBalance = parseFloat(memberRecords?.[0]?.Wallet_Balance__c || 0);
+          upsertData.Wallet_Balance__c = Math.round((currentBalance + topupAmount) * 100) / 100;
+        }
+      } else {
+        // Regular consumption or registration payment: update payment tracking fields.
+        upsertData.Payment_Status__c = 'paid';
+        upsertData.Amount__c = amountPaid;
+        upsertData.Last_Invoice_Number__c = invoiceId;
+      }
+
       await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').upsert(upsertData, 'Master_UUID__c')
       );
     }
 
-    await this.log('info', 'payment', `payment_registered processed: uuid=${masterUuid} | invoice=${invoiceId} | amount=${amountPaid}`);
+    await this.log('info', 'payment', `payment_registered processed: uuid=${masterUuid} | invoice=${invoiceId} | amount=${amountPaid} | topup=${topupAmount > 0 ? topupAmount.toFixed(2) : 'no'}`);
     this._markMessageProcessed(header.message_id);
   } catch (err) {
     console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);
@@ -1629,7 +1694,7 @@ class ReceiverV2 {
       }
 
       const records = await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').find({ Master_UUID__c: identityUuid }, ['Id', 'Wallet_Balance__c']).limit(1)
+        conn.sobject('Member__c').find({ Master_UUID__c: identityUuid }, ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']).limit(1)
       );
 
       if (!records || records.length === 0) {
@@ -1639,6 +1704,7 @@ class ReceiverV2 {
       const member = records[0];
       const currentBalance = parseFloat(member.Wallet_Balance__c || 0);
       const newBalance = Math.round((currentBalance + topupAmount) * 100) / 100;
+      const walletStatus = member.Wallet_Status__c;
 
       await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').update({
@@ -1653,16 +1719,21 @@ class ReceiverV2 {
         message: `Wallet topup processed for ${identityUuid}: +€${topupAmount}. New balance: €${newBalance}. Transaction: ${transactionId}.`,
       });
 
-      await this.sender.sendWalletRemoteTopup({
-        identity_uuid: identityUuid,
-        add_amount: topupAmount,
-        reason: `online_topup:${transactionId}`,
-        correlation_id: header.message_id,
-      });
+      if (walletStatus === 'Leased') {
+        await this.sender.sendWalletRemoteTopup({
+          identity_uuid: identityUuid,
+          add_amount: topupAmount,
+          reason: `online_topup:${transactionId}`,
+          correlation_id: header.message_id,
+        });
+        this.log('info', 'wallet', `[wallet-topup] Wallet remote topup sent to Kassa for leased user ${identityUuid}`);
+      } else {
+        this.log('info', 'wallet', `[wallet-topup] User ${identityUuid} is not leased (status: ${walletStatus}). Skipping Kassa message.`);
+      }
 
-      console.log(`[wallet-topup] Wallet updated for ${identityUuid}. New balance: €${newBalance}`);
+      this.log('info', 'wallet', `[wallet-topup] Wallet updated in CRM for ${identityUuid}. New balance: €${newBalance}`);
     } catch (err) {
-      console.error(`[receiver] Error in handleWalletTopupRequest: ${err.message}`);
+      this.log('error', 'wallet', `[receiver] Error in handleWalletTopupRequest: ${err.message}`);
       await this.sender.sendLog({
         level: 'error',
         action: 'wallet',
@@ -1733,24 +1804,25 @@ class ReceiverV2 {
     const masterUuid = await this.resolveMasterUuid(header, body, { email });
     const paymentStatus = ReceiverV2.getElementText(body, 'payment_status') || 'pending';
     const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') || '';
-    const invoiceRequestId = header.correlation_id || header.message_id;
+    if (!header.correlation_id) throw new Error('Missing correlation_id in invoice_request — cannot link to consumption_order');
+    const invoiceRequestId = header.correlation_id;
+
+    let vatNumber   = invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number')   : null;
+    let companyName = invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null;
+    if ((vatNumber === null || companyName === null) && masterUuid && this.sf.isConnected) {
+      const sfRecords = await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['VAT_Number__c', 'Company_Name__c']).limit(1)
+      );
+      if (sfRecords && sfRecords.length > 0) {
+        if (vatNumber   === null) vatNumber   = sfRecords[0].VAT_Number__c   || null;
+        if (companyName === null) companyName = sfRecords[0].Company_Name__c || null;
+      }
+    }
 
     if (this.sf.isConnected) {
-      try {
-        await this.sf.apiCall((conn) =>
-          conn.sobject('Consumption__c')
-            .create({
-              Consumption_ID__c: invoiceRequestId,
-              Invoice_Req__c: invoiceRequestId,
-            })
-        );
-      } catch (dupErr) {
-        if (!/duplicate/i.test(dupErr.message)) throw dupErr;
-      }
-
       const taskData = {
         Subject: `Invoice request [Kassa]`,
-        Description: `Master UUID: ${masterUuid}`,
+        Description: `Master UUID: ${masterUuid} | Order: ${invoiceRequestId}`,
         Status: 'Completed',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
@@ -1766,8 +1838,8 @@ class ReceiverV2 {
         email: email || '',
         first_name: contact ? ReceiverV2.getElementText(contact, 'first_name') : '',
         last_name: contact ? ReceiverV2.getElementText(contact, 'last_name') : '',
-        company_name: invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null,
-        vat_number: invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null,
+        company_name: companyName,
+        vat_number: vatNumber,
       },
       address: invoiceData ? {
         street: ReceiverV2.getElementText(invoiceData.address, 'street') || '',
@@ -1799,6 +1871,7 @@ class ReceiverV2 {
       const rawType = ReceiverV2.getElementText(customer, 'type');
       const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
       const companyName = ReceiverV2.getElementText(customer, 'company_name');
+      const vatNumber   = ReceiverV2.getElementText(customer, 'vat_number');
 
       if (!identityUuid) throw new Error('Missing identity_uuid in user_updated message');
 
@@ -1817,10 +1890,24 @@ class ReceiverV2 {
           Country_Code__c: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
         };
         if (companyName) userData.Company_Name__c = companyName;
+        if (vatNumber)   userData.VAT_Number__c   = vatNumber;
 
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert(userData, 'Master_UUID__c')
         );
+      }
+
+      let profileCompanyName = companyName;
+      let profileVatNumber   = vatNumber;
+
+      if (rawType === 'company' && this.sf.isConnected && (companyName === null || vatNumber === null)) {
+        const sfRecords = await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').find({ Master_UUID__c: identityUuid }, ['Company_Name__c', 'VAT_Number__c']).limit(1)
+        );
+        if (sfRecords && sfRecords.length > 0) {
+          if (profileCompanyName === null) profileCompanyName = sfRecords[0].Company_Name__c || '';
+          if (profileVatNumber   === null) profileVatNumber   = sfRecords[0].VAT_Number__c   || '';
+        }
       }
 
       const addressPayload = address ? {
@@ -1838,8 +1925,8 @@ class ReceiverV2 {
         last_name: lastName,
         date_of_birth: dateOfBirth,
         type: rawType,
-        company_name: ReceiverV2.getElementText(customer, 'company_name'),
-        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        company_name: profileCompanyName,
+        vat_number:   profileVatNumber,
         address: addressPayload,
       });
       await this.sender.sendProfileUpdateToFacturatie({
@@ -1849,8 +1936,8 @@ class ReceiverV2 {
         last_name: lastName,
         date_of_birth: dateOfBirth,
         type: rawType,
-        company_name: ReceiverV2.getElementText(customer, 'company_name'),
-        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        company_name: profileCompanyName,
+        vat_number:   profileVatNumber,
         address: addressPayload,
       });
 
@@ -1987,7 +2074,7 @@ class ReceiverV2 {
         this.channel.nack(msg, false, false);
         return;
       }
-      await this.log('info', 'xml_validation', `Received UserCreated from identity-service. Validation: Success.`);
+      await this.log('info', 'xml_validation', 'Received user_event from identity-service. Validation: Success.');
 
       let parsed;
       try {
@@ -2020,6 +2107,10 @@ class ReceiverV2 {
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert({ Master_UUID__c: masterUuid, Email__c: email }, 'Master_UUID__c')
         );
+      } else if (eventType === 'UserDeleted') {
+        // Re-use the existing delete handler which removes the Salesforce Member__c record
+        const fakeBody = { identity_uuid: masterUuid };
+        await this.handleDeleteUser({}, fakeBody);
       }
 
       this.channel.ack(msg);
