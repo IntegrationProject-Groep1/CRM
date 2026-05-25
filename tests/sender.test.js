@@ -755,21 +755,21 @@ describe('Mailing flow — buildMailingSendXml', () => {
     expect(recipients).toHaveLength(2);
   });
 
-  test('optionele template_data, body_html en attachment worden opgenomen', () => {
+  test('optionele template_data, body_html en attachments worden opgenomen', () => {
     const data = baseData();
     data.template_data = { session_title: 'Keynote' };
     data.body_html = '<p>Hallo</p>';
-    data.attachment = {
+    data.attachments = [{
       filename: 'invoice.pdf',
       content_type: 'application/pdf',
       base64_data: 'ZmFrZQ==',
-    };
+    }];
     const root = parser.parse(sender.buildMailingSendXml(data)).message;
     expect(root.body.template_data).toBe('{"session_title":"Keynote"}');
     expect(root.body.body_html).toBe('<p>Hallo</p>');
-    expect(root.body.attachment.filename).toBe('invoice.pdf');
-    expect(root.body.attachment.content_type).toBe('application/pdf');
-    expect(root.body.attachment.base64_data).toBe('ZmFrZQ==');
+    expect(root.body.attachments.attachment.filename).toBe('invoice.pdf');
+    expect(root.body.attachments.attachment.content_type).toBe('application/pdf');
+    expect(root.body.attachments.attachment.base64_data).toBe('ZmFrZQ==');
   });
 
   test('message_id is een UUID', () => {
