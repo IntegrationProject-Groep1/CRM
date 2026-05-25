@@ -60,9 +60,7 @@ Main worker process (`npm start`).
 - Connects to RabbitMQ and consumes all configured queues
 - Performs message validation and routing
 - Handles retry/dead-letter behavior
-- Uses Identity RPC (`identity.user.create.request`) with 15s timeout
-
-> **Identity service pattern:** the CRM never generates UUIDs internally. Whenever a `master_uuid` is needed and not present in the incoming message, the receiver performs an RPC call to the Identity service: it publishes an `identity_request` XML to `identity.user.create.request` with a `correlationId` and `replyTo` queue, then waits for an `identity_response` containing the `master_uuid`. This UUID is then used for all Salesforce operations and outgoing messages.
+- Uses Identity RPC (`identity.user.create.request`) with 15s timeout — see section 4
 
 ### `src/sender.js`
 Builds and publishes XML messages to queues/exchanges.
@@ -95,7 +93,37 @@ Optional MCP server container/process for CRM Salesforce tooling.
 - Runs on port `8008` by default
 - Uses same Salesforce credentials from environment
 
-## 4) Message types handled by the receiver
+## 4) Identity RPC pattern
+
+The CRM never generates UUIDs internally. Whenever a `master_uuid` is needed and not present in the incoming message, the receiver performs an RPC call to the Identity service:
+
+1. Publishes an `identity_request` XML to `identity.user.create.request` with a `correlationId` and `replyTo` queue
+2. Waits up to **15 seconds** for an `identity_response` on the reply queue containing the `master_uuid`
+3. Uses that UUID for all subsequent Salesforce operations and outgoing messages
+
+If the Identity service does not respond within 15 seconds, the message is retried via the retry queue.
+
+Relevant XSD schemas: `identity_request.xsd`, `identity_response.xsd`, `identity_user_created.xsd`.
+
+## 5) XSD validation
+
+All schemas live in `xsd/` and are loaded lazily on first use, then cached in memory for the lifetime of the process (`src/validator.js` uses `libxmljs2` with external entities and network access disabled).
+
+The 47 schemas follow a naming convention:
+
+| Pattern | Meaning |
+|---|---|
+| `<type>.xsd` | Incoming message from an upstream service |
+| `<type>_<destination>.xsd` | Outgoing message built for a specific downstream service |
+
+Examples:
+- `user_created.xsd` — validates an incoming `user_created` message
+- `new_registration_kassa.xsd` — validates the outgoing registration message sent to Kassa
+- `payment_registered_facturatie.xsd` — validates the outgoing payment notification sent to Facturatie
+
+If no schema exists for a message type, the message passes validation by default. A missing schema file returns a validation error rather than crashing the process.
+
+## 6) Message types handled by the receiver
 
 Current routed message types include:
 
@@ -110,13 +138,13 @@ Unknown message types are logged but not processed.
 
 > **Note on outgoing messages:** when a `user_created` message is processed, the CRM also sends a `send_mailing` message to `crm.to.mailing` with `campaign_id: registration_confirmation`, triggering a registration confirmation email to the new user.
 
-## 5) Prerequisites
+## 7) Prerequisites
 
 - Node.js `>=22` (see `package.json` engines)
 - RabbitMQ access credentials
 - Salesforce credentials (unless running intentionally in DRY RUN mode)
 
-## 6) Environment setup
+## 8) Environment setup
 
 1. Copy environment template:
 
@@ -153,7 +181,7 @@ Health endpoint:
 
 - `HEALTH_PORT` (default `3000`)
 
-## 7) Run locally
+## 9) Run locally
 
 ### Option A: Docker Compose
 
@@ -181,7 +209,30 @@ Optional in a second terminal:
 npm run heartbeat
 ```
 
-## 8) Development checks
+## 10) CI/CD
+
+Three GitHub Actions workflows run automatically:
+
+### `ci.yml` — CI Pipeline
+Triggers on push to `main`, `develop`, `prod`, version tags (`v*`), and PRs to `main`.
+
+Steps: install dependencies → ESLint → syntax check (`node --check`) → `npm audit --audit-level=high` → unit tests.
+
+### `deploy.yml` — Deploy Pipeline
+Triggers automatically after CI passes. Builds and pushes a Docker image to GHCR:
+
+| Branch / tag | Image tag |
+|---|---|
+| `dev` | `latest-dev` + commit SHA |
+| `v*` release tag | `latest` + version tag + commit SHA |
+| Manual dispatch on `main` | `latest` + commit SHA |
+
+> **Warning:** `workflow_dispatch` bypasses the normal tag-based release process. Use only as a last resort.
+
+### `deploy-mcp.yml` — Deploy MCP Pipeline
+Triggers after the Deploy Pipeline succeeds. Builds the MCP image from the `./integratie` context and pushes it to GHCR as `<repo>-mcp`.
+
+## 11) Development checks
 
 Lint:
 
@@ -195,7 +246,12 @@ Tests:
 npm test -- --runInBand
 ```
 
-## 9) Repository structure
+The test suite covers:
+
+- **`tests/receiver.test.js`** — routing logic for all message types, retry and dead-letter behaviour, messages missing `master_uuid` (triggers Identity RPC mock), and XML validation error paths. RabbitMQ, Salesforce, sender, and validator are all mocked.
+- **`tests/sender.test.js`** — XML building and async send methods for registration, profile update, cancel registration, invoice request, and mailing flows. RabbitMQ channel is mocked; output XML is parsed and field values are asserted.
+
+## 12) Repository structure
 
 ```text
 CRM/
@@ -205,20 +261,24 @@ CRM/
 |   |-- sfConnection.js   # Salesforce OAuth wrapper + DRY RUN fallback
 |   |-- heartbeat.js      # optional heartbeat process
 |   |-- amqpUrl.js        # RabbitMQ connection URL builder
-|   |-- validator.js      # XSD validation helper (libxmljs)
+|   |-- validator.js      # XSD validation helper (libxmljs2)
 |   `-- mcp_server.js     # optional MCP server for Salesforce tooling
 |-- tests/
 |   |-- receiver.test.js
 |   `-- sender.test.js
-|-- xsd/                  # XML Schema Definition files — one per message type
-|                         # both incoming (validated on receive) and outgoing (validated before publish)
+|-- xsd/                  # 47 XML Schema Definition files — incoming and outgoing message types
+|-- .github/
+|   `-- workflows/
+|       |-- ci.yml        # lint, syntax check, audit, tests
+|       |-- deploy.yml    # build + push crm-receiver Docker image to GHCR
+|       `-- deploy-mcp.yml # build + push crm-mcp Docker image to GHCR
 |-- .env.example
 |-- docker-compose.yml
 |-- Dockerfile
 `-- package.json
 ```
 
-## 10) Troubleshooting
+## 13) Troubleshooting
 
 - **`RABBITMQ_USER and RABBITMQ_PASS environment variables are required`**
   - Set both values in `.env`.
@@ -232,12 +292,7 @@ CRM/
 - **Repeated retries**
   - Inspect temporary upstream outages (Salesforce/Identity/RabbitMQ).
 
-## 11) Recent changes
-
-- Added automatic mailing flow for new registrations.
-- Updated mailing recipients so `identity_uuid` is only included when available in outgoing XML.
-
-## 12) Connected departments/services
+## 14) Connected departments/services
 
 This CRM integration is connected with these departments/platform domains:
 
@@ -252,6 +307,6 @@ This CRM integration is connected with these departments/platform domains:
 ---
 
 If you are new to this project, start with:
-1. Section 6 (Environment setup)
-2. Section 7 (Run locally)
+1. Section 8 (Environment setup)
+2. Section 9 (Run locally)
 3. `src/receiver.js` and `src/sender.js` for processing flow
