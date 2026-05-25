@@ -227,16 +227,10 @@ CRM/
 - **Repeated retries**
   - Inspect temporary upstream outages (Salesforce/Identity/RabbitMQ).
 
-## 11) Security measures
+## 11) Recent changes
 
-Current security-related measures in this service:
-
-- **RabbitMQ credentials are mandatory** (`RABBITMQ_USER`, `RABBITMQ_PASS`) before startup.
-- **TLS-ready RabbitMQ transport**: `amqps` is supported and recommended for production traffic.
-- **XML validation on message processing** (structure and XSD where configured) for incoming and outgoing payloads.
-- **Controlled retry + dead-letter flow** to isolate invalid/unrecoverable messages from normal processing.
-- **Salesforce OAuth2 refresh-token flow** as primary authentication method (with automatic token refresh support).
-- **Environment-based secrets/configuration** through `.env` (no hardcoded credentials required).
+- Added automatic mailing flow for new registrations.
+- Updated mailing recipients so `identity_uuid` is only included when available in outgoing XML.
 
 ## 12) Connected departments/services
 
