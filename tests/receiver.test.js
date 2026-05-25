@@ -1352,16 +1352,22 @@ describe('handleInvoiceRequestFromKassa', () => {
           <postal_code>1000</postal_code>
           <city>Brussel</city><country>BE</country>
         </address>
+        <vat_number>BE0123456789</vat_number>
+        <company_name>Voorbeeld BV</company_name>
       </invoice_data>
     `, { correlation_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567891' });
 
     await receiver.handleMessage(buildMsg(xml));
 
+    // Slechts 1 SF-call verwacht: de Task aanmaken — geen Member lookup
+    expect(receiver.sf.apiCall).toHaveBeenCalledTimes(1);
     expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         customer: expect.objectContaining({
           first_name: 'An',
           last_name: 'Janssens',
+          company_name: 'Voorbeeld BV',
+          vat_number: 'BE0123456789',
         }),
       }),
     );

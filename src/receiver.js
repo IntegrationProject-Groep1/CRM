@@ -2472,7 +2472,7 @@ class ReceiverV2 {
       let lastName = contact ? ReceiverV2.getElementText(contact, "last_name") : null;
 
       if (
-        (!firstName || !lastName || vatNumber === null || companyName === null) &&
+        (!firstName || !lastName || !vatNumber || !companyName) &&
         masterUuid &&
         this.sf.isConnected
       ) {
@@ -2488,10 +2488,10 @@ class ReceiverV2 {
             .limit(1),
         );
         if (sfRecords && sfRecords.length > 0) {
-          if (!firstName) firstName = sfRecords[0].First_Name__c || null;
-          if (!lastName)  lastName  = sfRecords[0].Last_Name__c  || null;
-          if (vatNumber === null)   vatNumber   = sfRecords[0].VAT_Number__c   || null;
-          if (companyName === null) companyName = sfRecords[0].Company_Name__c || null;
+          if (!firstName)   firstName   = sfRecords[0].First_Name__c   || null;
+          if (!lastName)    lastName    = sfRecords[0].Last_Name__c    || null;
+          if (!vatNumber)   vatNumber   = sfRecords[0].VAT_Number__c   || null;
+          if (!companyName) companyName = sfRecords[0].Company_Name__c || null;
         }
       }
 
