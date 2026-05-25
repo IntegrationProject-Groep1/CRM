@@ -1080,14 +1080,20 @@ class ReceiverV2 {
 
       await this.log('info', 'user', `company_invite received: invitee=${inviteeEmail} | inviter=${inviterUuid} | company=${companyName}`);
 
-      if (this.sf.isConnected) {
-        let memberId = inviteeUuid ? await this._findUserByMasterUuid(inviteeUuid) : null;
-        if (!memberId) memberId = await this._findUserByEmail(inviteeEmail);
+      let resolvedInviteeUuid = inviteeUuid;
 
-        if (memberId) {
+      if (this.sf.isConnected) {
+        let sfRecord = inviteeUuid
+          ? (await this.sf.apiCall((conn) => conn.sobject('Member__c').find({ Master_UUID__c: inviteeUuid }, ['Id', 'Master_UUID__c']).limit(1)))
+          : (await this.sf.apiCall((conn) => conn.sobject('Member__c').find({ Email__c: inviteeEmail }, ['Id', 'Master_UUID__c']).limit(1)));
+
+        const sfMember = sfRecord && sfRecord.length > 0 ? sfRecord[0] : null;
+
+        if (sfMember) {
+          resolvedInviteeUuid = resolvedInviteeUuid || sfMember.Master_UUID__c || null;
           await this.sf.apiCall((conn) =>
             conn.sobject('Member__c').update({
-              Id:               memberId,
+              Id:               sfMember.Id,
               Company_Name__c:  companyName,
               VAT_Number__c:    vatNumber,
             })
@@ -1096,7 +1102,7 @@ class ReceiverV2 {
           await this.sf.apiCall((conn) =>
             conn.sobject('Member__c').create({
               Email__c:         inviteeEmail,
-              ...(inviteeUuid && { Master_UUID__c: inviteeUuid }),
+              ...(resolvedInviteeUuid && { Master_UUID__c: resolvedInviteeUuid }),
               Company_Name__c:  companyName,
               VAT_Number__c:    vatNumber,
               Status__c:        'Invited',
@@ -1108,7 +1114,7 @@ class ReceiverV2 {
       await this.sender.sendMailingSend({
         correlation_id: header.correlation_id || header.message_id,
         template_id:    'company_invite',
-        recipients:     [{ email: inviteeEmail, identity_uuid: inviteeUuid }],
+        recipients:     [{ email: inviteeEmail, identity_uuid: resolvedInviteeUuid }],
         template_data:  JSON.stringify({
           invite_link:  inviteLink,
           expires_at:   expiresAt,
