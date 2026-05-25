@@ -26,6 +26,7 @@ jest.mock('../src/sender', () => {
     sendUserUnregisteredFanout: jest.fn().mockResolvedValue({ success: true }),
     sendEventEndedToFacturatie: jest.fn().mockResolvedValue({ success: true }),
     sendSessionRegistrationConfirmed: jest.fn().mockResolvedValue({ success: true }),
+    sendProfileUpdateToKassa: jest.fn().mockResolvedValue({ success: true }),
     sendLog: jest.fn().mockResolvedValue({ success: true }),
   }));
 });
@@ -777,6 +778,62 @@ describe('handlePaymentRegistered', () => {
   expect(receiver.sender.sendInvoiceRequest).not.toHaveBeenCalled();
   expect(receiver.channel.ack).toHaveBeenCalled();
 });
+
+  test('stuurt new_registration naar Facturatie bij payment_context=registration met SF-klantdata', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall
+      .mockResolvedValueOnce([{
+        First_Name__c: 'Jan',
+        Last_Name__c: 'Peeters',
+        Email__c: 'jan@example.com',
+        Company_Name__c: null,
+        VAT_Number__c: null,
+        Birthdate__c: '1995-03-21',
+        User_Type__c: 'Particulier',
+      }])
+      .mockResolvedValue({});
+
+    const xml = buildXml('payment_registered', `
+      <payment_context>registration</payment_context>
+      <invoice>
+        <id>INV-001</id>
+        <amount_paid currency="eur">25.00</amount_paid>
+        <status>paid</status>
+        <session_id>sess-001</session_id>
+      </invoice>
+    `).replace('<source>test</source>', '<source>kassa</source>');
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendNewRegistrationToFacturatie).toHaveBeenCalledWith(
+      expect.objectContaining({
+        master_uuid: 'test-master-uuid-1234',
+        customer: expect.objectContaining({
+          email: 'jan@example.com',
+          date_of_birth: '1995-03-21',
+          type: 'private',
+        }),
+        session_id: 'sess-001',
+        payment_due: expect.objectContaining({ status: 'paid' }),
+      })
+    );
+  });
+
+  test('stuurt geen new_registration naar Facturatie als SF geen klantdata retourneert', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue([]);
+
+    const xml = buildXml('payment_registered', `
+      <payment_context>registration</payment_context>
+      <invoice><id>INV-002</id><amount_paid currency="eur">25.00</amount_paid><status>paid</status></invoice>
+    `).replace('<source>test</source>', '<source>kassa</source>');
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendNewRegistrationToFacturatie).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleInvoiceStatus', () => {
@@ -1191,7 +1248,7 @@ describe('handleInvoiceRequestFromKassa', () => {
           <country>BE</country>
         </address>
       </invoice_data>
-    `));
+    `, { correlation_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }));
 
     await receiver.handleMessage(buildMsg(xml));
 
@@ -1225,7 +1282,7 @@ describe('handleInvoiceRequestFromKassa', () => {
           <country>BE</country>
         </address>
       </invoice_data>
-    `);
+    `, { correlation_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' });
 
     await receiver.handleMessage(buildMsg(xml));
 
@@ -1236,6 +1293,126 @@ describe('handleInvoiceRequestFromKassa', () => {
         payment_method: 'on_site',
         customer: expect.objectContaining({ email: 'kassa@example.com' }),
       }),
+    );
+  });
+});
+
+describe('handleRefundProcessed', () => {
+  test('stuurt invoice_cancelled naar Facturatie met correlation_id van header', async () => {
+    const receiver = makeReceiver();
+    const correlationId = 'a1b2c3d4-0000-4000-8000-000000000001';
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<message>
+  <header>
+    <message_id>msg-refund-001</message_id>
+    <version>2.0</version>
+    <type>refund_processed</type>
+    <timestamp>${new Date().toISOString()}</timestamp>
+    <source>kassa</source>
+    <master_uuid>test-master-uuid-1234</master_uuid>
+    <correlation_id>${correlationId}</correlation_id>
+  </header>
+  <body>
+    <identity_uuid>test-master-uuid-1234</identity_uuid>
+    <refund_type>partial</refund_type>
+    <refund>
+      <amount currency="eur">10.00</amount>
+      <method>cash</method>
+      <reason>customer_request</reason>
+    </refund>
+    <original_transaction_id>TRX-001</original_transaction_id>
+  </body>
+</message>`;
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendInvoiceCancelledToFacturatie).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identity_uuid: 'test-master-uuid-1234',
+        correlation_id: correlationId,
+        reason: 'customer_request',
+      })
+    );
+  });
+
+  test('gebruikt message_id als fallback wanneer correlation_id ontbreekt', async () => {
+    const receiver = makeReceiver();
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<message>
+  <header>
+    <message_id>msg-refund-002</message_id>
+    <version>2.0</version>
+    <type>refund_processed</type>
+    <timestamp>${new Date().toISOString()}</timestamp>
+    <source>kassa</source>
+    <master_uuid>test-master-uuid-1234</master_uuid>
+  </header>
+  <body>
+    <identity_uuid>test-master-uuid-1234</identity_uuid>
+    <refund_type>partial</refund_type>
+    <refund>
+      <amount currency="eur">5.00</amount>
+      <method>cash</method>
+      <reason>duplicate_payment</reason>
+    </refund>
+    <original_transaction_id>TRX-002</original_transaction_id>
+  </body>
+</message>`;
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendInvoiceCancelledToFacturatie).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'duplicate_payment' })
+    );
+    const call = receiver.sender.sendInvoiceCancelledToFacturatie.mock.calls[0][0];
+    expect(call.correlation_id).toBeTruthy();
+  });
+
+  test('stuurt items door naar Facturatie als refund items bevat', async () => {
+    const receiver = makeReceiver();
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<message>
+  <header>
+    <message_id>msg-refund-003</message_id>
+    <version>2.0</version>
+    <type>refund_processed</type>
+    <timestamp>${new Date().toISOString()}</timestamp>
+    <source>kassa</source>
+    <master_uuid>test-master-uuid-1234</master_uuid>
+    <correlation_id>b2c3d4e5-0000-4000-8000-000000000002</correlation_id>
+  </header>
+  <body>
+    <identity_uuid>test-master-uuid-1234</identity_uuid>
+    <refund_type>consumption_item</refund_type>
+    <refund>
+      <amount currency="eur">15.00</amount>
+      <method>card_reversal</method>
+      <reason>customer_request</reason>
+    </refund>
+    <original_transaction_id>TRX-003</original_transaction_id>
+    <items>
+      <item>
+        <sku>DRINK-001</sku>
+        <description>Water</description>
+        <quantity>2</quantity>
+        <unit_price currency="eur">2.50</unit_price>
+        <total_amount currency="eur">5.00</total_amount>
+      </item>
+    </items>
+  </body>
+</message>`;
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendInvoiceCancelledToFacturatie).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: expect.arrayContaining([
+          expect.objectContaining({ sku: 'DRINK-001', quantity: 2 }),
+        ]),
+      })
     );
   });
 });

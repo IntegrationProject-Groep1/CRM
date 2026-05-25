@@ -402,6 +402,137 @@ function createMcpServer() {
     }
   );
 
+  // ── CRUD WRITE TOOLS ─────────────────────────────────────────────
+
+  server.tool(
+    'create_member',
+    "Create a new member (Member__c) in Salesforce. WRITE OPERATION — confirm with admin before calling. Returns the new member's Salesforce Id and Master_UUID__c.",
+    {
+      first_name:   z.string().min(1).describe("First name."),
+      last_name:    z.string().min(1).describe("Last name."),
+      email:        z.string().email().describe("Email address (must be unique in Salesforce)."),
+      user_type:    z.enum(['Bedrijf', 'Particulier']).describe("'Bedrijf' = company, 'Particulier' = individual."),
+      company_name: z.string().optional().describe("Company name — required when user_type is 'Bedrijf'."),
+      master_uuid:  z.string().uuid().optional().describe("Master UUID from the Identity service. Always pass this when creating via the chatbot — ensures the Salesforce record is linked to the correct identity."),
+    },
+    async ({ first_name, last_name, email, user_type, company_name, master_uuid }) => {
+      try {
+        const result = await sf.apiCall((conn) =>
+          conn.sobject('Member__c').create({
+            First_Name__c:   first_name,
+            Last_Name__c:    last_name,
+            Email__c:        email,
+            User_Type__c:    user_type,
+            Company_Name__c: company_name || null,
+            Status__c:       'Pending',
+            ...(master_uuid ? { Master_UUID__c: master_uuid } : {}),
+          })
+        );
+        if (!result.success) return ok({ error: 'Salesforce create failed', details: result.errors });
+        console.log(`[crm-mcp] create_member: created ${result.id} (${email})`);
+        const [created] = await soql(
+          `SELECT Id, Master_UUID__c, Email__c, Status__c FROM Member__c WHERE Id = '${esc(result.id)}' LIMIT 1`
+        );
+        return ok({ success: true, salesforce_id: result.id, master_uuid: created?.Master_UUID__c, email, message: 'Member created.' });
+      } catch (e) { return sfErr(e); }
+    }
+  );
+
+  server.tool(
+    'update_member',
+    "Update profile fields on a CRM member. WRITE OPERATION — confirm with admin before calling. Provide only the fields to change; omit the rest.",
+    {
+      master_uuid:  z.string().describe("Member's Master_UUID__c. Use search_members to find it — never guess."),
+      first_name:   z.string().optional().describe("New first name."),
+      last_name:    z.string().optional().describe("New last name."),
+      email:        z.string().email().optional().describe("New email address."),
+      company_name: z.string().optional().describe("New company name."),
+      status:       z.enum(['Active', 'Inactive', 'Cancelled', 'Pending']).optional().describe("New member status."),
+    },
+    async ({ master_uuid, first_name, last_name, email, company_name, status }) => {
+      try {
+        const records = await soql(
+          `SELECT Id, Email__c FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
+        );
+        if (!records.length) return ok({ error: `No member found for UUID: ${master_uuid}` });
+        const { Id } = records[0];
+        const patch = {};
+        if (first_name   !== undefined) patch.First_Name__c   = first_name;
+        if (last_name    !== undefined) patch.Last_Name__c    = last_name;
+        if (email        !== undefined) patch.Email__c        = email;
+        if (company_name !== undefined) patch.Company_Name__c = company_name;
+        if (status       !== undefined) patch.Status__c       = status;
+        if (!Object.keys(patch).length) return ok({ error: 'No fields to update.' });
+        await sf.apiCall((conn) => conn.sobject('Member__c').update({ Id, ...patch }));
+        console.log(`[crm-mcp] update_member: updated ${master_uuid} fields=${Object.keys(patch).join(',')}`);
+        return ok({ success: true, master_uuid, updated_fields: Object.keys(patch), message: 'Member updated.' });
+      } catch (e) { return sfErr(e); }
+    }
+  );
+
+  server.tool(
+    'delete_member',
+    "Soft-delete a CRM member by setting Status__c to 'Cancelled' and clearing the Badge_ID. WRITE OPERATION — confirm with admin before calling. Does NOT physically remove the Salesforce record.",
+    {
+      master_uuid: z.string().describe("Member's Master_UUID__c. Use search_members to find it — never guess."),
+      reason:      z.string().min(3).describe("Reason for deletion (required for audit trail)."),
+    },
+    async ({ master_uuid, reason }) => {
+      try {
+        const records = await soql(
+          `SELECT Id, First_Name__c, Last_Name__c, Email__c FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
+        );
+        if (!records.length) return ok({ error: `No member found for UUID: ${master_uuid}` });
+        const { Id, First_Name__c, Last_Name__c, Email__c } = records[0];
+        await sf.apiCall((conn) =>
+          conn.sobject('Member__c').update({ Id, Status__c: 'Cancelled', Badge_ID__c: null })
+        );
+        console.log(`[crm-mcp] delete_member: soft-deleted ${master_uuid} (${Email__c}) reason="${reason}"`);
+        return ok({
+          success: true,
+          master_uuid,
+          name: `${First_Name__c} ${Last_Name__c}`,
+          email: Email__c,
+          message: `Member soft-deleted (Status = Cancelled). Reason: ${reason}`,
+        });
+      } catch (e) { return sfErr(e); }
+    }
+  );
+
+  server.tool(
+    'update_member_wallet',
+    "Admin correction of a member's wallet balance and/or status in Salesforce. WRITE OPERATION — confirm with admin before calling. Use for manual corrections only; normal wallet flow goes via Kassa.",
+    {
+      master_uuid:    z.string().describe("Member's Master_UUID__c. Use search_members to find it — never guess."),
+      wallet_balance: z.number().min(0).optional().describe("New wallet balance in EUR (≥ 0)."),
+      wallet_status:  z.enum(['Available', 'Leased', 'Frozen']).optional().describe("New wallet status."),
+      reason:         z.string().min(3).describe("Reason for the correction (required for audit trail)."),
+    },
+    async ({ master_uuid, wallet_balance, wallet_status, reason }) => {
+      try {
+        const records = await soql(
+          `SELECT Id, Email__c, Wallet_Balance__c, Wallet_Status__c FROM Member__c WHERE Master_UUID__c = '${esc(master_uuid)}' LIMIT 1`
+        );
+        if (!records.length) return ok({ error: `No member found for UUID: ${master_uuid}` });
+        const { Id, Email__c, Wallet_Balance__c, Wallet_Status__c } = records[0];
+        const patch = {};
+        if (wallet_balance !== undefined) patch.Wallet_Balance__c = wallet_balance;
+        if (wallet_status  !== undefined) patch.Wallet_Status__c  = wallet_status;
+        if (!Object.keys(patch).length) return ok({ error: 'Provide wallet_balance and/or wallet_status.' });
+        await sf.apiCall((conn) => conn.sobject('Member__c').update({ Id, ...patch }));
+        console.log(`[crm-mcp] update_member_wallet: ${master_uuid} (${Email__c}) patch=${JSON.stringify(patch)} reason="${reason}"`);
+        return ok({
+          success: true,
+          master_uuid,
+          email: Email__c,
+          previous: { wallet_balance: Wallet_Balance__c, wallet_status: Wallet_Status__c },
+          updated: patch,
+          message: `Wallet updated. Reason: ${reason}`,
+        });
+      } catch (e) { return sfErr(e); }
+    }
+  );
+
   return server;
 }
 

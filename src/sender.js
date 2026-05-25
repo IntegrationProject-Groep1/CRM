@@ -561,7 +561,8 @@ async sendWalletLeaseGrant(data) {
     for (const r of (data.recipients || [])) {
       const recipientElem = recipients.ele('recipient');
       recipientElem.ele('email').txt(r.email);
-      recipientElem.ele('identity_uuid').txt(r.identity_uuid || r.user_id || '');
+      const uuid = r.identity_uuid || r.user_id;
+      if (uuid) recipientElem.ele('identity_uuid').txt(uuid);
       const contact = recipientElem.ele('contact');
       contact.ele('first_name').txt(r.first_name || r.contact?.first_name || '');
       contact.ele('last_name').txt(r.last_name || r.contact?.last_name || '');
@@ -652,7 +653,7 @@ async sendWalletLeaseGrant(data) {
       if (!ok) console.log(`[sender] Warning: write buffer full for queue "${queue}"`);
       return { success: true, queue, payload: xmlPayload };
     } catch (error) {
-      console.error(`[sender] sendLog error: ${error.message}`);
+      logger.error(`sendLog publish failed: ${error.message}`, { action: 'system_error' });
       return { success: false, error: error.message };
     }
   }
@@ -763,7 +764,7 @@ async sendPaymentRegisteredToFrontend(data) {
       const customer = body.ele('customer');
       customer.ele('identity_uuid').txt(data.master_uuid || '');
       customer.ele('email').txt(data.customer.email);
-      customer.ele('date_of_birth').txt(data.customer.date_of_birth || '');
+      if (data.customer.date_of_birth) customer.ele('date_of_birth').txt(data.customer.date_of_birth);
       const contact = customer.ele('contact');
       contact.ele('first_name').txt(data.customer.first_name || '');
       contact.ele('last_name').txt(data.customer.last_name || '');
