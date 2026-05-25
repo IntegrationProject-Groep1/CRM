@@ -1763,12 +1763,16 @@ class ReceiverV2 {
     if (!header.correlation_id) throw new Error('Missing correlation_id in invoice_request — cannot link to consumption_order');
     const invoiceRequestId = header.correlation_id;
 
-    let vatNumber = invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null;
-    if (!vatNumber && masterUuid && this.sf.isConnected) {
+    let vatNumber   = invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number')   : null;
+    let companyName = invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null;
+    if ((vatNumber === null || companyName === null) && masterUuid && this.sf.isConnected) {
       const sfRecords = await this.sf.apiCall((conn) =>
-        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['VAT_Number__c']).limit(1)
+        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['VAT_Number__c', 'Company_Name__c']).limit(1)
       );
-      if (sfRecords && sfRecords.length > 0) vatNumber = sfRecords[0].VAT_Number__c || null;
+      if (sfRecords && sfRecords.length > 0) {
+        if (vatNumber   === null) vatNumber   = sfRecords[0].VAT_Number__c   || null;
+        if (companyName === null) companyName = sfRecords[0].Company_Name__c || null;
+      }
     }
 
     if (this.sf.isConnected) {
@@ -1790,7 +1794,7 @@ class ReceiverV2 {
         email: email || '',
         first_name: contact ? ReceiverV2.getElementText(contact, 'first_name') : '',
         last_name: contact ? ReceiverV2.getElementText(contact, 'last_name') : '',
-        company_name: invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null,
+        company_name: companyName,
         vat_number: vatNumber,
       },
       address: invoiceData ? {
@@ -1852,13 +1856,13 @@ class ReceiverV2 {
       let profileCompanyName = companyName;
       let profileVatNumber   = vatNumber;
 
-      if (rawType === 'company' && this.sf.isConnected && (!companyName || !vatNumber)) {
+      if (rawType === 'company' && this.sf.isConnected && (companyName === null || vatNumber === null)) {
         const sfRecords = await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').find({ Master_UUID__c: identityUuid }, ['Company_Name__c', 'VAT_Number__c']).limit(1)
         );
         if (sfRecords && sfRecords.length > 0) {
-          profileCompanyName = profileCompanyName || sfRecords[0].Company_Name__c || '';
-          profileVatNumber   = profileVatNumber   || sfRecords[0].VAT_Number__c   || '';
+          if (profileCompanyName === null) profileCompanyName = sfRecords[0].Company_Name__c || '';
+          if (profileVatNumber   === null) profileVatNumber   = sfRecords[0].VAT_Number__c   || '';
         }
       }
 
