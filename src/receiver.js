@@ -1123,6 +1123,20 @@ class ReceiverV2 {
         vat_number: ReceiverV2.getElementText(customer, "vat_number"),
       });
 
+      await this.sender.sendMailingSend({
+        campaign_id: 'registration_confirmation',
+        subject: 'Bevestiging van uw registratie',
+        mail_type: 'registration_confirmation',
+        recipients: [
+          {
+            email,
+            identity_uuid: masterUuid,
+            first_name: firstName,
+            last_name: lastName,
+          },
+        ],
+      });
+
       await this.log(
         "info",
         "user",
