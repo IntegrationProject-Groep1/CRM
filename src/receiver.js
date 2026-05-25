@@ -1760,24 +1760,21 @@ class ReceiverV2 {
     const masterUuid = await this.resolveMasterUuid(header, body, { email });
     const paymentStatus = ReceiverV2.getElementText(body, 'payment_status') || 'pending';
     const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') || '';
-    const invoiceRequestId = header.correlation_id || header.message_id;
+    if (!header.correlation_id) throw new Error('Missing correlation_id in invoice_request — cannot link to consumption_order');
+    const invoiceRequestId = header.correlation_id;
+
+    let vatNumber = invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null;
+    if (!vatNumber && masterUuid && this.sf.isConnected) {
+      const sfRecords = await this.sf.apiCall((conn) =>
+        conn.sobject('Member__c').find({ Master_UUID__c: masterUuid }, ['VAT_Number__c']).limit(1)
+      );
+      if (sfRecords && sfRecords.length > 0) vatNumber = sfRecords[0].VAT_Number__c || null;
+    }
 
     if (this.sf.isConnected) {
-      try {
-        await this.sf.apiCall((conn) =>
-          conn.sobject('Consumption__c')
-            .create({
-              Consumption_ID__c: invoiceRequestId,
-              Invoice_Req__c: invoiceRequestId,
-            })
-        );
-      } catch (dupErr) {
-        if (!/duplicate/i.test(dupErr.message)) throw dupErr;
-      }
-
       const taskData = {
         Subject: `Invoice request [Kassa]`,
-        Description: `Master UUID: ${masterUuid}`,
+        Description: `Master UUID: ${masterUuid} | Order: ${invoiceRequestId}`,
         Status: 'Completed',
         ActivityDate: new Date().toISOString().split('T')[0],
       };
@@ -1794,7 +1791,7 @@ class ReceiverV2 {
         first_name: contact ? ReceiverV2.getElementText(contact, 'first_name') : '',
         last_name: contact ? ReceiverV2.getElementText(contact, 'last_name') : '',
         company_name: invoiceData ? ReceiverV2.getElementText(invoiceData, 'company_name') : null,
-        vat_number: invoiceData ? ReceiverV2.getElementText(invoiceData, 'vat_number') : null,
+        vat_number: vatNumber,
       },
       address: invoiceData ? {
         street: ReceiverV2.getElementText(invoiceData.address, 'street') || '',
@@ -1826,6 +1823,7 @@ class ReceiverV2 {
       const rawType = ReceiverV2.getElementText(customer, 'type');
       const userType = rawType === 'company' ? 'Bedrijf' : 'Particulier';
       const companyName = ReceiverV2.getElementText(customer, 'company_name');
+      const vatNumber   = ReceiverV2.getElementText(customer, 'vat_number');
 
       if (!identityUuid) throw new Error('Missing identity_uuid in user_updated message');
 
@@ -1844,10 +1842,24 @@ class ReceiverV2 {
           Country_Code__c: address ? (ReceiverV2.getElementText(address, 'country') || '').toUpperCase() || null : null,
         };
         if (companyName) userData.Company_Name__c = companyName;
+        if (vatNumber)   userData.VAT_Number__c   = vatNumber;
 
         await this.sf.apiCall((conn) =>
           conn.sobject('Member__c').upsert(userData, 'Master_UUID__c')
         );
+      }
+
+      let profileCompanyName = companyName;
+      let profileVatNumber   = vatNumber;
+
+      if (rawType === 'company' && this.sf.isConnected && (!companyName || !vatNumber)) {
+        const sfRecords = await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').find({ Master_UUID__c: identityUuid }, ['Company_Name__c', 'VAT_Number__c']).limit(1)
+        );
+        if (sfRecords && sfRecords.length > 0) {
+          profileCompanyName = profileCompanyName || sfRecords[0].Company_Name__c || '';
+          profileVatNumber   = profileVatNumber   || sfRecords[0].VAT_Number__c   || '';
+        }
       }
 
       const addressPayload = address ? {
@@ -1865,8 +1877,8 @@ class ReceiverV2 {
         last_name: lastName,
         date_of_birth: dateOfBirth,
         type: rawType,
-        company_name: ReceiverV2.getElementText(customer, 'company_name'),
-        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        company_name: profileCompanyName,
+        vat_number:   profileVatNumber,
         address: addressPayload,
       });
       await this.sender.sendProfileUpdateToFacturatie({
@@ -1876,8 +1888,8 @@ class ReceiverV2 {
         last_name: lastName,
         date_of_birth: dateOfBirth,
         type: rawType,
-        company_name: ReceiverV2.getElementText(customer, 'company_name'),
-        vat_number: ReceiverV2.getElementText(customer, 'vat_number'),
+        company_name: profileCompanyName,
+        vat_number:   profileVatNumber,
         address: addressPayload,
       });
 
