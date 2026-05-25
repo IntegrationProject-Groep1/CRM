@@ -1067,16 +1067,43 @@ class ReceiverV2 {
       if (!invitee) throw new Error('Body missing invitee element');
       if (!inviter) throw new Error('Body missing inviter element');
 
-      const inviteeEmail = ReceiverV2.getElementText(invitee, 'email');
-      const inviterUuid  = ReceiverV2.getElementText(inviter, 'identity_uuid');
-      const companyName  = ReceiverV2.getElementText(inviter, 'company_name') || '';
-      const inviteLink   = ReceiverV2.getElementText(body, 'invite_link');
-      const expiresAt    = ReceiverV2.getElementText(body, 'expires_at');
+      const inviteeEmail    = ReceiverV2.getElementText(invitee, 'email');
+      const inviteeUuid     = ReceiverV2.getElementText(invitee, 'identity_uuid');
+      const inviterUuid     = ReceiverV2.getElementText(inviter, 'identity_uuid');
+      const companyName     = ReceiverV2.getElementText(inviter, 'company_name') || '';
+      const vatNumber       = ReceiverV2.getElementText(inviter, 'vat_number') || '';
+      const inviteLink      = ReceiverV2.getElementText(body, 'invite_link');
+      const expiresAt       = ReceiverV2.getElementText(body, 'expires_at');
 
       if (!inviteeEmail) throw new Error('Missing invitee.email in company_invite');
       if (!inviterUuid)  throw new Error('Missing inviter.identity_uuid in company_invite');
 
       await this.log('info', 'user', `company_invite received: invitee=${inviteeEmail} | inviter=${inviterUuid} | company=${companyName}`);
+
+      if (this.sf.isConnected) {
+        let memberId = inviteeUuid ? await this._findUserByMasterUuid(inviteeUuid) : null;
+        if (!memberId) memberId = await this._findUserByEmail(inviteeEmail);
+
+        if (memberId) {
+          await this.sf.apiCall((conn) =>
+            conn.sobject('Member__c').update({
+              Id:               memberId,
+              Company_Name__c:  companyName,
+              VAT_Number__c:    vatNumber,
+            })
+          );
+        } else {
+          await this.sf.apiCall((conn) =>
+            conn.sobject('Member__c').create({
+              Email__c:         inviteeEmail,
+              ...(inviteeUuid && { Master_UUID__c: inviteeUuid }),
+              Company_Name__c:  companyName,
+              VAT_Number__c:    vatNumber,
+              Status__c:        'Invited',
+            })
+          );
+        }
+      }
 
       await this.sender.sendMailingSend({
         correlation_id: header.correlation_id || header.message_id,
