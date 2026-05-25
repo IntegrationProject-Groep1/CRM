@@ -29,7 +29,7 @@
               <!-- identity_uuid: de master_uuid van de Identity Service -->
               <xs:element name="identity_uuid"   type="UUIDType"/>
               <xs:element name="email"          type="xs:string"/>
-              <xs:element name="date_of_birth"  type="xs:date"/>
+              <xs:element name="date_of_birth"  type="xs:date" minOccurs="0"/>
               <xs:element name="contact">
                 <xs:complexType><xs:sequence>
                   <xs:element name="first_name" type="xs:string"/>
