@@ -1297,6 +1297,83 @@ describe('handleInvoiceRequestFromKassa', () => {
       }),
     );
   });
+
+  test('haalt first_name en last_name op uit Salesforce als Kassa die niet meestuurt', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValueOnce([{
+      First_Name__c: 'Jan',
+      Last_Name__c: 'Peeters',
+      VAT_Number__c: null,
+      Company_Name__c: null,
+    }]).mockResolvedValue({});
+
+    const xml = buildXml('invoice_request', `
+      <identity_uuid>test-master-uuid-1234</identity_uuid>
+      <payment_status>paid</payment_status>
+      <payment_method>on_site</payment_method>
+      <invoice_data>
+        <email>jan@example.com</email>
+        <address>
+          <street>Markt</street><number>1</number>
+          <postal_code>1000</postal_code>
+          <city>Brussel</city><country>BE</country>
+        </address>
+      </invoice_data>
+    `, { correlation_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' });
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: expect.objectContaining({
+          first_name: 'Jan',
+          last_name: 'Peeters',
+        }),
+      }),
+    );
+  });
+
+  test('gebruikt naam van Kassa als die aanwezig is en slaat SF-lookup over', async () => {
+    const receiver = makeReceiver();
+    receiver.sf.isConnected = true;
+    receiver.sf.apiCall.mockResolvedValue({});
+
+    const xml = buildXml('invoice_request', `
+      <identity_uuid>test-master-uuid-1234</identity_uuid>
+      <payment_status>paid</payment_status>
+      <payment_method>on_site</payment_method>
+      <invoice_data>
+        <contact>
+          <first_name>An</first_name>
+          <last_name>Janssens</last_name>
+        </contact>
+        <email>an@example.com</email>
+        <address>
+          <street>Markt</street><number>1</number>
+          <postal_code>1000</postal_code>
+          <city>Brussel</city><country>BE</country>
+        </address>
+        <vat_number>BE0123456789</vat_number>
+        <company_name>Voorbeeld BV</company_name>
+      </invoice_data>
+    `, { correlation_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567891' });
+
+    await receiver.handleMessage(buildMsg(xml));
+
+    // Slechts 1 SF-call verwacht: de Task aanmaken — geen Member lookup
+    expect(receiver.sf.apiCall).toHaveBeenCalledTimes(1);
+    expect(receiver.sender.sendInvoiceRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: expect.objectContaining({
+          first_name: 'An',
+          last_name: 'Janssens',
+          company_name: 'Voorbeeld BV',
+          vat_number: 'BE0123456789',
+        }),
+      }),
+    );
+  });
 });
 
 describe('handleRefundProcessed', () => {

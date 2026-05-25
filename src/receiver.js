@@ -2482,8 +2482,11 @@ class ReceiverV2 {
       let companyName = invoiceData
         ? ReceiverV2.getElementText(invoiceData, "company_name")
         : null;
+      let firstName = contact ? ReceiverV2.getElementText(contact, "first_name") : null;
+      let lastName = contact ? ReceiverV2.getElementText(contact, "last_name") : null;
+
       if (
-        (vatNumber === null || companyName === null) &&
+        (!firstName || !lastName || !vatNumber || !companyName) &&
         masterUuid &&
         this.sf.isConnected
       ) {
@@ -2491,16 +2494,18 @@ class ReceiverV2 {
           conn
             .sobject("Member__c")
             .find({ Master_UUID__c: masterUuid }, [
+              "First_Name__c",
+              "Last_Name__c",
               "VAT_Number__c",
               "Company_Name__c",
             ])
             .limit(1),
         );
         if (sfRecords && sfRecords.length > 0) {
-          if (vatNumber === null)
-            vatNumber = sfRecords[0].VAT_Number__c || null;
-          if (companyName === null)
-            companyName = sfRecords[0].Company_Name__c || null;
+          if (!firstName)   firstName   = sfRecords[0].First_Name__c   || null;
+          if (!lastName)    lastName    = sfRecords[0].Last_Name__c    || null;
+          if (!vatNumber)   vatNumber   = sfRecords[0].VAT_Number__c   || null;
+          if (!companyName) companyName = sfRecords[0].Company_Name__c || null;
         }
       }
 
@@ -2521,12 +2526,8 @@ class ReceiverV2 {
         payment_method: paymentMethod,
         customer: {
           email: email || "",
-          first_name: contact
-            ? ReceiverV2.getElementText(contact, "first_name")
-            : "",
-          last_name: contact
-            ? ReceiverV2.getElementText(contact, "last_name")
-            : "",
+          first_name: firstName || "",
+          last_name: lastName || "",
           company_name: companyName,
           vat_number: vatNumber,
         },
