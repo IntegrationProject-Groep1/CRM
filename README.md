@@ -62,6 +62,8 @@ Main worker process (`npm start`).
 - Handles retry/dead-letter behavior
 - Uses Identity RPC (`identity.user.create.request`) with 15s timeout
 
+> **Identity service pattern:** the CRM never generates UUIDs internally. Whenever a `master_uuid` is needed and not present in the incoming message, the receiver performs an RPC call to the Identity service: it publishes an `identity_request` XML to `identity.user.create.request` with a `correlationId` and `replyTo` queue, then waits for an `identity_response` containing the `master_uuid`. This UUID is then used for all Salesforce operations and outgoing messages.
+
 ### `src/sender.js`
 Builds and publishes XML messages to queues/exchanges.
 
@@ -78,7 +80,7 @@ Salesforce connection and API wrapper.
 - OAuth refresh-token authentication (preferred)
 - Direct access-token fallback
 - Automatic token refresh on expired sessions
-- If credentials are missing/invalid: **DRY RUN mode** (no Salesforce writes)
+- If credentials are missing/invalid: **DRY RUN mode** — all message processing continues normally, but no records are written to Salesforce. Useful for local development without Salesforce access.
 
 ### `src/heartbeat.js`
 Optional heartbeat process (`npm run heartbeat`).
@@ -101,10 +103,12 @@ Current routed message types include:
 - Registration/session: `new_registration`, `cancel_registration`, `session_created`, `session_updated`, `session_deleted`, `event_ended`
 - Payment/invoice: `payment_registered`, `invoice_status`, `send_invoice`, `invoice_request`, `invoice_cancelled`, `consumption_order`, `refund_processed`
 - Badge/wallet: `badge_scanned`, `badge_assigned`, `wallet_lease_request`, `wallet_lease_return`, `wallet_topup_request`
-- Company: `company_registration`, `company_update`, `company_delete`, `company_member_removed`
+- Company: `company_registration`, `company_update`, `company_delete`, `company_member_removed`, `company_invite`
 - Mailing: `mailing_status`
 
 Unknown message types are logged but not processed.
+
+> **Note on outgoing messages:** when a `user_created` message is processed, the CRM also sends a `send_mailing` message to `crm.to.mailing` with `campaign_id: registration_confirmation`, triggering a registration confirmation email to the new user.
 
 ## 5) Prerequisites
 
@@ -196,17 +200,18 @@ npm test -- --runInBand
 ```text
 CRM/
 |-- src/
-|   |-- receiver.js
-|   |-- sender.js
-|   |-- sfConnection.js
-|   |-- heartbeat.js
-|   |-- amqpUrl.js
-|   |-- validator.js
-|   `-- mcp_server.js
+|   |-- receiver.js       # main worker: consumes queues, routes messages, syncs Salesforce
+|   |-- sender.js         # builds and publishes outgoing XML messages
+|   |-- sfConnection.js   # Salesforce OAuth wrapper + DRY RUN fallback
+|   |-- heartbeat.js      # optional heartbeat process
+|   |-- amqpUrl.js        # RabbitMQ connection URL builder
+|   |-- validator.js      # XSD validation helper (libxmljs)
+|   `-- mcp_server.js     # optional MCP server for Salesforce tooling
 |-- tests/
 |   |-- receiver.test.js
 |   `-- sender.test.js
-|-- xsd/
+|-- xsd/                  # XML Schema Definition files — one per message type
+|                         # both incoming (validated on receive) and outgoing (validated before publish)
 |-- .env.example
 |-- docker-compose.yml
 |-- Dockerfile
