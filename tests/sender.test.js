@@ -745,7 +745,7 @@ describe('Mailing flow — buildMailingSendXml', () => {
     const data = baseData();
     data.recipients.push({
       email: 'b@example.com',
-      user_id: 'user-2',
+      user_id: 'f1a2b3c4-d5e6-7890-abcd-ef1234567890',
       first_name: 'Bob',
       last_name: 'Janssen',
     });

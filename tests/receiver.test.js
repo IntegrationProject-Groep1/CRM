@@ -441,10 +441,13 @@ describe('handleMessage', () => {
   test('geldig bericht wordt geackt', async () => {
     const receiver = makeReceiver();
     const xml = buildXml('mailing_status', `
-      <mailing_id>mail-1</mailing_id>
-      <status>delivered</status>
+      <campaign_id>mail-1</campaign_id>
+      <subject>Testmailing</subject>
+      <sent>10</sent>
       <delivered>10</delivered>
       <bounced>0</bounced>
+      <opened>3</opened>
+      <status>completed</status>
     `);
 
     await receiver.handleMessage(buildMsg(xml));
@@ -455,10 +458,13 @@ describe('handleMessage', () => {
   test('tijdelijke Salesforce timeout wordt naar retry queue gezet en geackt', async () => {
     const receiver = makeReceiver();
     const msg = buildMsg(buildXml('mailing_status', `
-      <mailing_id>mail-1</mailing_id>
-      <status>delivered</status>
+      <campaign_id>mail-1</campaign_id>
+      <subject>Testmailing</subject>
+      <sent>10</sent>
       <delivered>10</delivered>
       <bounced>0</bounced>
+      <opened>3</opened>
+      <status>completed</status>
     `));
     msg.fields.routingKey = 'crm.incoming';
     receiver.routeMessage = jest.fn().mockRejectedValue(Object.assign(
@@ -485,10 +491,13 @@ describe('handleMessage', () => {
   test('tijdelijke fout gaat na max retries naar dead-letter', async () => {
     const receiver = makeReceiver();
     const msg = buildMsg(buildXml('mailing_status', `
-      <mailing_id>mail-1</mailing_id>
-      <status>delivered</status>
+      <campaign_id>mail-1</campaign_id>
+      <subject>Testmailing</subject>
+      <sent>10</sent>
       <delivered>10</delivered>
       <bounced>0</bounced>
+      <opened>3</opened>
+      <status>completed</status>
     `));
     msg.properties = {
       headers: {
