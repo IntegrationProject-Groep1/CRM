@@ -40,7 +40,7 @@
               <xs:element name="recipient" maxOccurs="unbounded">
                 <xs:complexType><xs:sequence>
                   <xs:element name="email"         type="xs:string"/>
-                  <xs:element name="identity_uuid" type="UUIDType" minOccurs="0"/>
+                  <xs:element name="identity_uuid" type="UUIDType"/>
                   <xs:element name="contact">
                     <xs:complexType><xs:sequence>
                       <xs:element name="first_name" type="xs:string"/>
@@ -55,13 +55,19 @@
           <xs:element name="template_data" type="xs:string" minOccurs="0"/>
           <!-- body_html: plain HTML — wanneer geen SendGrid template gebruikt wordt -->
           <xs:element name="body_html" type="xs:string" minOccurs="0"/>
-          <!-- attachment: Base64 bijlage (factuur-PDF, badge QR-code) — zie Mailing doc sectie 3 -->
-          <xs:element name="attachment" minOccurs="0">
+          <!-- attachments: 1+ Base64 bijlagen (factuur-PDF, badge QR-code) — zie Mailing doc sectie 3 -->
+          <xs:element name="attachments" minOccurs="0">
             <xs:complexType>
               <xs:sequence>
-                <xs:element name="filename"     type="xs:string"/>
-                <xs:element name="content_type" type="xs:string"/>
-                <xs:element name="base64_data"  type="xs:string"/>
+                <xs:element name="attachment" minOccurs="1" maxOccurs="unbounded">
+                  <xs:complexType>
+                    <xs:sequence>
+                      <xs:element name="filename"     type="xs:string"/>
+                      <xs:element name="content_type" type="xs:string"/>
+                      <xs:element name="base64_data"  type="xs:string"/>
+                    </xs:sequence>
+                  </xs:complexType>
+                </xs:element>
               </xs:sequence>
             </xs:complexType>
           </xs:element>
