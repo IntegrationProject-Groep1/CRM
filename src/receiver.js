@@ -1945,19 +1945,33 @@ class ReceiverV2 {
 
   async handleMailingStatus(header, body) {
     try {
+      const campaignId = ReceiverV2.getElementText(body, "campaign_id");
+      const status = ReceiverV2.getElementText(body, "status");
+      const delivered = ReceiverV2.getElementText(body, "delivered");
+
+      const bouncedEmails = body?.bounced_emails?.email
+        ? (Array.isArray(body.bounced_emails.email)
+            ? body.bounced_emails.email
+            : [body.bounced_emails.email])
+        : [];
+
       const taskData = {
-        Subject: `Mailing status: ${ReceiverV2.getElementText(body, "campaign_id")}`,
-        Description: `Status: ${ReceiverV2.getElementText(body, "status")}\nDelivered: ${ReceiverV2.getElementText(body, "delivered")}`,
+        Subject: `Mailing status: ${campaignId}`,
+        Description: `Status: ${status}\nDelivered: ${delivered}`,
         Status: "Completed",
         ActivityDate: new Date().toISOString().split("T")[0],
       };
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) => conn.sobject("Task").create(taskData));
       }
+
+      const bouncedPart = bouncedEmails.length > 0
+        ? ` | bounced=${bouncedEmails.join(", ")}`
+        : "";
       await this.log(
         "info",
         "email",
-        `mailing_status processed: campaign=${ReceiverV2.getElementText(body, "campaign_id")} | status=${ReceiverV2.getElementText(body, "status")}`,
+        `mailing_status processed: campaign=${campaignId} | status=${status}${bouncedPart}`,
       );
     } catch (err) {
       console.log(`[receiver] Error in handleMailingStatus: ${err}`);

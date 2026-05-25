@@ -561,8 +561,7 @@ async sendWalletLeaseGrant(data) {
     for (const r of (data.recipients || [])) {
       const recipientElem = recipients.ele('recipient');
       recipientElem.ele('email').txt(r.email);
-      const uuid = r.identity_uuid || r.user_id;
-      if (uuid) recipientElem.ele('identity_uuid').txt(uuid);
+      recipientElem.ele('identity_uuid').txt(r.identity_uuid || r.user_id || '');
       const contact = recipientElem.ele('contact');
       contact.ele('first_name').txt(r.first_name || r.contact?.first_name || '');
       contact.ele('last_name').txt(r.last_name || r.contact?.last_name || '');
@@ -575,11 +574,14 @@ async sendWalletLeaseGrant(data) {
       body.ele('template_data').txt(templateStr);
     }
     if (data.body_html) body.ele('body_html').txt(data.body_html);
-    if (data.attachment) {
-      const att = body.ele('attachment');
-      att.ele('filename').txt(data.attachment.filename || '');
-      att.ele('content_type').txt(data.attachment.content_type || '');
-      att.ele('base64_data').txt(data.attachment.base64_data || '');
+    if (data.attachments && data.attachments.length > 0) {
+      const attachmentsElem = body.ele('attachments');
+      for (const att of data.attachments) {
+        const attElem = attachmentsElem.ele('attachment');
+        attElem.ele('filename').txt(att.filename || '');
+        attElem.ele('content_type').txt(att.content_type || '');
+        attElem.ele('base64_data').txt(att.base64_data || '');
+      }
     }
 
     return root.doc().end({ prettyPrint: true, indent: '  ' });
