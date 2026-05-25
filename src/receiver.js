@@ -1743,7 +1743,7 @@ class ReceiverV2 {
     }
   }
 
-  async handleRefundProcessed(header, body, rawXml = null) {
+  async handleRefundProcessed(header, body) {
   try {
     if (this._isProcessedMessage(header.message_id)) {
       await this.log('warning', 'refund', `Duplicate refund_processed (ID: ${header.message_id}) — skipped`);
