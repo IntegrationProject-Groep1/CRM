@@ -1168,6 +1168,25 @@ class ReceiverV2 {
     const amountVal = body?.amount_paid || (invoice ? invoice.amount_paid : null);
     const amountPaid = typeof amountVal === 'object' ? amountVal['#text'] : (amountVal || '0.00');
     const invoiceId = ReceiverV2.getElementText(body, 'invoice_id') || ReceiverV2.getElementText(invoice, 'id');
+
+    // Detect wallet top-up items to route balance updates correctly.
+    const rawItems = body?.items?.item;
+    const items = rawItems ? (Array.isArray(rawItems) ? rawItems : [rawItems]) : [];
+    let topupAmount = 0;
+    let hasNonTopupItems = false;
+    for (const item of items) {
+      const itemType = ReceiverV2.getElementText(item, 'item_type');
+      const amountRaw = item.amount;
+      const itemAmount = typeof amountRaw === 'object'
+        ? parseFloat(amountRaw['#text'] || 0)
+        : parseFloat(amountRaw || 0);
+      if (itemType === 'wallet_topup') {
+        topupAmount += itemAmount;
+      } else {
+        hasNonTopupItems = true;
+      }
+    }
+    const isPureTopup = topupAmount > 0 && !hasNonTopupItems;
     const transactionId = transaction ? ReceiverV2.getElementText(transaction, 'id') : null;
     const paymentMethod = ReceiverV2.getElementText(body, 'payment_method') ||
       (transaction ? ReceiverV2.getElementText(transaction, 'method') : null) || 'unknown';
@@ -1243,19 +1262,38 @@ class ReceiverV2 {
     }
 
     if (this.sf.isConnected && masterUuid) {
-      const upsertData = {
-        Master_UUID__c:         masterUuid,
-        Payment_Status__c:      'paid',
-        Amount__c:              amountPaid,
-        Last_Invoice_Number__c: invoiceId,
-      };
+      const upsertData = { Master_UUID__c: masterUuid };
       if (email) upsertData.Email__c = email;
+
+      if (isPureTopup) {
+        // Top-up purchase at POS: credit wallet balance only when CRM owns it.
+        // If the wallet is currently 'Leased', Kassa owns the balance and will
+        // reconcile via x_pending_topup_balance in wallet_lease_grant. Do not
+        // touch Amount__c (registration fee field) for top-up payments.
+        const memberRecords = await this.sf.apiCall((conn) =>
+          conn.sobject('Member__c').find(
+            { Master_UUID__c: masterUuid },
+            ['Id', 'Wallet_Balance__c', 'Wallet_Status__c']
+          ).limit(1)
+        );
+        const walletStatus = memberRecords?.[0]?.Wallet_Status__c || '';
+        if (walletStatus !== 'Leased') {
+          const currentBalance = parseFloat(memberRecords?.[0]?.Wallet_Balance__c || 0);
+          upsertData.Wallet_Balance__c = Math.round((currentBalance + topupAmount) * 100) / 100;
+        }
+      } else {
+        // Regular consumption or registration payment: update payment tracking fields.
+        upsertData.Payment_Status__c = 'paid';
+        upsertData.Amount__c = amountPaid;
+        upsertData.Last_Invoice_Number__c = invoiceId;
+      }
+
       await this.sf.apiCall((conn) =>
         conn.sobject('Member__c').upsert(upsertData, 'Master_UUID__c')
       );
     }
 
-    await this.log('info', 'payment', `payment_registered processed: uuid=${masterUuid} | invoice=${invoiceId} | amount=${amountPaid}`);
+    await this.log('info', 'payment', `payment_registered processed: uuid=${masterUuid} | invoice=${invoiceId} | amount=${amountPaid} | topup=${topupAmount > 0 ? topupAmount.toFixed(2) : 'no'}`);
     this._markMessageProcessed(header.message_id);
   } catch (err) {
     console.log(`[receiver] Error in handlePaymentRegistered: ${err}`);

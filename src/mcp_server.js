@@ -413,17 +413,19 @@ function createMcpServer() {
       email:        z.string().email().describe("Email address (must be unique in Salesforce)."),
       user_type:    z.enum(['Bedrijf', 'Particulier']).describe("'Bedrijf' = company, 'Particulier' = individual."),
       company_name: z.string().optional().describe("Company name — required when user_type is 'Bedrijf'."),
+      master_uuid:  z.string().uuid().optional().describe("Master UUID from the Identity service. Always pass this when creating via the chatbot — ensures the Salesforce record is linked to the correct identity."),
     },
-    async ({ first_name, last_name, email, user_type, company_name }) => {
+    async ({ first_name, last_name, email, user_type, company_name, master_uuid }) => {
       try {
         const result = await sf.apiCall((conn) =>
           conn.sobject('Member__c').create({
-            First_Name__c:  first_name,
-            Last_Name__c:   last_name,
-            Email__c:       email,
-            User_Type__c:   user_type,
+            First_Name__c:   first_name,
+            Last_Name__c:    last_name,
+            Email__c:        email,
+            User_Type__c:    user_type,
             Company_Name__c: company_name || null,
-            Status__c:      'Pending',
+            Status__c:       'Pending',
+            ...(master_uuid ? { Master_UUID__c: master_uuid } : {}),
           })
         );
         if (!result.success) return ok({ error: 'Salesforce create failed', details: result.errors });
