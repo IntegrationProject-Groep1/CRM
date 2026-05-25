@@ -1041,6 +1041,19 @@ class ReceiverV2 {
         },
       };
       await this.sender.sendNewRegistrationToFacturatie(fossPayload);
+
+      await this.sender.sendMailingSend({
+        correlation_id: header.correlation_id || header.message_id,
+        mailing: { mail_type: 'registration_confirmation' },
+        recipients: [{ email, identity_uuid: masterUuid, first_name: firstName, last_name: lastName }],
+        template_data: JSON.stringify({
+          first_name:   firstName,
+          last_name:    lastName,
+          session_id:   sessionId || '',
+          payment_status: paymentStatus,
+        }),
+      });
+
       await this.log(
         "info",
         "registration",
