@@ -1099,10 +1099,12 @@ class ReceiverV2 {
             })
           );
         } else {
+          const newUuid = resolvedInviteeUuid || uuidv4();
+          resolvedInviteeUuid = newUuid;
           await this.sf.apiCall((conn) =>
             conn.sobject('Member__c').create({
               Email__c:         inviteeEmail,
-              ...(resolvedInviteeUuid && { Master_UUID__c: resolvedInviteeUuid }),
+              Master_UUID__c:   newUuid,
               Company_Name__c:  companyName,
               VAT_Number__c:    vatNumber,
               Status__c:        'Invited',
