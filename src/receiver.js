@@ -1078,16 +1078,25 @@ class ReceiverV2 {
 
       await this.log('info', 'user', `company_invite received: invitee=${inviteeEmail} | inviter=${inviterUuid} | company=${companyName}`);
 
+      const inviteeUuid = await this.getOrCreateMasterUuid(inviteeEmail, 'crm');
+
       await this.sender.sendMailingSend({
         correlation_id: header.correlation_id || header.message_id,
-        template_id:    'company_invite',
-        recipient:      inviteeEmail,
-        template_data:  JSON.stringify({
+        campaign_id:    'company_invite',
+        subject:        `Uitnodiging om lid te worden van ${companyName || 'een bedrijf'}`,
+        mail_type:      'general_announcement',
+        recipients: [{
+          email:         inviteeEmail,
+          identity_uuid: inviteeUuid,
+          first_name:    '',
+          last_name:     '',
+        }],
+        template_data: {
           invite_link:  inviteLink,
           expires_at:   expiresAt,
           company_name: companyName,
           inviter_uuid: inviterUuid,
-        }),
+        },
       });
 
       console.log(`[receiver] company_invite processed: invitee=${inviteeEmail}`);
