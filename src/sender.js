@@ -561,7 +561,8 @@ async sendWalletLeaseGrant(data) {
     for (const r of (data.recipients || [])) {
       const recipientElem = recipients.ele('recipient');
       recipientElem.ele('email').txt(r.email);
-      recipientElem.ele('identity_uuid').txt(r.identity_uuid || r.user_id || '');
+      const uuid = r.identity_uuid || r.user_id;
+      if (uuid) recipientElem.ele('identity_uuid').txt(uuid);
       const contact = recipientElem.ele('contact');
       contact.ele('first_name').txt(r.first_name || r.contact?.first_name || '');
       contact.ele('last_name').txt(r.last_name || r.contact?.last_name || '');
