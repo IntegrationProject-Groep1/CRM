@@ -1470,34 +1470,15 @@ class ReceiverV2 {
       const masterUuid = await this.getOrCreateMasterUuid(inviteeEmail, 'crm');
 
       if (this.sf.isConnected) {
-        const sfRecord = await this.sf.apiCall((conn) =>
-          conn
-            .sobject("Member__c")
-            .find({ Master_UUID__c: masterUuid }, ["Id"])
-            .limit(1),
+        await this.sf.apiCall((conn) =>
+          conn.sobject("Member__c").upsert({
+            Email__c:        inviteeEmail,
+            Master_UUID__c:  masterUuid,
+            Company_Name__c: companyName,
+            VAT_Number__c:   vatNumber,
+            Status__c:       "Invited",
+          }, "Master_UUID__c"),
         );
-
-        const sfMember = sfRecord && sfRecord.length > 0 ? sfRecord[0] : null;
-
-        if (sfMember) {
-          await this.sf.apiCall((conn) =>
-            conn.sobject("Member__c").update({
-              Id: sfMember.Id,
-              Company_Name__c: companyName,
-              VAT_Number__c: vatNumber,
-            }),
-          );
-        } else {
-          await this.sf.apiCall((conn) =>
-            conn.sobject("Member__c").create({
-              Email__c: inviteeEmail,
-              Master_UUID__c: masterUuid,
-              Company_Name__c: companyName,
-              VAT_Number__c: vatNumber,
-              Status__c: "Invited",
-            }),
-          );
-        }
       }
 
       await this.sender.sendMailingSend({
