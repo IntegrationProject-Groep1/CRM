@@ -692,12 +692,9 @@ describe('Mailing flow — buildMailingSendXml', () => {
 
   const baseData = () => ({
     correlation_id: 'c3d4e5f6-a7b8-9012-cdef-012345678902',
-    mailing: {
-      campaign_id: 'sg-campaign-0089',
-      subject: 'Nieuwsbrief april',
-      template_id: 'TPL-NL-001',
-      mail_type: 'registration_confirmation',
-    },
+    campaign_id: 'sg-campaign-0089',
+    subject: 'Nieuwsbrief april',
+    mail_type: 'registration_confirmation',
     recipients: [
       {
         email: 'a@example.com',

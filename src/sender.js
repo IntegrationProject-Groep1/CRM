@@ -539,8 +539,6 @@ async sendWalletLeaseGrant(data) {
   buildMailingSendXml(data) {
     const messageId = uuidv4();
     const timestamp = new Date().toISOString();
-    const mailing = data.mailing || {};
-
     const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('message');
 
     const header = root.ele('header');
@@ -553,9 +551,9 @@ async sendWalletLeaseGrant(data) {
     header.ele('correlation_id').txt(correlationId);
 
     const body = root.ele('body');
-    body.ele('campaign_id').txt(mailing.campaign_id || data.campaign_id || '');
-    body.ele('subject').txt(mailing.subject || data.subject || '');
-    body.ele('mail_type').txt(mailing.mail_type || data.mail_type || 'general_announcement');
+    body.ele('campaign_id').txt(data.campaign_id || '');
+    body.ele('subject').txt(data.subject || '');
+    body.ele('mail_type').txt(data.mail_type || 'general_announcement');
 
     const recipients = body.ele('recipients');
     for (const r of (data.recipients || [])) {
