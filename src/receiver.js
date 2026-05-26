@@ -1472,7 +1472,6 @@ class ReceiverV2 {
       if (this.sf.isConnected) {
         await this.sf.apiCall((conn) =>
           conn.sobject("Member__c").upsert({
-            Email__c:        inviteeEmail,
             Master_UUID__c:  masterUuid,
             Company_Name__c: companyName,
             VAT_Number__c:   vatNumber,
